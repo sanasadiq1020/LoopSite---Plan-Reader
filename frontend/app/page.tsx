@@ -9,6 +9,7 @@ import {
   markedUpSheetsUrl,
   sheetRegisterCsvUrl,
   uploadPlan,
+  ensureSession,
   API_BASE_URL_IN_USE,
   API_BASE_URL_IS_CONFIGURED,
   type PageReading,
@@ -209,6 +210,15 @@ export default function Home() {
     }
   }
 
+  // The session is settled before anything is uploaded, so every request that
+  // follows — including the images and downloads a browser fetches by URL —
+  // carries it. Without this the tool works only in a browser that happens to
+  // accept a third-party cookie, which is now the exception rather than the
+  // rule.
+  useEffect(() => {
+    void ensureSession();
+  }, []);
+
   async function handleFileSelected(file: File) {
     // The plan on screen is replaced by this one, so the old run is no longer
     // anything anybody can open. It goes with it.
@@ -222,6 +232,7 @@ export default function Home() {
     setTab("sheets");
     setProgress({ known: true, stage: "Sending the plan", percent: 0 });
     setTimeLeft(null);
+    await ensureSession();
     const startedAt = Date.now();
 
     // The upload's own token, so the browser can ask how far it has got while

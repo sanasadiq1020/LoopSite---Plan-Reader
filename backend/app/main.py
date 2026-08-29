@@ -28,10 +28,10 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    # The interface runs on a different port, and a download's filename lives in
-    # Content-Disposition, which a browser hides from page scripts unless it is
-    # named here.
-    expose_headers=["Content-Disposition"],
+    # A browser hides response headers from page scripts unless they are named
+    # here. The interface needs both: the filename of a download, and the
+    # session it has been given.
+    expose_headers=["Content-Disposition", "X-Session-Id"],
 )
 
 logger.info(f"starting with {describe()}")

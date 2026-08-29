@@ -426,3 +426,17 @@ async def get_release():
         )
     return info
 
+@router.get("/session")
+async def get_session(session_id: str = Depends(get_session_id)):
+    """The session this browser is using, creating one if it has none.
+
+    The interface asks once, keeps the answer, and presents it on every
+    request afterwards. That is what makes the tool work in a browser that
+    blocks third-party cookies — which is now most of them, and which
+    otherwise fails silently and completely.
+
+    The identifier is anonymous and grants nothing beyond the plan uploaded
+    under it.
+    """
+    return {"session_id": session_id}
+

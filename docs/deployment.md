@@ -157,12 +157,21 @@ the Vercel address, with `https://` and no trailing slash. Open the browser's
 developer console: a CORS message names the origin the API saw, which is
 usually the answer.
 
-**Everything works, but the plan disappears when you open a sheet.**
+**It works in your browser but not in anyone else's.**
 
-The session cookie is being dropped. Check `COOKIE_CROSS_SITE=true` on Render.
-The interface and the API are on different domains, so the cookie needs
-`SameSite=None` with `Secure`, and a browser silently discards it otherwise —
-every request then looks like a new visitor.
+This was the shape of a real failure worth knowing about. The session used to
+travel only in a cookie set by the API — a *third-party* cookie to the page the
+reader is looking at, which browsers now block by default. It kept working for
+whoever deployed it, because their own browser had visited the API's address
+directly at some point and so kept the cookie, and failed for everyone they
+shared the link with.
+
+The browser now holds its session itself and presents it on every request, so
+this no longer depends on a cookie being accepted. If you see it, the site is
+running an older build: redeploy on Vercel **without the build cache**.
+
+`COOKIE_CROSS_SITE=true` on Render is still worth setting — the cookie is still
+offered, and it is one less thing to be wrong.
 
 **The first upload after a quiet period takes about a minute.**
 

@@ -509,9 +509,98 @@ export class ApiError extends Error {
   }
 }
 
+
+// --- The browser holds its own session -----------------------------------
+//
+// Deployed, the interface and the API are on different domains, so a cookie
+// set by the API is a third-party cookie to this page — and browsers now block
+// those by default. When that happens the failure is silent and total: every
+// request arrives without a session and the reader is told their plan could
+// not be processed.
+//
+// It is also invisible to whoever deployed it, because their own browser has
+// usually visited the API's domain at some point and so keeps the cookie. It
+// works for them and for nobody they share the link with.
+//
+// So the session is kept here instead, and presented explicitly: as a header
+// on anything fetched by script, and as a query parameter on anything the
+// browser loads by URL — an <img> or a download link cannot carry a header.
+
+const SESSION_STORAGE_KEY = "loopsite.session";
+const SESSION_HEADER = "X-Session-Id";
+
+let sessionId: string | null = null;
+
+function rememberedSession(): string | null {
+  if (sessionId) return sessionId;
+  if (typeof window === "undefined") return null;
+  try {
+    sessionId = window.localStorage.getItem(SESSION_STORAGE_KEY);
+  } catch {
+    // Private browsing can refuse storage entirely. The session then lasts as
+    // long as the page does, which is enough to read one plan.
+    sessionId = null;
+  }
+  return sessionId;
+}
+
+function rememberSession(value: string | null) {
+  if (!value || !/^[0-9a-f]{32}$/.test(value)) return;
+  sessionId = value;
+  try {
+    window.localStorage.setItem(SESSION_STORAGE_KEY, value);
+  } catch {
+    // Kept in memory for this page instead.
+  }
+}
+
+/** Headers for a request made by script. */
+function sessionHeaders(): Record<string, string> {
+  const id = rememberedSession();
+  return id ? { [SESSION_HEADER]: id } : {};
+}
+
+/** Takes the session out of a response, whether or not the cookie survived. */
+function noteSession(res: Response) {
+  rememberSession(res.headers.get(SESSION_HEADER));
+}
+
+/**
+ * Asks the API for this browser's session, once, before anything else.
+ *
+ * Everything that follows presents it, so nothing depends on a cookie the
+ * browser may quietly refuse.
+ */
+export async function ensureSession(): Promise<string | null> {
+  const existing = rememberedSession();
+  if (existing) return existing;
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/plan/session`, {
+      credentials: "include",
+      headers: sessionHeaders(),
+    });
+    noteSession(res);
+    if (res.ok) {
+      const body = await res.json();
+      rememberSession(body?.session_id);
+    }
+  } catch {
+    // Offline, or the API is unreachable. The next real request will report it.
+  }
+  return rememberedSession();
+}
+
+/** A URL the browser will load itself — an image, a download, a 3D model.
+ *  These cannot carry a header, so the session travels in the query. */
+function withSession(url: string): string {
+  const id = rememberedSession();
+  if (!id) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}s=${id}`;
+}
+
 export function fileUrl(path: string): string {
   if (!path) return "";
-  return `${API_BASE_URL}${path}`;
+  return withSession(`${API_BASE_URL}${path}`);
 }
 
 /** What an upload is doing right now, while it is still being read. */
@@ -536,6 +625,7 @@ export async function readUploadProgress(token: string): Promise<UploadProgress>
   try {
     const res = await fetch(`${API_BASE_URL}/api/plan/progress/${token}`, {
       credentials: "include",
+      headers: sessionHeaders(),
     });
     if (!res.ok) return { known: false };
     return (await res.json()) as UploadProgress;
@@ -551,6 +641,7 @@ export async function discardRun(runId: string): Promise<void> {
     await fetch(`${API_BASE_URL}/api/plan/${runId}/discard`, {
       method: "POST",
       credentials: "include",
+      headers: sessionHeaders(),
       keepalive: true, // still sent when the page is closing
     });
   } catch {
@@ -566,8 +657,10 @@ export async function uploadPlan(file: File, token = ""): Promise<UploadResponse
   const res = await fetch(`${API_BASE_URL}/api/plan/upload${query}`, {
     method: "POST",
     body: formData,
-    credentials: "include", // send/receive the session cookie cross-port in dev
+    credentials: "include",
+    headers: sessionHeaders(),
   });
+  noteSession(res);
 
   if (!res.ok) {
     let detail = `Upload failed (HTTP ${res.status}).`;
@@ -584,7 +677,11 @@ export async function uploadPlan(file: File, token = ""): Promise<UploadResponse
 }
 
 async function requestJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}${path}`, { credentials: "include" });
+  const res = await fetch(`${API_BASE_URL}${path}`, {
+    credentials: "include",
+    headers: sessionHeaders(),
+  });
+  noteSession(res);
   if (!res.ok) {
     let detail = `Request failed (HTTP ${res.status}).`;
     try {
@@ -841,7 +938,9 @@ export async function buildSheetModel(
   const res = await fetch(`${API_BASE_URL}/api/plan/${runId}/model/${pageNumber}`, {
     method: "POST",
     credentials: "include",
+    headers: sessionHeaders(),
   });
+  noteSession(res);
   if (!res.ok) {
     let detail = `The model could not be built (HTTP ${res.status}).`;
     try {
@@ -857,7 +956,9 @@ export async function buildSheetModel(
 
 export function modelFileUrl(runId: string, pageNumber: number, kind: string): string {
   const download = kind === "glb" ? "" : "?download=true";
-  return `${API_BASE_URL}/api/plan/${runId}/model/${pageNumber}/file/${kind}${download}`;
+  return withSession(
+    `${API_BASE_URL}/api/plan/${runId}/model/${pageNumber}/file/${kind}${download}`
+  );
 }
 
 /** Where a storey height came from, in words a reader can act on. */
