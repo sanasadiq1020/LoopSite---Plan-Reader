@@ -173,6 +173,18 @@ running an older build: redeploy on Vercel **without the build cache**.
 `COOKIE_CROSS_SITE=true` on Render is still worth setting — the cookie is still
 offered, and it is one less thing to be wrong.
 
+**A large plan set fails while a small one works.**
+
+The reading now happens on the server after the upload is acknowledged, and
+the browser follows its progress — so a plan that takes minutes no longer runs
+into the hosting platform's request limit. If you still see this, the site is
+running an older build: redeploy on Vercel **without the build cache**, and let
+Render finish rebuilding.
+
+If the progress bar stops moving part way and then reports that the server
+stopped responding, the instance ran out of memory. Move to a larger one, or
+build without character recognition.
+
 **The first upload after a quiet period takes about a minute.**
 
 On Render's free instance the service sleeps after fifteen minutes of no

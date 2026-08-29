@@ -612,6 +612,7 @@ export interface UploadProgress {
   pages_total?: number;
   finished?: boolean;
   failed?: boolean;
+  run_id?: string | null;
 }
 
 /**
@@ -649,6 +650,18 @@ export async function discardRun(runId: string): Promise<void> {
   }
 }
 
+/**
+ * Sends the plan and waits for it to be read.
+ *
+ * The upload is acknowledged as soon as the file arrives; the reading happens
+ * on the server afterwards. That is deliberate — reading a large plan set
+ * takes minutes on a small server, and no hosting platform holds an HTTP
+ * request open that long. The proxy in front gives up, and the reader is told
+ * their plan could not be processed while the server is still working on it.
+ *
+ * So this follows the same progress the interface was already showing, and
+ * collects the result when it says the reading has finished.
+ */
 export async function uploadPlan(file: File, token = ""): Promise<UploadResponse> {
   const formData = new FormData();
   formData.append("file", file);
@@ -673,7 +686,45 @@ export async function uploadPlan(file: File, token = ""): Promise<UploadResponse
     throw new ApiError(detail, res.status);
   }
 
-  return res.json();
+  return waitForReading(token);
+}
+
+/** How long to keep waiting after the server last said anything at all. */
+const SILENCE_LIMIT_MS = 3 * 60 * 1000;
+
+async function waitForReading(token: string): Promise<UploadResponse> {
+  let lastChange = Date.now();
+  let lastSeen = "";
+
+  for (;;) {
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    const update = await readUploadProgress(token);
+
+    if (update.known) {
+      const signature = `${update.stage}|${update.pages_done}|${update.percent}`;
+      if (signature !== lastSeen) {
+        lastSeen = signature;
+        lastChange = Date.now();
+      }
+
+      if (update.failed) {
+        throw new ApiError(update.stage || "This plan could not be read.", 500);
+      }
+      if (update.finished && update.run_id) {
+        return requestJson<UploadResponse>(`/api/plan/${update.run_id}/register`);
+      }
+    }
+
+    // The server has gone quiet. Saying so is better than waiting for ever on
+    // something that is not coming back.
+    if (Date.now() - lastChange > SILENCE_LIMIT_MS) {
+      throw new ApiError(
+        "The server stopped responding while reading this plan. It may be larger " +
+          "than the server can handle.",
+        504
+      );
+    }
+  }
 }
 
 async function requestJson<T>(path: string): Promise<T> {

@@ -1,3 +1,5 @@
+import threading
+
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
@@ -19,6 +21,7 @@ from pipeline.plan.intake import (
     load_manifest,
     load_plan_reading,
     load_release_info,
+    load_sheet_register,
     plan_reading_is_outdated,
     process_upload,
     resolve_export_path,
@@ -33,12 +36,12 @@ router = APIRouter(prefix="/api/plan", tags=["plan"])
 logger = get_logger()
 
 
-@router.post("/upload", response_model=UploadResponse)
+@router.post("/upload", status_code=202)
 async def upload_plan(
     file: UploadFile = File(...),
     token: str = "",
     session_id: str = Depends(get_session_id),
-) -> UploadResponse:
+):
     if file.content_type not in ("application/pdf", "application/octet-stream") and not (
         file.filename or ""
     ).lower().endswith(".pdf"):
@@ -48,29 +51,41 @@ async def upload_plan(
         file_bytes = await file.read()
         if not file_bytes:
             raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-        # process_upload is synchronous/CPU-bound (PDF rendering, OCR) — running
-        # it directly here would block the whole async event loop, freezing
-        # every other request (even /api/health) until it finishes. Offloading
-        # to a worker thread keeps the server responsive during long OCR runs.
-        progress.start(token, file.filename or "unnamed.pdf")
-        result = await run_in_threadpool(
-            process_upload,
-            file_bytes,
-            file.filename or "unnamed.pdf",
-            session_id,
-            token,
-        )
-        return UploadResponse(**result)
     except HTTPException:
         raise
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        progress.fail(token, "This plan could not be read.")
-        logger.exception(f"Unexpected error processing upload: {e}")
-        raise HTTPException(
-            status_code=500, detail="Could not process this PDF. See server logs."
-        ) from e
+        logger.exception(f"could not read the uploaded file: {e}")
+        raise HTTPException(status_code=400, detail="That file could not be read.") from e
+
+    filename = file.filename or "unnamed.pdf"
+    progress.start(token, filename)
+
+    # **The reading runs in the background and this request returns at once.**
+    #
+    # Reading a large plan set takes minutes on a small server, and no hosting
+    # platform will hold an HTTP request open that long: the proxy in front
+    # gives up and the reader is told their plan could not be processed, while
+    # the server is still working on it perfectly well.
+    #
+    # So the upload is acknowledged as soon as the file has arrived, and the
+    # browser follows the same progress it was already showing. Nothing about
+    # the reading itself changes.
+    def read_the_plan():
+        try:
+            process_upload(file_bytes, filename, session_id, token)
+        except ValueError as e:
+            # Something about the file itself — the reader can act on this.
+            progress.fail(token, str(e))
+        except Exception as e:
+            logger.exception(f"reading {filename} failed: {e}")
+            progress.fail(
+                token,
+                "This plan could not be read. It may be larger than this server can "
+                "handle, or the file may be damaged.",
+            )
+
+    threading.Thread(target=read_the_plan, name=f"read:{token[:8]}", daemon=True).start()
+    return {"accepted": True, "token": token}
 
 
 @router.get("/{run_id}/reading", response_model=PlanReadingResponse)
@@ -439,4 +454,22 @@ async def get_session(session_id: str = Depends(get_session_id)):
     under it.
     """
     return {"session_id": session_id}
+
+@router.get("/{run_id}/register", response_model=UploadResponse)
+async def get_sheet_register(
+    run_id: str, session_id: str = Depends(get_session_id)
+) -> UploadResponse:
+    """Every sheet in a finished run.
+
+    The upload itself returns before the reading is done, so this is how the
+    interface collects the result once the progress says it is ready.
+    """
+    if not run_belongs_to_session(run_id, session_id):
+        raise HTTPException(status_code=404, detail="Not found.")
+    register = load_sheet_register(run_id)
+    if register is None:
+        raise HTTPException(
+            status_code=404, detail="This upload has not finished being read."
+        )
+    return UploadResponse(**register)
 

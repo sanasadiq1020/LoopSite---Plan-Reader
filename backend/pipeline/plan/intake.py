@@ -651,6 +651,18 @@ def load_release_info() -> dict:
         return {}
 
 
+def load_sheet_register(run_id: str):
+    """A finished run's sheet register, as the upload would have returned it."""
+    path = run_plan_dir(run_id) / "sheet_register.json"
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.exception(f"could not read the sheet register for {run_id}: {e}")
+        return None
+
+
 def load_manifest(run_id: str) -> dict | None:
     path = run_plan_dir(run_id) / "input_manifest.json"
     if not path.exists():
