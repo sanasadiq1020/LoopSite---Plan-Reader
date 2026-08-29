@@ -1,0 +1,29 @@
+# Render deployment for the plan reader's API.
+#
+# Render reads this file from the repository root and creates the service from
+# it. The interface itself is deployed separately on Vercel; this is only the
+# API behind it.
+services:
+  - type: web
+    name: loopsite-plan-reader-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    # Character recognition needs more memory than the free instance has. On a
+    # free instance, build with BUILD_WITH_OCR=false instead: sheets that carry
+    # their own text still read in full.
+    plan: starter
+    healthCheckPath: /api/plan/release
+    envVars:
+      # The address of the deployed interface. Set this to the Vercel URL once
+      # it exists — several may be listed, separated by commas, so a preview
+      # deployment and the live one are both allowed.
+      - key: ALLOWED_ORIGINS
+        sync: false
+      # The interface and the API are on different domains, so the session
+      # cookie needs SameSite=None with Secure. Without this the cookie is
+      # silently dropped and nobody can see the plan they just uploaded.
+      - key: COOKIE_CROSS_SITE
+        value: "true"
+      - key: PYTHONUNBUFFERED
+        value: "1"

@@ -1,0 +1,13 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+PyMuPDF==1.25.1
+Pillow==11.1.0
+pydantic==2.10.4
+paddlepaddle>=3.0
+paddleocr>=3.0
+opencv-python-headless>=4.10.0
+pytest>=8.0
+# Day 5: the canonical model written as IFC, the format the
+# construction industry exchanges.
+ifcopenshell>=0.8.0

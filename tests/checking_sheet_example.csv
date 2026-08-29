@@ -1,0 +1,59 @@
+# CHECKING SHEET - open the drawing beside this file and answer one question per row.
+#
+# THIS FILE IS AN EXAMPLE, AND IT IS OPTIONAL.
+#   The application does not need it. A plan is read from the PDF on its own -
+#   sheets, rooms, dimensions, walls, openings, overlays, the 3D model and every
+#   download all work with no file like this present, and every value already
+#   shows where on the sheet it came from and how certain it is.
+#
+#   This file does one thing only: it turns "that looks right" into a measured
+#   number, because a screen can only show what WAS found, never what was missed.
+#   It is a reviewer's tool for acceptance testing, not a step anyone has to do.
+#
+#   The rows below are invented, to show the shape of the file. To use it for
+#   real: upload your plan, download the Checking sheet for it, answer the rows
+#   against the drawing, and save the result as tests/ground_truth.csv.
+#   One file per plan.
+#
+# YOU FILL IN TWO COLUMNS:  is_it_correct   and   your_name
+#   Type YES if the drawing agrees with what the computer read.
+#   Type NO  if it does not, and put the right answer in if_no_what_is_correct.
+#   Put your name in your_name. A row with no name is not counted at all.
+#
+# EXAMPLE
+#   what   on_sheet  which_one  computer_read  where_to_look   is_it_correct  if_no   your_name
+#   room   A-101     KITCHEN    13.73 m2       middle left     YES                    A. Reviewer
+#     -> You looked at the kitchen on the drawing. Its size callout reads
+#        3,905 x 3,515, which is 13.73 square metres. It matches, so YES.
+#
+#   dim    A-101     1,910      1,910 mm       bottom centre   NO             1,190   A. Reviewer
+#     -> The drawing actually prints 1,190. The computer read it wrong. That is a
+#        real catch, and it is exactly what this file is for.
+#
+# TWO THINGS ONLY YOU CAN DO
+#   ADD a row for anything on the drawing the computer did not find. Leave
+#     computer_read empty and put the right answer in if_no_what_is_correct.
+#     The screen can only show what WAS found, never what was missed - this is the
+#     only way a missed room or door can ever be counted.
+#   DELETE a row for anything the computer invented that is not on the drawing.
+#
+# 'what' must be one of: sheet_field, room, opening, wall, dimension
+#
+what,on_sheet,which_one,computer_read,where_to_look,is_it_correct,if_no_what_is_correct,your_name,notes
+sheet_field,A-101,sheet_number,A-101,bottom right of the sheet,,,,
+sheet_field,A-101,sheet_title,GROUND FLOOR PLAN,bottom right of the sheet,,,,
+sheet_field,A-101,scale,1:100,bottom right of the sheet,,,,
+sheet_field,A-101,revision,B,bottom right of the sheet,,,,
+room,A-101,KITCHEN,13.73 m2,middle left of the sheet,,,,Size callout printed under the room name.
+room,A-101,LOUNGE,24.50 m2,middle centre of the sheet,,,,Size callout printed under the room name.
+room,A-101,BED 1,12.60 m2,top right of the sheet,,,,Size callout printed under the room name.
+room,A-101,BATH,,middle right of the sheet,,,,"No size printed beside this room, so just check the name is right."
+room,A-101,GARAGE,,bottom left of the sheet,,,,"No size printed beside this room, so just check the name is right."
+dimension,A-101,"12,600",12600 mm,bottom centre of the sheet,,,,Should be exactly the figure printed on the drawing.
+dimension,A-101,"3,200",3200 mm,bottom centre of the sheet,,,,Should be exactly the figure printed on the drawing.
+dimension,A-101,"4,100",4100 mm,bottom left of the sheet,,,,Should be exactly the figure printed on the drawing.
+dimension,A-101,"2,500",2500 mm,middle left of the sheet,,,,Should be exactly the figure printed on the drawing.
+opening,A-101,D01,870 mm,middle centre of the sheet,,,,Check the width against the schedule or the drawing.
+opening,A-101,W01,"1,800 mm",top centre of the sheet,,,,Check the width against the schedule or the drawing.
+wall,A-101,"external wall, about 12,600 mm","12,600 mm",bottom of the sheet,,,,"STILL TO CHECK - scale this wall off the drawing, then answer YES or NO."
+wall,A-101,"internal wall, about 4,100 mm","4,100 mm",middle of the sheet,,,,"STILL TO CHECK - scale this wall off the drawing, then answer YES or NO."

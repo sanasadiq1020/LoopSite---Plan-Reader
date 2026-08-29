@@ -1,0 +1,302 @@
+"""Day 5 — regression tests for the canonical model and its 3D exports.
+
+Each test names the mistake it prevents. Two of them lock down failures that
+are invisible when they happen: a mirrored building and a model built from a
+scale that was never confirmed both look entirely convincing.
+"""
+
+import json
+import struct
+
+import pytest
+
+from pipeline.model.canonical import build_model, choose_default_sheet, modellable_sheets
+from pipeline.model.exporters import _wall_corners, write_glb, write_ifc, write_obj
+from pipeline.model.height import resolve_storey_height
+from pipeline.plan.reading import load_config
+
+
+@pytest.fixture(scope="module")
+def config():
+    return load_config()
+
+
+def _page(**overrides):
+    """A minimal read sheet: one 5 m wall running east, at a confirmed scale."""
+    page = {
+        "page_number": 1,
+        "sheet_id": "A02",
+        "title_block": {
+            "sheet_number": {"value": "A02"},
+            "sheet_title": {"value": "FLOOR PLAN"},
+        },
+        "page_type": {"value": "floor_plan", "draws_a_plan": True},
+        "scale_calibration": {
+            "usable_for_measurement": True,
+            "measured_mm_per_point": 10.0,
+            "result": "confirmed",
+        },
+        "rooms": [],
+        "dimensions": [],
+        "openings": [],
+        "walls": [
+            {
+                "wall_id": "A02-W001",
+                "runs_along": "x",
+                "length_mm": 5000.0,
+                "thickness_mm": 90.0,
+                "nominal_thickness_mm": 90.0,
+                "matches_nominal_thickness": True,
+                "start_point_pt": [100.0, 200.0],
+                "end_point_pt": [600.0, 200.0],
+                "bbox": [100.0, 195.0, 600.0, 205.0],
+                "confidence": 0.9,
+                "confidence_band": "high",
+                "review_status": "needs_review",
+                "line_source": "vector",
+                "linked_opening_marks": [],
+                "longer_than_sheet_measures": False,
+                "gaps_pt": [],
+            }
+        ],
+    }
+    page.update(overrides)
+    return page
+
+
+_HEIGHT = {
+    "value_mm": 2700.0,
+    "source": "printed_on_a_section",
+    "confidence": 0.8,
+    "note": "test",
+}
+
+
+# --- what may be modelled -------------------------------------------------
+
+
+def test_a_sheet_with_no_confirmed_scale_is_not_offered(config):
+    """A model built from an unconfirmed scale is wrong by one constant factor
+    and looks perfectly convincing — Week 1's first automatic failure."""
+    page = _page(
+        scale_calibration={
+            "usable_for_measurement": False,
+            "result": "contradicted",
+            "note": "the strings do not agree.",
+        }
+    )
+    sheet = modellable_sheets([page], config)[0]
+    assert sheet["can_be_modelled"] is False
+    assert "measured" in sheet["reason"]
+
+
+def test_a_sheet_that_draws_no_plan_is_not_offered(config):
+    page = _page(page_type={"value": "elevation", "draws_a_plan": False})
+    sheet = modellable_sheets([page], config)[0]
+    assert sheet["can_be_modelled"] is False
+    assert "in plan" in sheet["reason"]
+
+
+def test_the_sheet_with_the_most_walls_is_offered_first(config):
+    """A plan set draws the same outline as a floor plan, a ceiling plan and an
+    electrical plan. The reader wants the floor plan."""
+    floor = _page()
+    floor["walls"] = floor["walls"] * 2
+    ceiling = _page(page_number=2, sheet_id="A05")
+    sheets = modellable_sheets([ceiling, floor], config)
+    assert choose_default_sheet(sheets) == floor["page_number"]
+
+
+# --- the model itself -----------------------------------------------------
+
+
+def test_a_wall_is_measured_in_millimetres_from_the_buildings_own_corner(config):
+    model = build_model(_page(), _HEIGHT, config, "run", "plan.pdf", 800.0)
+    assert model["units"] == "millimetres"
+    wall = model["walls"][0]
+    # The wall starts at the origin because it is the only thing on the sheet.
+    assert wall["geometry"]["start_mm"] == [0.0, 0.0]
+    assert wall["geometry"]["end_mm"] == [5000.0, 0.0]
+    assert wall["dimensions"]["height_mm"] == 2700.0
+
+
+def test_the_page_downward_y_is_turned_over(config):
+    """A PDF's Y grows downward. Left alone, the model is a mirror image of
+    the plan — and a mirrored building looks completely convincing."""
+    page = _page()
+    base = page["walls"][0]
+    page["walls"] = [
+        dict(
+            base,
+            wall_id="north",
+            start_point_pt=[100.0, 100.0],
+            end_point_pt=[600.0, 100.0],
+        ),
+        dict(
+            base,
+            wall_id="south",
+            start_point_pt=[100.0, 300.0],
+            end_point_pt=[600.0, 300.0],
+        ),
+    ]
+    model = build_model(page, _HEIGHT, config, "run", "plan.pdf", 800.0)
+    north = next(w for w in model["walls"] if w["from_wall_id"] == "north")
+    south = next(w for w in model["walls"] if w["from_wall_id"] == "south")
+    # Higher up the page must end up further north, not further south.
+    assert north["geometry"]["start_mm"][1] > south["geometry"]["start_mm"][1]
+
+
+def test_every_element_carries_the_fields_the_rules_require(config):
+    """Critical Rule 12 — without these a wall in the 3D model cannot be
+    traced back to the lines it was measured from."""
+    model = build_model(_page(), _HEIGHT, config, "run", "plan.pdf", 800.0)
+    wall = model["walls"][0]
+    for field in (
+        "element_id",
+        "element_type",
+        "storey",
+        "geometry",
+        "dimensions",
+        "source_sheet",
+        "source_bbox",
+        "extraction_method",
+        "confidence",
+        "review_status",
+        "linked_issue_ids",
+    ):
+        assert field in wall, f"{field} is required on every canonical element"
+    assert wall["source_sheet"] == "A02"
+    assert wall["source_bbox"] == [100.0, 195.0, 600.0, 205.0]
+
+
+def test_an_assumed_thickness_is_recorded_as_an_assumption(config):
+    page = _page()
+    page["walls"][0]["thickness_mm"] = None
+    model = build_model(page, _HEIGHT, config, "run", "plan.pdf", 800.0)
+    wall = model["walls"][0]
+    assert wall["dimensions"]["thickness_is_measured"] is False
+    assert any("default" in note for note in wall["assumptions"])
+
+
+def test_a_sheet_with_no_usable_scale_refuses_to_build(config):
+    page = _page(scale_calibration={"usable_for_measurement": False})
+    with pytest.raises(ValueError):
+        build_model(page, _HEIGHT, config, "run", "plan.pdf", 800.0)
+
+
+# --- the storey height ----------------------------------------------------
+
+
+def test_two_agreeing_sources_confirm_the_height(config):
+    """The figure the sections dimension, and the gap between the printed
+    levels, are two independent readings of the same building."""
+    pages = [
+        {
+            "page_type": {"value": "section"},
+            "dimensions": [
+                {"kind": "linear", "value_mm": 2700.0},
+                {"kind": "linear", "value_mm": 2700.0},
+            ],
+            "sheet_id": "A08",
+        },
+        {
+            "page_type": {"value": "floor_plan"},
+            "dimensions": [
+                {"kind": "level", "value_mm": 100400.0, "level_reference": "FFL"},
+                {"kind": "level", "value_mm": 103100.0, "level_reference": "RL"},
+            ],
+            "sheet_id": "A02",
+        },
+    ]
+    height = resolve_storey_height(pages, config)
+    assert height["value_mm"] == 2700.0
+    assert height["source"] == "confirmed_by_the_drawing"
+    assert height["confidence"] > 0.9
+
+
+def test_a_plan_that_states_no_height_says_so(config):
+    """The default must never be presented as if it were measured."""
+    height = resolve_storey_height(
+        [{"page_type": {"value": "floor_plan"}, "dimensions": [], "sheet_id": "A02"}],
+        config,
+    )
+    assert height["source"] == "office_default"
+    assert height["confidence"] < 0.5
+    assert "assumption" in height["note"]
+
+
+def test_a_figure_printed_once_is_not_the_storey_height(config):
+    """A single figure in the height range is a window head or a door."""
+    pages = [
+        {
+            "page_type": {"value": "section"},
+            "dimensions": [{"kind": "linear", "value_mm": 2340.0}],
+            "sheet_id": "A08",
+        }
+    ]
+    assert resolve_storey_height(pages, config)["source"] == "office_default"
+
+
+# --- the 3D files ---------------------------------------------------------
+
+
+def test_a_wall_becomes_a_box_of_the_right_size(config):
+    model = build_model(_page(), _HEIGHT, config, "run", "plan.pdf", 800.0)
+    corners = _wall_corners(model["walls"][0])
+    assert len(corners) == 8
+    xs = [c[0] for c in corners]
+    ys = [c[1] for c in corners]
+    zs = [c[2] for c in corners]
+    assert round(max(xs) - min(xs)) == 5000  # length
+    assert round(max(ys) - min(ys)) == 90  # thickness
+    assert round(max(zs) - min(zs)) == 2700  # height
+
+
+def test_the_glb_is_a_valid_file_with_one_named_node_per_wall(tmp_path, config):
+    model = build_model(_page(), _HEIGHT, config, "run", "plan.pdf", 800.0)
+    path = tmp_path / "m.glb"
+    assert write_glb(model, path)
+
+    raw = path.read_bytes()
+    assert raw[:4] == b"glTF"
+    version, total = struct.unpack("<II", raw[4:12])
+    assert version == 2
+    assert total == len(raw), "the declared length must match the file"
+
+    json_length = struct.unpack("<I", raw[12:16])[0]
+    assert raw[16:20] == b"JSON"
+    gltf = json.loads(raw[20 : 20 + json_length])
+    assert [node["name"] for node in gltf["nodes"]] == [model["walls"][0]["element_id"]]
+
+    binary_length = struct.unpack("<I", raw[20 + json_length : 24 + json_length])[0]
+    assert gltf["buffers"][0]["byteLength"] == binary_length
+    for view in gltf["bufferViews"]:
+        assert view["byteOffset"] + view["byteLength"] <= binary_length
+
+
+def test_the_obj_names_every_wall(tmp_path, config):
+    model = build_model(_page(), _HEIGHT, config, "run", "plan.pdf", 800.0)
+    path = tmp_path / "m.obj"
+    assert write_obj(model, path)
+    text = path.read_text(encoding="utf-8")
+    assert f"g {model['walls'][0]['element_id']}" in text
+    assert text.count("\nv ") == 8
+    assert text.count("\nf ") == 12
+
+
+def test_the_ifc_is_a_building_measured_in_millimetres(tmp_path, config):
+    ifcopenshell = pytest.importorskip("ifcopenshell")
+    model = build_model(_page(), _HEIGHT, config, "run", "plan.pdf", 800.0)
+    path = tmp_path / "m.ifc"
+    assert write_ifc(model, path)
+
+    ifc = ifcopenshell.open(str(path))
+    assert ifc.schema == "IFC4"
+    walls = ifc.by_type("IfcWallStandardCase")
+    assert [w.Name for w in walls] == [model["walls"][0]["element_id"]]
+    length_unit = next(u for u in ifc.by_type("IfcSIUnit") if u.UnitType == "LENGTHUNIT")
+    assert (length_unit.Prefix, length_unit.Name) == (
+        "MILLI",
+        "METRE",
+    ), "a silent unit change is the failure Week 1 names first"
+    assert ifc.by_type("IfcBuildingStorey"), "walls have to sit on a storey"

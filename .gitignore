@@ -1,0 +1,48 @@
+# --- Plan sets --------------------------------------------------------------
+# Real construction drawings carry a client's address, the office's name and
+# its licence numbers. They are never committed. The application does not need
+# them: a reader uploads their own.
+input/*.pdf
+input/*.PDF
+
+# --- Generated output -------------------------------------------------------
+# Everything under output/ is produced from an upload and discarded with it.
+output/
+logs/
+data/*.json
+
+# --- Dependencies -----------------------------------------------------------
+backend/venv/
+backend/.venv/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.vercel/
+
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Local settings ---------------------------------------------------------
+# .env.local holds the address of a developer's own backend. The deployed
+# values are set in the hosting platform, never committed.
+.env
+.env.local
+.env*.local
+
+# --- The optional checking sheet -------------------------------------------
+# One of these describes one particular plan, so it belongs with whoever
+# answered it rather than in the repository. An invented example stays, showing the shape of the file.
+tests/ground_truth.csv
+
+# --- Editors and operating systems ------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp

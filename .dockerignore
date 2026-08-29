@@ -1,0 +1,15 @@
+# Only what the container needs. Everything else keeps the build slow and the
+# image large for no benefit.
+frontend/
+input/
+output/
+logs/
+docs/
+releases/
+backend/venv/
+backend/.venv/
+**/__pycache__/
+**/*.pyc
+.git/
+.pytest_cache/
+*.pdf
