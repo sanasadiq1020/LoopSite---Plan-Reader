@@ -72,6 +72,21 @@ themselves are correct; they are simply not separated into two drawings.
 
 ---
 
+## Memory
+
+Reading a plan holds one page's pixels at a time, not one per sheet, so peak
+memory depends on the size of a sheet rather than on how many there are.
+Measured on a 23-sheet A3 set: **126 MB**, and 214 MB on a deliberately dense
+one. That fits a small instance comfortably.
+
+Two caches that made reading faster used to accumulate instead — every page's
+render, and the text and line work cached on each page. Together they took the
+same plan set to roughly 670 MB and the process was killed part way through on
+a 512 MB server. Both are now released as soon as the page has been read.
+
+If a future change caches anything per page, release it in the same place, or
+the same failure returns on the same plan sets.
+
 ## Deployment
 
 - The session cookie is set for local HTTP. Over HTTPS `secure=True` must be

@@ -178,6 +178,24 @@ def _in_page_space(page, page_dict: dict) -> dict:
     return page_dict
 
 
+def release_page_cache(page) -> None:
+    """Lets go of everything cached on a page once it has been read.
+
+    The text model and the drawn paths are cached on the page object so each is
+    produced once instead of four times. That is right while a page is being
+    read and wrong afterwards: the pages are kept until the marked-up sheets
+    are drawn, and on a plan set of any size the caches accumulate into
+    hundreds of megabytes that nothing will use again. Drawing an overlay needs
+    the page's pixels, not its text or its line work.
+    """
+    for attribute in ("_loopsite_text_dict", "_loopsite_drawings"):
+        try:
+            if hasattr(page, attribute):
+                delattr(page, attribute)
+        except Exception:
+            pass  # a page that will not let go of it is not worth failing over
+
+
 def native_text_of(page) -> str:
     """The page's plain text, from the one extraction shared by everything."""
     parts = []

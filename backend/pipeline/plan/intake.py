@@ -34,6 +34,7 @@ from app.paths import (
 from pipeline.plan.ocr import render_dpi as ocr_render_dpi
 from pipeline.plan.ocr import run_ocr_on_page, should_run_ocr
 from pipeline.plan.overlay import render_overlay
+from pipeline.plan.textmodel import release_page_cache
 from pipeline.plan.reading import (
     _empty_page,
     analyze_page,
@@ -225,7 +226,6 @@ def process_upload(
     # overlays can be produced after every page has been read — the index is
     # printed on one sheet but describes them all.
     page_objects: dict = {}
-    page_renders: dict = {}
 
     # How much OCR this whole upload is allowed, so a scanned set can never
     # leave the browser waiting for an hour.
@@ -247,8 +247,13 @@ def process_upload(
 
             thumb_filename = f"page_{page_number:03d}.png"
             thumb_path = pages_dir / thumb_filename
-            page_render = render_page(page)
-            render_thumbnail(page, thumb_path, pixmap=page_render)
+            # Rendered, written, and released. Holding every page's render to
+            # save re-rendering it for the marked-up sheet later was free on a
+            # development machine and fatal on a small server: 23 A3 sheets at
+            # 150 DPI is 301 MB held at once, and the process was killed part
+            # way through. One page's pixels at a time is the only amount that
+            # does not grow with how many sheets a plan has.
+            render_thumbnail(page, thumb_path)
 
             text_blocks = extract_native_text_blocks(page)
             native_char_count = sum(len(b["text"]) for b in text_blocks)
@@ -303,13 +308,16 @@ def process_upload(
             )
             plan_reading_pages.append(page_reading)
             page_objects[page_number] = page
+            # Everything cached while reading this page is finished with. The
+            # page itself is kept, because its pixels are needed later for the
+            # marked-up sheet.
+            release_page_cache(page)
             progress.page_done(
                 progress_token,
                 page_number,
                 page_count,
                 page_reading.get("sheet_id") or "",
             )
-            page_renders[page_number] = page_render
 
             has_native = native_char_count > 0
             has_ocr = ocr_char_count > 0
@@ -430,13 +438,10 @@ def process_upload(
         if page is None:
             continue
         overlay_filename = f"overlay_{reading['page_number']:03d}.png"
-        if render_overlay(
-            page,
-            reading,
-            overlays_dir / overlay_filename,
-            config,
-            page_pixmap=page_renders.get(reading["page_number"]),
-        ):
+        # The page is rendered again here rather than kept from earlier. It
+        # costs about a second per sheet, and it is what keeps memory flat
+        # however many sheets a plan has.
+        if render_overlay(page, reading, overlays_dir / overlay_filename, config):
             reading["overlay_url"] = f"/api/plan/{run_id}/overlays/{overlay_filename}"
 
     # --- Fold the reading back into the sheet register (Gate 2) -----------
