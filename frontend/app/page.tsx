@@ -9,6 +9,8 @@ import {
   markedUpSheetsUrl,
   sheetRegisterCsvUrl,
   uploadPlan,
+  API_BASE_URL_IN_USE,
+  API_BASE_URL_IS_CONFIGURED,
   type PageReading,
   type PlanReadingResponse,
   type SheetEntry,
@@ -50,6 +52,15 @@ export default function Home() {
   const [progress, setProgress] = useState<UploadProgress | null>(null);
   const [timeLeft, setTimeLeft] = useState<string | null>(null);
   const [showAbout, setShowAbout] = useState(false);
+
+  // Only ever true on a deployed site: served from anywhere but localhost, with
+  // no API address compiled in. Read once, lazily, so the first render on the
+  // server and the first in the browser agree.
+  const [misconfigured] = useState(() => {
+    if (typeof window === "undefined") return false;
+    const local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(window.location.hostname);
+    return !API_BASE_URL_IS_CONFIGURED && !local;
+  });
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<UploadResponse | null>(null);
   const [displayName, setDisplayName] = useState<string | null>(null);
@@ -372,6 +383,26 @@ export default function Home() {
             )}
           </div>
         </header>
+
+        {/* A build that was never told where its API is would otherwise fail in a
+            way that looks like a broken plan: the upload reaches for a server on
+            the visitor's own machine and simply never answers. It says so
+            instead, and says what to do about it. */}
+        {misconfigured && (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3">
+            <p className="text-sm font-semibold text-rose-900">
+              This site does not know where its API is
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-rose-800">
+              It was built without <code className="font-mono">NEXT_PUBLIC_API_BASE_URL</code>,
+              so it is trying to reach <code className="font-mono">{API_BASE_URL_IN_USE}</code> —
+              a server on your own computer, which is why nothing happens when you upload.
+              Set that variable in the hosting platform and <strong>build the site
+              again</strong>: setting it without rebuilding changes nothing, because the
+              value is compiled in when the site is built.
+            </p>
+          </div>
+        )}
 
         {/* While a plan is being read the bar goes first, above everything.
             Below the upload panel it only appeared once the reader scrolled,

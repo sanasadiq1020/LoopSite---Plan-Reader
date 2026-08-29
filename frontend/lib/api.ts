@@ -6,8 +6,39 @@
 // how it was found, and how confident — because the interface is required to
 // show all four rather than presenting bare values as facts.
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+// NEXT_PUBLIC_* values are compiled into the bundle when it is built, not read
+// when it runs. Setting one after a deployment therefore changes nothing until
+// the site is built again — and the previous default made that failure silent:
+// a deployed page carried "localhost:8000" inside it and quietly tried to reach
+// a server on the reader's own machine.
+//
+// So the default now only applies where localhost is genuinely plausible. A
+// build for anywhere else must say where the API is, and says so loudly if it
+// does not.
+const CONFIGURED_API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL?.trim().replace(
+  /\/+$/,
+  ""
+);
+
+const API_BASE_URL = CONFIGURED_API_BASE_URL || "http://localhost:8000";
+
+/** Whether this build was told where its API is. */
+export const API_BASE_URL_IS_CONFIGURED = Boolean(CONFIGURED_API_BASE_URL);
+export const API_BASE_URL_IN_USE = API_BASE_URL;
+
+if (typeof window !== "undefined" && !API_BASE_URL_IS_CONFIGURED) {
+  const servedFromLocalhost = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(
+    window.location.hostname
+  );
+  if (!servedFromLocalhost) {
+    console.error(
+      "[LoopSite] NEXT_PUBLIC_API_BASE_URL was not set when this site was built, " +
+        "so it is trying to reach http://localhost:8000 — a server on the visitor's " +
+        "own machine. Set it in the hosting platform and BUILD AGAIN; setting it " +
+        "without rebuilding changes nothing."
+    );
+  }
+}
 
 export type PageClassification = "vector" | "raster" | "mixed" | "unknown";
 export type ExtractionStatus = "ok" | "partial" | "failed";

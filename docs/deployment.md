@@ -98,6 +98,17 @@ approve it there.
 Vercel gives you the public link — something like
 `https://your-project.vercel.app`. That is the address you share.
 
+> **`NEXT_PUBLIC_*` values are compiled in when the site is built, not read
+> when it runs.** Set one *after* a deployment and nothing changes — the site
+> that is already live still carries the old value inside it. Whenever you add
+> or change one, **build the site again**: *Deployments → ⋯ → Redeploy*, with
+> **Use existing Build Cache turned off**.
+>
+> If this is wrong, the interface loads perfectly and every upload fails,
+> because the page is reaching for `http://localhost:8000` — a server on the
+> visitor's own machine. The interface now says so on screen rather than
+> letting it look like a broken plan.
+
 ---
 
 ## 4. Let the two talk to each other
@@ -132,6 +143,12 @@ things — see below.
 ---
 
 ## When it does not work
+
+**A red panel says the site does not know where its API is.**
+
+`NEXT_PUBLIC_API_BASE_URL` was missing when the site was *built*. Set it on
+Vercel and redeploy **without the build cache** — setting it alone changes
+nothing, because the value is compiled in at build time.
 
 **The interface loads but every upload hangs, or the results never arrive.**
 
