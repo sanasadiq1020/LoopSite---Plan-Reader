@@ -41,6 +41,7 @@ from pipeline.plan.layout import (
 )
 from pipeline.plan.textmodel import (
     bbox_center,
+    bbox_height,
     is_placeholder,
     normalize_label,
 )
@@ -62,8 +63,19 @@ _TECHNIQUE_CONFIDENCE = {
     "inline_label": 0.9,
     "title_keyword": 0.85,
     "largest_text_in_title_block": 0.6,
+    # Read from where it sits on the sheet rather than from anything printed
+    # to say what it is. Deliberately below the "review" threshold, so it can
+    # never present itself as a confirmed value.
+    "largest_text_in_sheet_edge_band": 0.45,
     "derived_from_page_order": 0.99,
 }
+
+# The bands a title block can be drawn in. Offices put it up the right edge,
+# along the bottom, up the left edge or across the top, so all four are
+# looked in. Fractions of the sheet, so they hold for A0 and A4 alike. Used
+# only when the sheet prints no title-block labels at all.
+_EDGE_BAND_WIDTH_RATIO = 0.30
+_EDGE_BAND_HEIGHT_RATIO = 0.20
 
 FIELD_NAMES = (
     "sheet_number",
@@ -228,6 +240,69 @@ def _inside(bbox, region) -> bool:
     return region[0] <= cx <= region[2] and region[1] <= cy <= region[3]
 
 
+def _value_from_one_line(candidate: dict, label_line: dict, validator):
+    """The first single line inside a cell that is a valid value for this field.
+
+    Lines are tried nearest the label first, because that is the order a cell
+    is read in. Returns (validator result, the raw text used, a note) or
+    (None, "", None).
+    """
+    lines = candidate.get("lines") or []
+    if len(lines) < 2:
+        return None, "", None
+
+    lx0, ly0, lx1, ly1 = label_line["bbox"]
+
+    def distance(line):
+        x0, y0, x1, y1 = line["bbox"]
+        gap_x = max(lx0 - x1, x0 - lx1, 0.0)
+        gap_y = max(ly0 - y1, y0 - ly1, 0.0)
+        return (gap_x * gap_x + gap_y * gap_y) ** 0.5
+
+    for line in sorted(lines, key=distance):
+        text = (line.get("text") or "").strip()
+        if not text:
+            continue
+        result = validator(text)
+        if result is not None:
+            return result, text, "read from one line of the cell, as its edge is not ruled"
+    return None, "", None
+
+
+def _near_its_label(label_line: dict, candidate: dict, max_gap_label_heights: float) -> bool:
+    """Whether every line of a candidate was printed next to the label.
+
+    Every line, not just the candidate's overall box: a candidate that starts
+    in the title block and runs out into the drawing has swept up something
+    that is not part of the field, and keeping only its first words would be
+    guessing at where the real value stopped.
+
+    The allowance is in label heights rather than points, so it means the same
+    thing on an A4 sheet and on an A0 one.
+    """
+    lines = candidate.get("lines") or []
+    if not lines:
+        return False
+    # The label's printed type size, not the height of its box. A label
+    # printed sideways is as *tall* on the page as it is long, so its box
+    # height is its length - which made the allowance five times too generous
+    # on exactly the sideways title blocks this rule exists to fix.
+    x0, y0, x1, y1 = label_line["bbox"]
+    label_height = max(
+        float(label_line.get("size") or 0.0) or min(abs(x1 - x0), abs(y1 - y0)),
+        1.0,
+    )
+    allowed = label_height * max_gap_label_heights
+    lx0, ly0, lx1, ly1 = label_line["bbox"]
+    for line in lines:
+        x0, y0, x1, y1 = line["bbox"]
+        gap_x = max(lx0 - x1, x0 - lx1, 0.0)
+        gap_y = max(ly0 - y1, y0 - ly1, 0.0)
+        if (gap_x * gap_x + gap_y * gap_y) ** 0.5 > allowed:
+            return False
+    return True
+
+
 # --- Inline "LABEL: value" on one printed line ----------------------------
 
 
@@ -277,12 +352,14 @@ def _field_from_labels(
     thresholds: dict,
     separators: list,
     validator,
+    max_value_gap_label_heights: float = 12.0,
 ):
     """Tries every configured label for one field and returns the first value
     that passes the field's validator, plus every other distinct value the
     other labels produced (reported as conflicts, never silently dropped)."""
     accepted = None
     other_values: list = []
+    max_value_gap = float(max_value_gap_label_heights)
 
     for raw_label in label_list:
         wanted = normalize_label(raw_label)
@@ -315,11 +392,40 @@ def _field_from_labels(
             ):
                 if label_accepted_here:
                     break
+                # **A value is printed next to its own label.** The value sits
+                # in the cell beside or beneath the label - but "beside" runs
+                # on until something stops it, and where the block is not
+                # ruled into cells the search runs straight out into the
+                # drawing. On a title strip printed up the edge of a sheet
+                # that is exactly what happened: the drawing number came back
+                # empty while the "checked by" field returned a run of legend
+                # text from the middle of the plan.
+                #
+                # How far is "next to" cannot be a number of points, because a
+                # sheet may be A4 or A0. It is measured in the label's own
+                # printed height, which scales with the drawing.
+                if not _near_its_label(label_line, candidate, max_value_gap):
+                    continue
                 raw = joined_text(candidate["lines"])
                 result = validator(raw)
+                extra_note = None
+                if result is None:
+                    # **Where a cell is not ruled, the search cannot see where
+                    # it ends**, and two neighbouring cells arrive joined:
+                    # a drawing number came back as "AR-104 GROUND FLOOR PLAN"
+                    # and was rejected, leaving the field empty even though the
+                    # drawing number was sitting in it. When the joined text is
+                    # not a valid value, each line inside the cell is offered on
+                    # its own, nearest the label first. The field's validator
+                    # still decides, so this can only ever recover a value that
+                    # was really printed - it cannot invent one.
+                    result, raw, extra_note = _value_from_one_line(
+                        candidate, label_line, validator
+                    )
                 if result is None:
                     continue
                 value, note = result
+                note = "; ".join(filter(None, [note, extra_note]))or None
                 label_accepted_here = True
                 if accepted is None:
                     accepted = _build_field(
@@ -462,6 +568,54 @@ def _detect_sheet_title(
                 base_confidence=best["confidence"],
                 thresholds=thresholds,
                 note="no title label printed on this sheet; largest type in the title block used",
+            )
+
+    # **A sheet may print no title-block labels at all.** The block is found
+    # from the labels printed in it, so a drawing whose title strip carries
+    # only values - or carries wording no office in /config uses - has no
+    # region, and every technique above needs one. That sheet had no title,
+    # which is the difference between a reader seeing what their drawing is
+    # and seeing a blank.
+    #
+    # Where a title block sits is a drafting convention rather than an
+    # opinion: it runs along one edge of the sheet. Which edge differs by
+    # office - up the right, along the bottom, up the left, across the top -
+    # so all four are looked in. The largest type inside those bands is taken,
+    # at the lowest confidence of any technique here, with a note saying it
+    # was read from where it sits rather than from a printed label, because
+    # position is weaker evidence than a label and is shown as such.
+    if region is None:
+        left_band = page_width * _EDGE_BAND_WIDTH_RATIO
+        right_band = page_width * (1.0 - _EDGE_BAND_WIDTH_RATIO)
+        top_band = page_height * _EDGE_BAND_HEIGHT_RATIO
+        bottom_band = page_height * (1.0 - _EDGE_BAND_HEIGHT_RATIO)
+        in_band = []
+        for line in lines:
+            if tuple(line["bbox"]) in consumed_bboxes:
+                continue
+            if normalize_label(line["text"]) in all_labels:
+                continue
+            if validators.validate_sheet_title(line["text"], exclusion_keywords=exclusions) is None:
+                continue
+            cx, cy = bbox_center(line["bbox"])
+            if cx <= left_band or cx >= right_band or cy <= top_band or cy >= bottom_band:
+                in_band.append(line)
+        if in_band:
+            best = max(in_band, key=lambda ln: (round(ln["size"], 1), -ln["bbox"][1]))
+            value, note = validators.validate_sheet_title(best["text"], exclusion_keywords=[])
+            return _build_field(
+                value=value,
+                raw_text=best["text"],
+                technique="largest_text_in_sheet_edge_band",
+                source_line_or_bbox=best,
+                extraction_method=best["extraction_method"],
+                base_confidence=best["confidence"],
+                thresholds=thresholds,
+                note=(
+                    "this sheet prints no title-block labels, so no title block could be "
+                    "located; this is the largest type along one of the sheet's edges, "
+                    "where a title block is drawn - worth checking"
+                ),
             )
     return None
 

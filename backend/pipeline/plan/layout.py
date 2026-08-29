@@ -225,32 +225,78 @@ def _row_of(line: dict, lines: list) -> list:
 # working in whichever direction the sheet was drafted.
 
 
-def _turn_bbox(bbox: list, page_height: float) -> list:
-    """A box, with the page turned 90 degrees clockwise."""
+# **Sideways text runs two ways, and the two are opposites.** A title strip up
+# the right edge of a sheet reads bottom to top; one up the left edge reads top
+# to bottom. Turning the page the wrong way puts "the cell to the right of the
+# label" on the wrong side of it, and every value comes back either blank or
+# borrowed from the neighbouring cell. So the page is turned in whichever
+# direction makes that sheet's own text read left to right.
+
+
+def _turn_bbox(bbox: list, page_height: float, page_width: float, clockwise: bool) -> list:
+    """A box, with the page turned a quarter turn."""
     x0, y0, x1, y1 = bbox
-    return [page_height - y1, x0, page_height - y0, x1]
+    if clockwise:
+        return [page_height - y1, x0, page_height - y0, x1]
+    return [y0, page_width - x1, y1, page_width - x0]
 
 
-def _turn_back_bbox(bbox: list, page_height: float) -> list:
+def _turn_back_bbox(bbox: list, page_height: float, page_width: float, clockwise: bool) -> list:
     """The inverse of ``_turn_bbox``."""
     a0, b0, a1, b1 = bbox
-    return [b0, page_height - a1, b1, page_height - a0]
+    if clockwise:
+        return [b0, page_height - a1, b1, page_height - a0]
+    return [page_width - b1, a0, page_width - b0, a1]
 
 
-def _turn_line(line: dict, page_height: float) -> dict:
+def _turn_line(line: dict, page_height: float, page_width: float, clockwise: bool) -> dict:
     turned = dict(line)
-    turned["bbox"] = _turn_bbox(line["bbox"], page_height)
+    turned["bbox"] = _turn_bbox(line["bbox"], page_height, page_width, clockwise)
     turned["axis"] = "horizontal" if line.get("axis") == "vertical" else "vertical"
     turned["_original"] = line
     return turned
 
 
-def _turn_rulings(rulings: dict, page_height: float) -> dict:
+def _turn_rulings(rulings: dict, page_height: float, page_width: float, clockwise: bool) -> dict:
     """Ruling lines under the same turn. A horizontal rule becomes a vertical
     one and the other way round."""
-    turned_h = [(x, page_height - y1, page_height - y0) for x, y0, y1 in rulings.get("v", [])]
-    turned_v = [(page_height - y, x0, x1) for y, x0, x1 in rulings.get("h", [])]
+    if clockwise:
+        turned_h = [
+            (x, page_height - y1, page_height - y0) for x, y0, y1 in rulings.get("v", [])
+        ]
+        turned_v = [(page_height - y, x0, x1) for y, x0, x1 in rulings.get("h", [])]
+    else:
+        turned_h = [(page_width - x, y0, y1) for x, y0, y1 in rulings.get("v", [])]
+        turned_v = [(y, page_width - x1, page_width - x0) for y, x0, x1 in rulings.get("h", [])]
     return {"h": turned_h, "v": turned_v}
+
+
+def _turns_to_try(label_line: dict) -> list:
+    """Which way to turn the page, best guess first, then the other way.
+
+    The PDF records the direction the text is written along, and that decides
+    which way the sheet has to be turned for the lettering to read left to
+    right. But which way the sheet is turned is not the same question as which
+    side of a label its value was printed on, and offices differ: on one sheet
+    the value sits below the label after a clockwise turn, on another only an
+    anticlockwise turn puts it there.
+
+    So the turn the writing direction suggests is tried first, and if it finds
+    nothing the other turn is tried. Text recovered from a page image carries
+    no direction at all, and simply gets both. Trying both costs nothing when
+    the first one works, and is the difference between reading a sideways
+    title block and reporting every one of its values as not printed.
+    """
+    direction = label_line.get("dir")
+    dy = 0.0
+    if direction:
+        try:
+            dy = float(direction[1])
+        except (TypeError, ValueError, IndexError):
+            dy = 0.0
+    if dy > 0:
+        return [False, True]
+    return [True, False]
 
 
 def value_candidates(
@@ -271,20 +317,41 @@ def value_candidates(
     if label_line.get("axis") == "vertical":
         # The whole title block is drafted sideways. Turn the page, use the
         # ordinary rules, turn the answer back.
-        turned = value_candidates(
-            _turn_line(label_line, page_height),
-            [_turn_line(line, page_height) for line in lines],
-            _turn_rulings(rulings, page_height),
-            page_height,
-            page_width,
-            all_label_texts,
-        )
-        for candidate in turned:
-            candidate["bbox"] = _turn_back_bbox(candidate["bbox"], page_height)
-            candidate["lines"] = [
-                line.get("_original", line) for line in candidate["lines"]
-            ]
-        return turned
+        #
+        # **Both turns are collected, not just the first that returns
+        # something.** Turning one way put a real value below its label;
+        # turning the other way put an unrelated line beside it. Stopping at
+        # the first turn that produced *any* candidate therefore kept the
+        # unrelated line and never looked at the real value. Every candidate
+        # from both turns is offered instead, in the order the writing
+        # direction suggests, and the field's own validator decides which of
+        # them is a drawing number, a scale or a date.
+        collected: list = []
+        for clockwise in _turns_to_try(label_line):
+            turned = value_candidates(
+                _turn_line(label_line, page_height, page_width, clockwise),
+                [_turn_line(line, page_height, page_width, clockwise) for line in lines],
+                _turn_rulings(rulings, page_height, page_width, clockwise),
+                page_height,
+                page_width,
+                all_label_texts,
+            )
+            for candidate in turned:
+                candidate["bbox"] = _turn_back_bbox(
+                    candidate["bbox"], page_height, page_width, clockwise
+                )
+                candidate["lines"] = [
+                    line.get("_original", line) for line in candidate["lines"]
+                ]
+            collected.extend(turned)
+        return collected
+
+    # **A value is printed the same way round as its label.** Text at right
+    # angles to a label belongs to a different table, or to the drawing behind
+    # it. Without this, a title strip printed up the edge of a sheet took its
+    # values from whatever notes column happened to run past it, and reported
+    # a paragraph of general notes as a drawing number.
+    lines = [line for line in lines if line.get("axis") == label_line.get("axis")]
 
     lx0, ly0, lx1, ly1 = label_line["bbox"]
     label_h = bbox_height(label_line["bbox"]) or 6.0

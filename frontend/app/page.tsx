@@ -110,6 +110,14 @@ export default function Home() {
   const [readingLoading, setReadingLoading] = useState(false);
   const [readingError, setReadingError] = useState<string | null>(null);
 
+  // Sheets that produced nothing, each carrying the reason it produced
+  // nothing. Kept together so the whole-plan case can be said once rather
+  // than repeated on every row.
+  const unreadableSheets = useMemo(
+    () => (result?.sheets ?? []).filter((sheet) => Boolean(sheet.note)),
+    [result]
+  );
+
   const readingByPage = useMemo(() => {
     const map = new Map<number, PageReading>();
     for (const page of planReading?.pages ?? []) map.set(page.page_number, page);
@@ -437,6 +445,25 @@ export default function Home() {
         {readingError && (
           <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
             {readingError}
+          </div>
+        )}
+
+        {/* Every sheet in the document came back with nothing on it. Said once,
+            at the top, before the reader works their way through empty tables
+            wondering whether the tool ran at all. */}
+        {result && unreadableSheets.length === result.sheets.length && result.sheets.length > 0 && (
+          <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
+            <p className="text-sm font-semibold text-amber-900">
+              No text could be read from this plan
+            </p>
+            <p className="mt-1 text-sm leading-relaxed text-amber-800">
+              {unreadableSheets[0].note}
+            </p>
+            <p className="mt-2 text-sm leading-relaxed text-amber-800">
+              The pages themselves are shown below, and each sheet can still be opened and
+              downloaded. A version of this drawing exported with its text kept as text,
+              rather than drawn as line work, would read in full.
+            </p>
           </div>
         )}
 

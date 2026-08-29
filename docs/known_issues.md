@@ -25,10 +25,27 @@ wall stops and starts again. Only the width is claimed — not whether it is a
 door or a window, and not its height, because a plan does not show one. Recall
 on a picture-based sheet is well short of what the drawing contains.
 
+**A title block printed sideways reads most of its fields, not all.** Where an
+office runs its title strip up the edge of a sheet and does not rule the strip
+into cells, the boundary between one field and the next is not printed, and a
+field or two comes back as not found rather than wrong. A title block set out
+horizontally - along the top or the bottom - reads in full.
+
 **Room and title-block vocabulary is configurable, not universal.** Wording
 outside `config/plan_reading.json` is reported as not found rather than
 guessed. That is the intended behaviour, and it is also the signal that a
 configuration entry is missing for that office.
+
+**A sheet with nothing on it always says why.** A drawing can be unreadable
+for reasons that have nothing to do with the drawing: its lettering was
+converted to outlines on export, the file records no meaning for the glyphs it
+draws, the page is a scan and this server cannot run character recognition, or
+the upload's allowance for scanned sheets was spent. In every case the sheet
+now carries a sentence saying which — on its row, on its own view, and once
+above the results when the whole document is affected — and the reason is
+written to the issues log. What it cannot do is recover the wording: those
+sheets still read as empty, and a copy exported with its text kept as text
+reads in full.
 
 **Character recognition is slow and imperfect.** Sheets with no text layer are
 read by OCR at roughly a few minutes per dense sheet on a CPU. Each upload has

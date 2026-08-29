@@ -93,7 +93,18 @@ def make_line(
     axis: str,
     size: float = 0.0,
     bold: bool = False,
+    direction=None,
 ) -> dict:
+    """One line of text on the page.
+
+    ``direction`` is the unit vector the text is written along, as the PDF
+    itself records it. It is kept rather than reduced to horizontal/vertical,
+    because sideways text can run two ways and the two are not the same: a
+    title strip up the right edge of a sheet reads bottom to top, and one up
+    the left edge reads top to bottom. Knowing which decides which way the
+    sheet has to be turned to read it. Text recovered from a page image has no
+    direction, and is None here.
+    """
     x0, y0, x1, y1 = bbox
     return {
         "text": text,
@@ -104,6 +115,11 @@ def make_line(
             round(float(y1), 2),
         ],
         "axis": axis,
+        "dir": (
+            (round(float(direction[0]), 4), round(float(direction[1]), 4))
+            if direction is not None
+            else None
+        ),
         "size": round(float(size), 2),
         "bold": bool(bold),
         "extraction_method": extraction_method,
@@ -244,6 +260,7 @@ def extract_native_lines(page) -> list:
                     axis=_axis_from_dir(direction),
                     size=size,
                     bold=bold,
+                    direction=direction,
                 )
             )
     return lines
@@ -303,6 +320,75 @@ def deduplicate(lines: list):
     return kept, len(lines) - len(kept)
 
 
+# How much of a recognised line has to sit on top of text the sheet already
+# prints before it is treated as a second reading of the same thing.
+_ALREADY_PRINTED_OVERLAP = 0.5
+# Grid used to compare only nearby lines rather than every pair.
+_OVERLAP_BUCKET_PT = 60.0
+
+
+def _buckets(bbox, step=_OVERLAP_BUCKET_PT):
+    x0, y0, x1, y1 = bbox
+    for gx in range(int(x0 // step), int(x1 // step) + 1):
+        for gy in range(int(y0 // step), int(y1 // step) + 1):
+            yield (gx, gy)
+
+
+def drop_recognised_text_already_printed(lines: list):
+    """Removes recognised text from places the sheet already prints its own.
+
+    A sheet can carry a real title block as text with its drawing placed as a
+    picture. Both are read - the title block from the file, the picture by
+    character recognition - and recognition also reads the title block again,
+    because it reads the whole page image. The same words then appear twice a
+    fraction of a point apart, and a title came out as "GROUND FLOOR PLAN
+    GROUND FLOOR PLAN".
+
+    Exact de-duplication cannot catch this: the two readings differ in
+    position, and often by a character. What settles it is position alone.
+    Where the sheet already prints text, that text is what the sheet says, and
+    a recognition of the same spot adds nothing. Only recognised text over
+    parts of the sheet that print nothing - the picture - is kept.
+    """
+    native = [ln for ln in lines if ln["extraction_method"] != "ocr"]
+    recognised = [ln for ln in lines if ln["extraction_method"] == "ocr"]
+    if not native or not recognised:
+        return lines, 0
+
+    grid: dict = {}
+    for line in native:
+        for key in _buckets(line["bbox"]):
+            grid.setdefault(key, []).append(line)
+
+    kept = list(native)
+    dropped = 0
+    for line in recognised:
+        x0, y0, x1, y1 = line["bbox"]
+        area = max((x1 - x0) * (y1 - y0), 0.01)
+        covered = False
+        checked = set()
+        for key in _buckets(line["bbox"]):
+            for other in grid.get(key, ()):
+                if id(other) in checked:
+                    continue
+                checked.add(id(other))
+                ox0, oy0, ox1, oy1 = other["bbox"]
+                overlap = max(0.0, min(x1, ox1) - max(x0, ox0)) * max(
+                    0.0, min(y1, oy1) - max(y0, oy0)
+                )
+                other_area = max((ox1 - ox0) * (oy1 - oy0), 0.01)
+                if overlap / min(area, other_area) >= _ALREADY_PRINTED_OVERLAP:
+                    covered = True
+                    break
+            if covered:
+                break
+        if covered:
+            dropped += 1
+        else:
+            kept.append(line)
+    return kept, dropped
+
+
 def resolve_overprints(lines: list):
     """Resolves template placeholders overprinted by real values.
 
@@ -338,16 +424,26 @@ def resolve_overprints(lines: list):
     return kept, conflicts
 
 
-def build_page_lines(page, ocr_blocks: list, dpi: int):
+def build_page_lines(page, ocr_blocks: list, dpi: int, use_native_text: bool = True):
     """The single entry point: native + OCR text for one page, in points,
     de-duplicated, with overprints resolved.
+
+    ``use_native_text`` is False for a sheet whose stored text is not the
+    wording printed on it — a font with no mapping back to what its glyphs
+    mean. Keeping that text would put nonsense into every table beside what
+    character recognition read from the page image, so it is left out and the
+    run records that it was (see ocr.text_layer_is_usable).
 
     The second return value is evidence about what this layer did, so the run
     can report it instead of silently discarding text.
     """
-    native = extract_native_lines(page)
+    native = extract_native_lines(page) if use_native_text else []
     ocr = convert_ocr_blocks(ocr_blocks, dpi)
     combined = native + ocr
+
+    # Where the sheet prints its own text, that is what the sheet says; a
+    # recognition of the same spot is a second reading of it and is dropped.
+    combined, already_printed = drop_recognised_text_already_printed(combined)
 
     combined, duplicates_removed = deduplicate(combined)
     combined, conflicts = resolve_overprints(combined)
@@ -357,9 +453,11 @@ def build_page_lines(page, ocr_blocks: list, dpi: int):
     combined.sort(key=lambda ln: (round(ln["bbox"][1], 1), round(ln["bbox"][0], 1)))
 
     evidence = {
+        "native_text_used": bool(use_native_text),
         "native_line_count": len(native),
         "ocr_line_count": len(ocr),
         "duplicates_removed": duplicates_removed,
+        "recognised_text_already_printed": already_printed,
         "overprint_conflicts": conflicts,
         "vertical_line_count": sum(1 for ln in combined if ln["axis"] == "vertical"),
     }

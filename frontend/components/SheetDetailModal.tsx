@@ -142,6 +142,19 @@ export function SheetDetailModal({
         </div>
 
         <div className="max-h-[70vh] overflow-y-auto p-5">
+          {/* Why this sheet came back with nothing on it. A reader looking at
+              empty tables cannot tell a drawing with nothing on it from a
+              drawing this tool could not read, so it is said here first,
+              above everything else. */}
+          {sheet.note && (
+            <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+              <p className="text-sm font-semibold text-amber-900">
+                Nothing could be read from this sheet
+              </p>
+              <p className="mt-1 text-sm leading-relaxed text-amber-800">{sheet.note}</p>
+            </div>
+          )}
+
           {!reading && <p className="text-sm text-slate-500">Nothing was read from this sheet.</p>}
 
           {reading && tab === "overlay" && (

@@ -43,7 +43,14 @@ if (typeof window !== "undefined" && !API_BASE_URL_IS_CONFIGURED) {
 export type PageClassification = "vector" | "raster" | "mixed" | "unknown";
 export type ExtractionStatus = "ok" | "partial" | "failed";
 export type ExtractionMethod = "native" | "ocr" | "native_and_ocr" | "none";
-export type OcrStatus = "skipped" | "ok" | "timeout" | "failed";
+export type OcrStatus =
+  | "skipped"
+  | "ok"
+  | "timeout"
+  | "failed"
+  // Character recognition could not run at all on this server.
+  | "unavailable"
+  | "not_attempted_budget_spent";
 export type ConfidenceBand = "high" | "review" | "low";
 export type ReviewStatus = "confirmed" | "needs_review" | "unresolved";
 export type Severity = "P0" | "P1" | "P2";
@@ -72,6 +79,9 @@ export interface SheetEntry {
   width_pt: number;
   height_pt: number;
   error: string | null;
+  // Why this sheet produced nothing, in the reader's own words. Null on a
+  // sheet that read normally.
+  note: string | null;
   sheet_id: string;
   sheet_number: string;
   sheet_title: string;
@@ -842,7 +852,9 @@ const PAGE_TYPE_LABELS: Record<string, string> = {
   elevation: "Elevation",
   site_plan: "Site plan",
   floor_plan: "Floor plan",
-  unknown: "Unclassified",
+  // Said as what it is, not as a category: the sheet does not name a kind of
+  // drawing anywhere on it. Everything found on it is still listed.
+  unknown: "Kind not stated on the sheet",
 };
 
 export function pageTypeLabel(type: string): string {
@@ -855,6 +867,12 @@ const TECHNIQUE_LABELS: Record<string, string> = {
   inline_label: "Printed on the same line as its label",
   title_keyword: "Recognised from the drawing type in the title",
   largest_text_in_title_block: "Largest text in the title block, as no label was printed",
+  largest_text_in_sheet_edge_band:
+    "Largest text along the sheet edge, as no title-block labels were printed",
+  drawing_caption: "Read from the drawing's own caption on the sheet",
+  page_content: "Worked out from what is printed on the sheet",
+  schedule_table_found: "A schedule table was found on the sheet",
+  drawing_index_found: "The drawing index is printed on this sheet",
   derived_from_page_order: "Based on the sheet's position in the document",
   sheet_index: "Taken from the drawing index, not this sheet",
   sheet_number_prefix: "From the letter at the start of the drawing number",

@@ -343,7 +343,9 @@
         "REVISION",
         "REV NO"
       ]
-    }
+    },
+    "min_numbered_row_share": 0.5,
+    "_min_numbered_row_share_note": "A drawing index lists other sheets, and nearly every row of one prints a drawing number. A row without one is real and is kept - a cover sheet often has none - but a table where most rows have no number is not an index. Without this test, a title block printed as a row of labels across the top of a sheet reads as an index header, and the rows collected below it are the drawing's own room names and dimensions."
   },
   "page_types": {
     "_comment": "requires plan/elevation pages to be identified. A page's type is decided from its detected sheet title first (the drawing says what it is), then from the strongest keyword evidence in the page body. Each entry lists the phrases that indicate that type, most specific first.",
@@ -380,7 +382,11 @@
         "LANDSCAPE PLAN",
         "FENCING PLAN",
         "DRIVEWAY PLAN",
-        "SITE & ROOF PLAN"
+        "SITE & ROOF PLAN",
+        "PLOT PLAN",
+        "SITE & DRAINAGE",
+        "SURVEY PLAN",
+        "CONTOUR PLAN"
       ],
       "floor_plan": [
         "FLOOR PLAN",
@@ -414,12 +420,38 @@
         "ROOF LAYOUT",
         "FURNITURE LAYOUT",
         "DEMOLITION PLAN",
-        "AREA PLAN"
+        "AREA PLAN",
+        "PROPOSED PLAN",
+        "EXISTING PLAN",
+        "GENERAL ARRANGEMENT",
+        "GA PLAN",
+        "LAYOUT PLAN",
+        "FLOOR LAYOUT",
+        "GROUND LEVEL",
+        "UPPER LEVEL",
+        "LOWER LEVEL",
+        "PLUMBING PLAN",
+        "MECHANICAL PLAN",
+        "SPRINKLER PLAN",
+        "TRUSS LAYOUT",
+        "WALL FRAMING",
+        "JOIST LAYOUT",
+        "DECK PLAN",
+        "DIMENSION PLAN",
+        "WORKING PLAN",
+        "WINDOW PLAN",
+        "TILE PLAN",
+        "FINISHES PLAN",
+        "MEZZANINE PLAN",
+        "ATTIC PLAN",
+        "LOFT PLAN"
       ],
       "elevation": [
         "ELEVATION",
         "ELEVATIONS",
-        "STREETSCAPE"
+        "STREETSCAPE",
+        "ELEVATIONAL",
+        "EXTERNAL ELEVATION"
       ],
       "section": [
         "SECTION",
@@ -434,7 +466,13 @@
         "ROOM SCHEDULE",
         "JOINERY SCHEDULE",
         "LINTEL SCHEDULE",
-        "DOOR & WINDOW SCHEDULE"
+        "DOOR & WINDOW SCHEDULE",
+        "SCHEDULE OF DOORS",
+        "SCHEDULE OF WINDOWS",
+        "OPENING SCHEDULE",
+        "WINDOW & DOOR SCHEDULE",
+        "COLOUR SCHEDULE",
+        "ELECTRICAL SCHEDULE"
       ],
       "detail": [
         "DETAIL",
@@ -444,7 +482,10 @@
         "PLAN DET",
         "WET AREA",
         "STAIR DETAIL",
-        "JOINERY DETAIL"
+        "JOINERY DETAIL",
+        "CONSTRUCTION DETAIL",
+        "TYPICAL DETAIL",
+        "CONNECTION DETAIL"
       ]
     },
     "_floor_plan_evidence_note": "A page claiming to be a floor plan is confirmed by real floor-plan evidence: several room labels plus dimension strings. Where the title says one thing and the content says another, both are reported and the disagreement is flagged rather than silently resolved.",
@@ -460,7 +501,15 @@
       "detail",
       "schedule"
     ],
-    "_plan_evidence_note": "A sheet may carry a plan under a title that names something else - one office titles a sheet 'FRAMING SPECIFICATIONS' and prints a full floor plan on it. Room labels and dimensions then promote it to a plan so that walls are looked for. A title that names an elevation, section, detail or schedule is never promoted: those sheets print room names and dimensions as well, and parallel lines on them are window frames and hatching, not walls."
+    "_plan_evidence_note": "A sheet may carry a plan under a title that names something else - one office titles a sheet 'FRAMING SPECIFICATIONS' and prints a full floor plan on it. Room labels and dimensions then promote it to a plan so that walls are looked for. A title that names an elevation, section, detail or schedule is never promoted: those sheets print room names and dimensions as well, and parallel lines on them are window frames and hatching, not walls.",
+    "min_rooms_with_dimensions": 1,
+    "_min_rooms_with_dimensions_note": "A small building - an extension, a granny flat, a shed - prints only two or three room names. Requiring four before a sheet counts as a plan meant its only floor plan was never recognised as one. A sheet with fewer rooms but a full set of dimensions beside them counts as a plan as well.",
+    "caption_min_size_ratio": 0.75,
+    "_caption_note": "Many offices print a generic project title in the title block and name the drawing in large type under the drawing itself. That caption is used when the title block names no kind of drawing. Only captions at least this share of the largest matching type on the sheet are considered, so a small section marker beside a cutting line - which refers to another sheet - cannot decide what this sheet is.",
+    "min_level_markers_for_vertical_drawing": 3,
+    "_level_marker_note": "Printed height levels (RL, FFL, NGL, AHD) are how a drawing states a height. A sheet with this many of them and no room names is a drawing of the building seen from the side or cut through, never a plan.",
+    "min_sentence_share_for_notes": 0.5,
+    "_sentence_share_note": "The share of a sheet's lines that read as written sentences rather than drawing labels. Above this, with no dimensions on the sheet, it is a notes or specification sheet."
   },
   "discipline": {
     "_comment": "Discipline is taken from the sheet number's letter prefix first (an AU drawing convention), then from the page type, and only then from a discipline word printed on the sheet. A discipline word found inside a drawing index or a consultant's letterhead describes another sheet, not this one, so those regions are excluded before this fallback runs.",
@@ -630,7 +679,56 @@
       "SUNROOM",
       "MEALS / FAMILY",
       "LIVING / DINING",
-      "OPEN PLAN"
+      "OPEN PLAN",
+      "ATRIUM",
+      "ATTIC",
+      "BAR",
+      "BASEMENT",
+      "BOOT ROOM",
+      "BREAKFAST",
+      "BREEZEWAY",
+      "CINEMA",
+      "CLOAK",
+      "CLOAKROOM",
+      "CONSERVATORY",
+      "CRAFT ROOM",
+      "DEN",
+      "DINING ROOM",
+      "DRESSING",
+      "DRESSING ROOM",
+      "DRYING",
+      "FERNERY",
+      "GRANNY FLAT",
+      "GUEST SUITE",
+      "HOBBY",
+      "LANDING",
+      "LIFT",
+      "LOFT",
+      "LOGGIA",
+      "LUNCH",
+      "MEETING",
+      "MUSIC ROOM",
+      "NOOK",
+      "POOL HOUSE",
+      "PUMP ROOM",
+      "RAMP",
+      "REC ROOM",
+      "RECREATION",
+      "REFUSE",
+      "SAUNA",
+      "SEWING",
+      "SNUG",
+      "STORE ROOM",
+      "STUDIO",
+      "SUN ROOM",
+      "TACK ROOM",
+      "TV ROOM",
+      "UNDERCROFT",
+      "WALK IN WARDROBE",
+      "WALKWAY",
+      "WARDROBE",
+      "WIC",
+      "WORK ROOM"
     ],
     "_exclusion_note": "Text that contains a room word but describes a fixture, finish or note rather than a room.",
     "exclusion_keywords": [
@@ -1008,7 +1106,13 @@
     "_render_dpi_note": "The resolution the page is rendered at before OCR. Higher reads small text more reliably but costs proportionally more time.",
     "render_dpi": 150,
     "run_budget_seconds": 900,
-    "_run_budget_note": "Total seconds of OCR allowed across one upload. A scanned set of many sheets would otherwise run for over an hour with the browser showing nothing. When the budget is used up, the remaining pages are read from whatever text they have and each says plainly that it was not read by OCR - never silently returned as empty."
+    "_run_budget_note": "Total seconds of OCR allowed across one upload. A scanned set of many sheets would otherwise run for over an hour with the browser showing nothing. When the budget is used up, the remaining pages are read from whatever text they have and each says plainly that it was not read by OCR - never silently returned as empty.",
+    "_text_layer_note": "A PDF stores which glyph to draw; recording what that glyph means is optional, and plotting software and older CAD exports often leave it out. The sheet then carries plenty of text that is not the wording printed on it. Counting characters cannot tell the difference, so the text itself is judged: a sheet that fails either test below is treated as having no text of its own, is read from its page image instead, and says so on screen. Measured across the drawings in use, the lowest share of letters and digits on any sheet is 0.90 and none contains an unreadable character, so these settings sit far away from anything a real drawing produces.",
+    "min_readable_share": 0.45,
+    "max_unreadable_share": 0.2,
+    "_picture_drawing_note": "A sheet can carry a full title block as real text while its whole drawing is a picture placed beside it. The sheet then has plenty of characters and looks fully readable, yet every room name and dimension inside the picture is unread. The test is where the characters are, not how many: a large picture with almost nothing printed inside it is a drawing nobody has read. Text lines per 100x100 points of picture is the measure - every sheet in use that carries its own text prints between 0.41 and 2.85 that way, so the default sits well clear of all of them.",
+    "picture_drawing_min_image_share": 0.25,
+    "picture_drawing_max_text_density": 0.15
   },
   "scale_calibration": {
     "_comment": "The printed scale is checked against the drawing own dimension strings before anything is measured with it. Each figure in a string is centred on the segment it describes, so the distance between the first and last figure centres is known from the printed numbers alone and can be compared with the distance measured on the page. A sheet that disagrees by more than the tolerance is flagged and its lengths are not used.",
@@ -1047,7 +1151,13 @@
     "length_allowance": 1.05,
     "_length_allowance_comment": "A wall may run a little past the point a dimension string measures to, so a candidate is kept up to this multiple of the longest distance the sheet itself measures. Anything longer is not a wall of this building - it is the block boundary or an eave line - and is set aside as an item to check.",
     "opening_min_wall_each_side_mm": 300,
-    "_opening_flank_comment": "A break in a wall counts as a door or window only when this much wall is drawn on both sides of it. A break running to the end of a wall is where the wall meets another wall, or where the drawing stopped - not an opening."
+    "_opening_flank_comment": "A break in a wall counts as a door or window only when this much wall is drawn on both sides of it. A break running to the end of a wall is where the wall meets another wall, or where the drawing stopped - not an opening.",
+    "min_rooms_when_sheet_says_plan": 1,
+    "_min_rooms_when_sheet_says_plan_note": "How many room names must be found before walls are traced, when the sheet itself says it is a plan - in its title block or in its own caption. That is the strongest evidence there is, so little else is required. Where the type was only inferred from what is printed on the sheet, min_rooms_on_sheet applies instead.",
+    "never_trace_walls_on": [
+      "site_plan"
+    ],
+    "_never_trace_walls_on_note": "Sheet kinds whose parallel lines are not walls. A site plan draws the block: its parallel lines are boundaries, setbacks, easements, fences and driveways, and at site-plan scale a wall is about one point thick, so nothing measured off it would be a wall thickness. Reporting those as walls would bury the real ones from the floor plan."
   },
   "accuracy": {
     "_comment": "Tolerances used when comparing a run against tests/ground_truth.csv. A row in that file may override them with its own tolerance_pct. Text values are compared exactly; numeric ones within the tolerance below.",
@@ -1093,5 +1203,13 @@
     "_default_thickness_note": "Used only when a wall's own thickness could not be measured. Every wall records whether its thickness was measured or defaulted.",
     "min_wall_length_mm": 300,
     "_min_wall_length_note": "A candidate shorter than this is not carried into the model; at drawing scale it is a jamb, a step in a wall face or a fragment, not a wall to build."
+  },
+  "rendering": {
+    "_comment": "How large a page image the machine reading the plan is willing to hold. Drawing sizes are not bounded, and a very large sheet rendered at full resolution can need more memory than a small server has, which ends the run part way through. A sheet larger than this allowance is rendered at a lower resolution instead - never cropped - and the reduction is recorded. An A3 or A1 sheet is nowhere near this limit; raise it on a larger machine if very big drawings need to be read at full detail.",
+    "max_megapixels": 40
+  },
+  "tables": {
+    "_comment": "A schedule, a legend and a drawing index are panels printed on a sheet; the drawing occupies the rest of it. The area a table covers is excluded from room and dimension detection, so a table read wrongly can swallow the drawing. A table claiming more than this share of the sheet is not a table, and is dropped rather than allowed to hide the drawing behind it.",
+    "max_sheet_share": 0.6
   }
 }

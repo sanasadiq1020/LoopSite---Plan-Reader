@@ -67,12 +67,21 @@ export function SheetRegisterTable({
     {
       key: "title",
       header: "Sheet title",
-      render: (row) =>
-        row.sheet_title ? (
-          <span className="font-medium text-slate-800">{row.sheet_title}</span>
-        ) : (
-          <NotFound />
-        ),
+      render: (row) => (
+        <div>
+          {row.sheet_title ? (
+            <span className="font-medium text-slate-800">{row.sheet_title}</span>
+          ) : (
+            <NotFound />
+          )}
+          {/* A sheet that produced nothing says why here. Without this the
+              row is indistinguishable from a drawing that genuinely has
+              nothing on it. */}
+          {row.note && (
+            <p className="mt-1 max-w-xl text-xs leading-snug text-amber-700">{row.note}</p>
+          )}
+        </div>
+      ),
       sortValue: (row) => row.sheet_title,
     },
     {

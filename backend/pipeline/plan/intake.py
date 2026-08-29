@@ -32,7 +32,7 @@ from app.paths import (
     run_plan_dir,
 )
 from pipeline.plan.ocr import render_dpi as ocr_render_dpi
-from pipeline.plan.ocr import run_ocr_on_page, should_run_ocr
+from pipeline.plan.ocr import run_ocr_on_page, should_run_ocr, text_layer_is_usable
 from pipeline.plan.overlay import render_overlay
 from pipeline.plan.textmodel import release_page_cache
 from pipeline.plan.reading import (
@@ -68,27 +68,107 @@ def generate_run_id() -> str:
     return f"{stamp}-{uuid.uuid4().hex[:8]}"
 
 
+def _image_rects(page: "fitz.Page") -> list:
+    """Where the embedded pictures sit on the page, worked out once.
+
+    Cached on the page object because three separate questions need it - how
+    much of the sheet is a picture, whether the drawing itself is a picture,
+    and how the page should be classified - and asking PyMuPDF three times is
+    the repeated work that made uploads slow.
+    """
+    cached = getattr(page, "_loopsite_image_rects", None)
+    if cached is not None:
+        return cached
+
+    rects = []
+    for img in page.get_images(full=True):
+        try:
+            rects.extend(page.get_image_rects(img[0]))
+        except Exception:
+            continue
+    try:
+        page._loopsite_image_rects = rects
+    except AttributeError:
+        pass  # a page object that refuses attributes still works, just slower
+    return rects
+
+
 def _image_area_ratio(page: "fitz.Page") -> float:
     """Rough fraction of the page area covered by embedded raster images."""
     page_area = page.rect.width * page.rect.height
     if page_area <= 0:
         return 0.0
-
-    covered = 0.0
-    for img in page.get_images(full=True):
-        xref = img[0]
-        try:
-            rects = page.get_image_rects(xref)
-        except Exception:
-            continue
-        for rect in rects:
-            covered += rect.width * rect.height
-
+    covered = sum(rect.width * rect.height for rect in _image_rects(page))
     return min(covered / page_area, 1.0)
 
 
-def classify_page(page: "fitz.Page") -> tuple[str, str]:
-    """Returns (classification, human-readable reasoning) for traceability/logs."""
+def _drawing_is_a_picture(page: "fitz.Page", text_blocks: list) -> tuple[bool, str]:
+    """Whether this sheet's drawing is a picture carrying lettering nobody read.
+
+    **A sheet can have a text layer and still be half unread.** A very common
+    shape is a title block typed as real text with a scanned or exported
+    *image* of the drawing placed beside it. The sheet then has hundreds of
+    characters, so it looks fully readable - and every room name, dimension
+    and note inside the picture is invisible, because those are pixels.
+
+    Counting the sheet's characters cannot see this. What can is *where* the
+    characters are: if a large part of the sheet is a picture and almost
+    nothing is printed inside that part, the lettering in it has not been read
+    and the page image has to be looked at.
+
+    The measurement is text lines per 100x100 points of picture. Measured
+    across the drawings in use, every sheet that carries its own text prints
+    between 0.41 and 2.85 lines that way; the default below is 0.15, which is
+    well clear of all of them.
+    """
+    try:
+        settings = load_config().get("ocr", {})
+        min_share = float(settings.get("picture_drawing_min_image_share", 0.25))
+        max_density = float(settings.get("picture_drawing_max_text_density", 0.15))
+    except Exception:
+        min_share, max_density = 0.25, 0.15
+
+    rects = _image_rects(page)
+    if not rects:
+        return False, ""
+
+    page_area = page.rect.width * page.rect.height
+    image_area = sum(rect.width * rect.height for rect in rects)
+    if page_area <= 0 or image_area <= 0:
+        return False, ""
+    if image_area / page_area < min_share:
+        return False, ""
+
+    inside = 0
+    for block in text_blocks:
+        x0, y0, x1, y1 = block["bbox"]
+        cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+        if any(r.x0 <= cx <= r.x1 and r.y0 <= cy <= r.y1 for r in rects):
+            inside += 1
+
+    density = inside / (image_area / 10000.0)
+    if density <= max_density:
+        return True, (
+            f"the drawing on this sheet is a picture covering "
+            f"{image_area / page_area:.0%} of it, with almost no text printed inside it"
+        )
+    return False, ""
+
+
+def classify_page(page: "fitz.Page") -> tuple[str, str, dict]:
+    """Returns (classification, human-readable reasoning, evidence).
+
+    The evidence is returned rather than recomputed by the caller: how much
+    text a page carries, how much of it is covered by images and how many
+    paths it draws are each wanted again a few lines later, and asking
+    PyMuPDF for them twice is the repeated work that made uploads slow.
+
+    The classification describes what the page is **drawn with**. It is
+    deliberately not used to decide whether the page needs reading by
+    character recognition — that is decided by whether it carries any text,
+    which is a different question (see ocr.should_run_ocr).
+    """
+    evidence = {"text_chars": 0, "image_ratio": 0.0, "drawing_count": 0}
     try:
         # Uses the text already extracted for this page rather than asking
         # PyMuPDF to build a second text page for it.
@@ -101,25 +181,48 @@ def classify_page(page: "fitz.Page") -> tuple[str, str]:
 
         drawing_count = len(page_drawings(page))
 
+        evidence = {
+            "text_chars": text_len,
+            "image_ratio": round(image_ratio, 4),
+            "drawing_count": drawing_count,
+        }
+
         has_significant_text = text_len >= MIN_TEXT_CHARS_FOR_VECTOR
         has_full_page_image = image_ratio >= FULL_PAGE_IMAGE_AREA_RATIO
 
         if has_full_page_image and not has_significant_text:
-            return "raster", f"image_ratio={image_ratio:.2f}, text_chars={text_len}"
+            return "raster", f"image_ratio={image_ratio:.2f}, text_chars={text_len}", evidence
         if has_significant_text and not has_full_page_image:
-            return "vector", f"text_chars={text_len}, image_ratio={image_ratio:.2f}"
+            return "vector", f"text_chars={text_len}, image_ratio={image_ratio:.2f}", evidence
         if has_significant_text and has_full_page_image:
-            return "mixed", f"text_chars={text_len}, image_ratio={image_ratio:.2f}"
+            return "mixed", f"text_chars={text_len}, image_ratio={image_ratio:.2f}", evidence
         if drawing_count > 0 and not has_full_page_image:
-            return "vector", f"drawing_count={drawing_count}, text_chars={text_len}"
+            return (
+                "vector",
+                f"drawing_count={drawing_count}, text_chars={text_len}",
+                evidence,
+            )
 
-        return "unknown", (
-            f"text_chars={text_len}, image_ratio={image_ratio:.2f}, "
-            f"drawing_count={drawing_count}"
+        return (
+            "unknown",
+            (
+                f"text_chars={text_len}, image_ratio={image_ratio:.2f}, "
+                f"drawing_count={drawing_count}"
+            ),
+            evidence,
         )
     except Exception as e:  # never let classification crash the page
         logger.exception(f"classify_page failed: {e}")
-        return "unknown", f"classification_error: {e}"
+        return "unknown", f"classification_error: {e}", evidence
+
+
+def _max_render_megapixels() -> float:
+    """How large a page image this machine is willing to hold, in megapixels."""
+    try:
+        value = float(load_config().get("rendering", {}).get("max_megapixels", 40))
+        return value if value > 0 else 40.0
+    except Exception:
+        return 40.0
 
 
 def render_page(page: "fitz.Page", dpi: int = THUMBNAIL_DPI):
@@ -129,8 +232,29 @@ def render_page(page: "fitz.Page", dpi: int = THUMBNAIL_DPI):
     background of the marked-up sheet, and (on a sheet drawn as a picture) as
     the source of its wall lines. Rendering it once and passing it on removed
     six of a six-page upload's fourteen renders.
+
+    **A sheet can be larger than the machine reading it.** Drawing sizes are
+    not bounded: an A0 sheet at 150 DPI is a 35-megapixel image, around 105 MB
+    held at once, and a plotted sheet longer than A0 is larger again. On a
+    small server that render is what ends the run, and a run that ends part
+    way through is exactly the empty result a reader cannot act on. So the
+    resolution is reduced - never the sheet cropped - until the image fits the
+    allowance in /config, and the reduction is logged. An ordinary A3 or A1
+    sheet is nowhere near the limit and is unaffected.
     """
     zoom = dpi / 72.0
+    limit_pixels = _max_render_megapixels() * 1_000_000
+    pixels = (page.rect.width * zoom) * (page.rect.height * zoom)
+    if pixels > limit_pixels > 0:
+        # A whisker under the limit, because the rendered image is a whole
+        # number of pixels in each direction and rounding up would otherwise
+        # land just over an allowance chosen to be exactly affordable.
+        zoom *= (limit_pixels * 0.99 / pixels) ** 0.5
+        logger.warning(
+            f"page is {page.rect.width:.0f}x{page.rect.height:.0f}pt: rendering it at "
+            f"{zoom * 72:.0f} DPI instead of {dpi} to stay within "
+            f"{_max_render_megapixels():.0f} megapixels"
+        )
     return page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
 
 
@@ -175,6 +299,7 @@ CSV_COLUMNS = [
     "ocr_status",
     "unresolved_p1",
     "unresolved_p2",
+    "note",
     "width_pt",
     "height_pt",
     "thumbnail_path",
@@ -197,6 +322,58 @@ def _write_sheet_register_csv(csv_path: Path, sheets: list[dict]) -> None:
             })
 
 
+def _why_nothing_was_read(
+    has_any_text: bool,
+    ocr_status: str,
+    ocr_error,
+    page_has_marks: bool,
+    evidence: dict,
+    text_layer_problem: str = "",
+) -> str | None:
+    """A sentence a reader can act on when a sheet came back with nothing.
+
+    Written for the person reading the plan, so it says what happened to
+    *their* drawing rather than naming a stage of the pipeline. Returns None
+    for a sheet that read normally — a note is only ever an explanation of an
+    absence.
+    """
+    if has_any_text:
+        return None
+
+    if not page_has_marks:
+        return "This page of the file is blank — there is nothing printed or drawn on it."
+
+    # A sheet whose stored text was discarded as unreadable is a different
+    # situation from one that never had any, and the reader is told which:
+    # the drawing is fine, the file's own record of its wording is not.
+    if text_layer_problem:
+        return (
+            "The text stored in the file for this sheet cannot be read — "
+            f"{text_layer_problem}. This usually means the drawing was exported without "
+            "recording what its lettering says. Reading it from the sheet image "
+            "produced nothing either, so no values were taken from it."
+        )
+
+    if ocr_status in ("unavailable", "failed", "timeout") and ocr_error:
+        return str(ocr_error)
+
+    if ocr_status == "not_attempted_budget_spent":
+        return (
+            "This sheet carries no text of its own, and the time this upload allows "
+            "for reading scanned sheets was already spent on earlier sheets, so no "
+            "text was read from it. The sheet image itself is still shown."
+        )
+
+    if evidence.get("drawing_count", 0) > 0:
+        return (
+            "No text could be read from this sheet. Its line work is present, so the "
+            "lettering is most likely drawn as line work rather than stored as text — "
+            "reading it depends on character recognition, which returned nothing here."
+        )
+
+    return "No text could be read from this sheet. The sheet image itself is still shown."
+
+
 def process_upload(
     file_bytes: bytes,
     original_filename: str,
@@ -216,7 +393,32 @@ def process_upload(
         doc = fitz.open(stream=file_bytes, filetype="pdf")
     except Exception as e:
         logger.exception(f"run={run_id} could not open PDF '{original_filename}': {e}")
-        raise ValueError(f"Could not open PDF: {e}") from e
+        raise ValueError(
+            "This file could not be opened as a PDF. It may be damaged, or it may not "
+            "be a PDF at all."
+        ) from e
+
+    # A PDF may be locked. Many drawings issued for tender carry an owner
+    # password that permits reading with an empty user password, and those
+    # open normally once that is tried. One that needs a real password cannot
+    # be read at all, and saying so is the only honest answer — every page
+    # would otherwise come back blank with no reason given.
+    try:
+        if doc.needs_pass and not doc.authenticate(""):
+            raise ValueError(
+                "This PDF is password-protected, so nothing on it can be read. Please "
+                "supply a copy that opens without a password."
+            )
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.exception(f"run={run_id} could not unlock PDF '{original_filename}': {e}")
+        raise ValueError(
+            "This PDF appears to be protected and could not be opened for reading."
+        ) from e
+
+    if doc.page_count == 0:
+        raise ValueError("This PDF has no pages in it.")
 
     page_count = doc.page_count
     sheets: list[dict] = []
@@ -243,7 +445,16 @@ def process_upload(
         page_number = i + 1
         try:
             page = doc.load_page(i)
-            classification, reasoning = classify_page(page)
+            classification, reasoning, page_evidence = classify_page(page)
+            # Anything printed, drawn or placed on the sheet. A page with none
+            # of the three is genuinely empty and is not worth offering to
+            # character recognition; a page with any of them may still be
+            # carrying its text as line work, and only recognition can say.
+            page_has_marks = (
+                page_evidence["text_chars"] > 0
+                or page_evidence["image_ratio"] > 0
+                or page_evidence["drawing_count"] > 0
+            )
 
             thumb_filename = f"page_{page_number:03d}.png"
             thumb_path = pages_dir / thumb_filename
@@ -258,13 +469,43 @@ def process_upload(
             text_blocks = extract_native_text_blocks(page)
             native_char_count = sum(len(b["text"]) for b in text_blocks)
 
+            # **Stored text is not always the drawing's wording.** A PDF need
+            # not record what its glyphs mean, and plotting software often
+            # omits it, so a sheet can carry thousands of characters that are
+            # not the words printed on it. Counting them cannot tell the
+            # difference, so the text itself is judged: a sheet whose stored
+            # text is unreadable is treated as having none, is read from its
+            # page image like any other such sheet, and says so.
+            text_usable, text_layer_problem = text_layer_is_usable(
+                "".join(b["text"] for b in text_blocks)
+            )
+            if not text_usable:
+                logger.warning(
+                    f"run={run_id} page={page_number} stored text is not readable "
+                    f"({text_layer_problem}); reading the sheet from its image instead"
+                )
+            readable_native_chars = native_char_count if text_usable else 0
+
+            # A sheet can carry a full title block as real text and still have
+            # its entire drawing as a picture. The characters are there, so
+            # nothing looks wrong, and every room name and dimension inside
+            # the picture is unread. Where that is the case the page image is
+            # read as well, and the two are merged - the text already on the
+            # sheet is never thrown away.
+            picture_drawing, picture_reason = _drawing_is_a_picture(page, text_blocks)
+            if picture_drawing:
+                logger.info(
+                    f"run={run_id} page={page_number} reading the page image as well: "
+                    f"{picture_reason}"
+                )
+
             ocr_blocks: list[dict] = []
             ocr_char_count = 0
             ocr_status = "skipped"
             ocr_error = None
             ocr_duration_s = 0.0
 
-            if should_run_ocr(classification, native_char_count):
+            if should_run_ocr(readable_native_chars, page_has_marks) or picture_drawing:
                 if ocr_seconds_used >= ocr_run_budget:
                     # One upload gets a fixed amount of OCR. A scanned set of
                     # twenty sheets would otherwise run for over an hour with
@@ -294,7 +535,7 @@ def process_upload(
             # and OCR text merged into a single coordinate system, with
             # duplicates and template overprints already resolved.
             page_lines, text_evidence, rulings = page_lines_and_rulings(
-                page, ocr_blocks, ocr_render_dpi(THUMBNAIL_DPI)
+                page, ocr_blocks, ocr_render_dpi(THUMBNAIL_DPI), text_usable
             )
             page_reading = analyze_page(
                 page_number=page_number,
@@ -319,7 +560,7 @@ def process_upload(
                 page_reading.get("sheet_id") or "",
             )
 
-            has_native = native_char_count > 0
+            has_native = readable_native_chars > 0
             has_ocr = ocr_char_count > 0
             if has_native and has_ocr:
                 extraction_method = "native_and_ocr"
@@ -334,8 +575,35 @@ def process_upload(
             extraction_status = "ok"
             if classification == "unknown" or not has_any_text:
                 extraction_status = "partial"
-            elif ocr_status in ("timeout", "failed") and not has_native:
+            elif ocr_status in ("timeout", "failed", "unavailable") and not has_native:
                 extraction_status = "partial"
+
+            # A sheet that produced nothing must say why on its own row. A
+            # blank sheet with no explanation is the one outcome a reader
+            # cannot act on: they cannot tell a drawing with nothing on it
+            # from a drawing this tool could not read.
+            sheet_note = _why_nothing_was_read(
+                has_any_text=has_any_text,
+                ocr_status=ocr_status,
+                ocr_error=ocr_error,
+                page_has_marks=page_has_marks,
+                evidence=page_evidence,
+                text_layer_problem=text_layer_problem,
+            )
+            # The screen shows what was read; the issues log says what to
+            # check. A sheet nothing could be read from is exactly what a
+            # reviewer needs on that list, with the reason recorded beside it.
+            if sheet_note:
+                page_reading.setdefault("unresolved_items", []).append(
+                    {
+                        "item_id": f"P{page_number:02d}-NOTEXT",
+                        "category": "page_not_read",
+                        "severity": "P1",
+                        "reason": sheet_note,
+                        "text": None,
+                        "bbox": None,
+                    }
+                )
 
             sheets.append(
                 {
@@ -351,6 +619,7 @@ def process_upload(
                     "width_pt": round(page.rect.width, 2),
                     "height_pt": round(page.rect.height, 2),
                     "error": None,
+                    "note": sheet_note,
                 }
             )
             raw_text_pages.append(
@@ -386,6 +655,7 @@ def process_upload(
                     "width_pt": 0.0,
                     "height_pt": 0.0,
                     "error": str(e),
+                    "note": f"This sheet could not be processed: {e}",
                 }
             )
             raw_text_pages.append(

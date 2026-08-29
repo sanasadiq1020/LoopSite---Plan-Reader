@@ -72,21 +72,36 @@ _ocr_engine = None
 _executor = ThreadPoolExecutor(max_workers=1)
 
 
-def should_run_ocr(classification: str, native_char_count: int) -> bool:
+def should_run_ocr(native_char_count: int, page_has_marks: bool = True) -> bool:
     """Whether a page needs reading by OCR.
 
-    **The test is the text, not the picture behind it.** This used to skip OCR
-    only on pages classified "vector", which meant a page with a full text
-    layer *and* a background image was classified "mixed" and read by OCR
-    anyway. One 17-sheet plan set draws every sheet over a full-page image and
-    also carries its complete text layer, so all 17 pages went to OCR, each
-    timed out after 300 seconds, and the upload took **85 minutes** to return
-    text it already had.
+    **The test is the text, and only the text.**
 
-    A page that already carries a real text layer is read from that layer,
-    whatever is drawn behind it. OCR is for pages that have no text of their
-    own — that is what it is for, and it is the only case where its cost is
-    worth paying.
+    Two earlier versions of this test were wrong in opposite directions, and
+    both are worth recording because each produced a plausible-looking run.
+
+    *   It first skipped OCR only on pages classified "vector", which meant a
+        page with a full text layer *and* a background image was classified
+        "mixed" and read by OCR anyway. One 17-sheet plan set draws every
+        sheet over a full-page image and also carries its complete text layer,
+        so all 17 pages went to OCR, each timed out, and the upload took 85
+        minutes to return text it already had.
+
+    *   Fixing that left the classification in the test, which is what broke
+        an unseen single-sheet plan. A sheet whose text has been converted to
+        outlines — ordinary in a CAD export, and the whole point of outlining
+        is that the letters become line work — carries **no text at all** and
+        yet classifies as "vector", because vector is what its drawn line work
+        makes it. OCR was skipped, nothing was read, and every field on the
+        sheet came back blank with nothing on screen to say why. The same trap
+        catches a scan placed on a sheet that also carries a drawn border, and
+        any drawing whose fonts have no usable character mapping.
+
+    So the classification is not consulted. A page that carries a real text
+    layer is read from that layer, whatever is drawn behind it; a page that
+    does not is offered to OCR, whatever it is drawn with. The only page not
+    worth the cost is one with nothing on it at all — no text, no line work
+    and no image — which is what ``page_has_marks`` reports.
     """
     minimum = MIN_NATIVE_CHARS_TO_SKIP_OCR
     try:
@@ -95,7 +110,93 @@ def should_run_ocr(classification: str, native_char_count: int) -> bool:
         pass
     if native_char_count >= minimum:
         return False
-    return classification != "vector"
+    return bool(page_has_marks)
+
+
+# A drawing's text is overwhelmingly letters and digits: measured across the
+# plan sets in use, the lowest share on any sheet is 0.90, and none of them
+# contains a single unreadable character. The defaults below sit far below
+# that, so only a text layer that is genuinely broken can trip them.
+MIN_READABLE_SHARE = 0.45
+MAX_UNREADABLE_SHARE = 0.20
+
+_UNREADABLE_CATEGORIES = {"Cc", "Cf", "Co", "Cn", "Cs"}
+
+
+def text_layer_is_usable(text: str) -> tuple[bool, str]:
+    """Whether a page's own text can actually be read, and why not.
+
+    **A text layer can be present and still be worthless.** A PDF stores which
+    glyph to draw, and a mapping back to what that glyph *means* is optional.
+    Plotting software and older CAD exports routinely omit it, and the text
+    then extracts as the glyph codes themselves — a page's worth of characters
+    that are not the words printed on the drawing.
+
+    Counting characters cannot tell the difference, so a sheet like that
+    passed as "has its own text", was never offered to character recognition,
+    and every value read off it was nonsense or absent, with nothing on screen
+    to say so. Reading what the sheet actually shows is the only way through,
+    and that means recognising it from the page image like any other sheet
+    with no usable text.
+
+    The test is deliberately blunt, because the two cases are not close: a
+    construction drawing is nearly all letters and digits, and a broken text
+    layer is nearly none.
+    """
+    import unicodedata
+
+    settings = _settings()
+    try:
+        min_readable = float(settings.get("min_readable_share", MIN_READABLE_SHARE))
+    except (TypeError, ValueError):
+        min_readable = MIN_READABLE_SHARE
+    try:
+        max_unreadable = float(settings.get("max_unreadable_share", MAX_UNREADABLE_SHARE))
+    except (TypeError, ValueError):
+        max_unreadable = MAX_UNREADABLE_SHARE
+
+    characters = [c for c in (text or "") if not c.isspace()]
+    if not characters:
+        return True, ""  # nothing to judge; the character count already covers this
+
+    readable = 0
+    unreadable = 0
+    for c in characters:
+        if c.isalnum() and ord(c) < 0x2500:
+            readable += 1
+        if c == "�" or unicodedata.category(c) in _UNREADABLE_CATEGORIES:
+            unreadable += 1
+
+    readable_share = readable / len(characters)
+    unreadable_share = unreadable / len(characters)
+
+    if unreadable_share > max_unreadable:
+        return False, (
+            f"{unreadable_share:.0%} of this sheet's stored text is characters that "
+            "cannot be displayed"
+        )
+    if readable_share < min_readable:
+        return False, (
+            f"only {readable_share:.0%} of this sheet's stored text is letters and "
+            "digits, so the text stored in the file is not the wording printed on "
+            "the drawing"
+        )
+    return True, ""
+
+
+def ocr_is_available() -> tuple[bool, str]:
+    """Whether character recognition can run here at all, and why not.
+
+    A deployment may be built without it deliberately (a smaller image), or
+    the machine may not have the memory to load the models. Either way the
+    reader is told plainly rather than being shown an empty sheet.
+    """
+    try:
+        import paddleocr  # noqa: F401
+
+        return True, ""
+    except Exception as e:  # ImportError, or a native library that will not load
+        return False, str(e)
 
 
 def _get_engine():
@@ -138,9 +239,27 @@ def _run_ocr_sync(image_path: str) -> list[dict]:
 
 
 def run_ocr_on_page(image_path: Path) -> dict:
-    """Returns {blocks, status: ok|timeout|failed, error, duration_s}."""
+    """Returns {blocks, status: ok|timeout|failed|unavailable, error, duration_s}."""
     t0 = time.time()
     budget = page_timeout_seconds()
+
+    # Asked before the work starts, so a deployment that cannot run character
+    # recognition says so on the sheet instead of returning an empty page that
+    # looks like a plan with nothing on it.
+    available, why = ocr_is_available()
+    if not available:
+        logger.warning(f"character recognition is not available here: {why}")
+        return {
+            "blocks": [],
+            "status": "unavailable",
+            "error": (
+                "This sheet carries no text of its own, and character recognition "
+                "is not available on this server, so no text could be read from it. "
+                "The sheet image itself is still shown."
+            ),
+            "duration_s": 0.0,
+        }
+
     try:
         future = _executor.submit(_run_ocr_sync, str(image_path))
         blocks = future.result(timeout=budget)
@@ -162,11 +281,29 @@ def run_ocr_on_page(image_path: Path) -> dict:
             ),
             "duration_s": round(time.time() - t0, 2),
         }
+    except MemoryError as e:
+        # The recognition models need more memory than this machine has. That
+        # is a fact about the server, not about the drawing, and saying so is
+        # the difference between a sheet a reader can act on and a blank one.
+        logger.exception(f"OCR ran out of memory for {image_path}: {e}")
+        return {
+            "blocks": [],
+            "status": "unavailable",
+            "error": (
+                "This sheet carries no text of its own, and there was not enough "
+                "memory on this server to read it by character recognition. The "
+                "sheet image itself is still shown."
+            ),
+            "duration_s": round(time.time() - t0, 2),
+        }
     except Exception as e:
         logger.exception(f"OCR failed for {image_path}: {e}")
         return {
             "blocks": [],
             "status": "failed",
-            "error": str(e),
+            "error": (
+                "This sheet carries no text of its own and could not be read by "
+                f"character recognition: {e}"
+            ),
             "duration_s": round(time.time() - t0, 2),
         }

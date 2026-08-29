@@ -242,6 +242,27 @@ def parse_sheet_index(lines: list, page_number: int, page_width: float, config: 
     if len(entries) < 2:
         return None  # one row is not a table
 
+    # **A drawing index is a list of other sheets, and nearly every row of one
+    # prints a drawing number.** Without that test, a title block printed as a
+    # row of labels across the top of a sheet - PROJECT, DRAWING, SCALE,
+    # REVISION, DATE - reads as an index header, and the reader then walks
+    # down the drawing itself collecting room names and dimensions as index
+    # rows. On one sheet that produced forty invented entries whose combined
+    # area covered most of the drawing, and because a table's area is excluded
+    # from room and dimension detection, the sheet lost every room on it.
+    #
+    # A row without a number is real and is kept - a cover sheet often has
+    # none - but a table where most rows have no number is not an index.
+    min_numbered_share = float(index_config.get("min_numbered_row_share", 0.5))
+    numbered = sum(1 for entry in entries if entry.get("sheet_number"))
+    if numbered / len(entries) < min_numbered_share:
+        logger.info(
+            f"page {page_number}: a table with index-like headings was found, but only "
+            f"{numbered} of its {len(entries)} rows print a drawing number, so it is not "
+            "a drawing index"
+        )
+        return None
+
     logger.info(
         f"sheet index found on page {page_number}: {len(entries)} entries, "
         f"columns={sorted(bands)}"

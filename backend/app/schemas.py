@@ -18,7 +18,14 @@ from pydantic import BaseModel
 PageClassification = Literal["vector", "raster", "mixed", "unknown"]
 ExtractionStatus = Literal["ok", "partial", "failed"]
 ExtractionMethod = Literal["native", "ocr", "native_and_ocr", "none"]
-OcrStatus = Literal["skipped", "ok", "timeout", "failed"]
+OcrStatus = Literal[
+    "skipped", "ok", "timeout", "failed",
+    # Character recognition could not run here at all — it is not installed
+    # in this deployment, or the machine has too little memory for it.
+    "unavailable",
+    # This upload’s allowance for reading scanned sheets was already spent.
+    "not_attempted_budget_spent",
+]
 ConfidenceBand = Literal["high", "review", "low"]
 ReviewStatus = Literal["confirmed", "needs_review", "unresolved"]
 PageType = Literal[
@@ -47,6 +54,10 @@ class SheetEntry(BaseModel):
     width_pt: float
     height_pt: float
     error: Optional[str] = None
+    # Why this sheet produced nothing, in the reader’s own words. None on a
+    # sheet that read normally: a note is only ever an explanation of an
+    # absence, never a label on a result.
+    note: Optional[str] = None
 
     # Week 1 Gate 2: the register must identify each sheet, not only describe
     # how it was extracted. Defaulted so runs from before Day 3 still load.

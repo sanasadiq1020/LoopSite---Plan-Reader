@@ -492,28 +492,69 @@ def analyze_page(
         detected_legends = schedules_module.detect_legends(content_lines, config, sheet_id)
         page_sheet_index = parse_sheet_index(content_lines, page_number, page_width, config)
 
-        table_regions = [t["bbox"] for t in detected_schedules if t.get("bbox")]
+        # **A table is a panel on a sheet; the drawing occupies the rest of it.**
+        # The area a table covers is excluded from room and dimension
+        # detection, so a table read wrongly does not merely add a wrong row -
+        # it hides the drawing behind it. On one sheet a mis-read table claimed
+        # most of the page and every room on that plan disappeared. A "table"
+        # covering more of the sheet than a table ever does is therefore not
+        # believed at all.
+        max_table_share = float(
+            config.get("tables", {}).get("max_sheet_share", 0.6)
+        )
+        sheet_area = max(page_width * page_height, 1.0)
+
+        def _covers_the_sheet(box) -> bool:
+            return ((box[2] - box[0]) * (box[3] - box[1])) / sheet_area > max_table_share
+
+        def _bounds(boxes):
+            return [
+                min(b[0] for b in boxes),
+                min(b[1] for b in boxes),
+                max(b[2] for b in boxes),
+                max(b[3] for b in boxes),
+            ]
+
+        kept_schedules = []
+        table_regions = []
+        for table in detected_schedules:
+            box = table.get("bbox")
+            if box and _covers_the_sheet(box):
+                logger.info(
+                    f"page {page_number}: a schedule table was read across most of the "
+                    "sheet, which a schedule never is, so it was not used"
+                )
+                continue
+            kept_schedules.append(table)
+            if box:
+                table_regions.append(box)
+        detected_schedules = kept_schedules
+
+        kept_legends = []
         for legend in detected_legends:
             entries = [e["bbox"] for e in legend["entries"]]
-            if entries:
-                table_regions.append(
-                    [
-                        min(b[0] for b in entries),
-                        min(b[1] for b in entries),
-                        max(b[2] for b in entries),
-                        max(b[3] for b in entries),
-                    ]
+            box = _bounds(entries) if entries else None
+            if box and _covers_the_sheet(box):
+                logger.info(
+                    f"page {page_number}: a legend was read across most of the sheet, "
+                    "which a legend never is, so it was not used"
                 )
+                continue
+            kept_legends.append(legend)
+            if box:
+                table_regions.append(box)
+        detected_legends = kept_legends
+
         if page_sheet_index:
-            index_boxes = [e["source_bbox"] for e in page_sheet_index["entries"]]
-            table_regions.append(
-                [
-                    min(b[0] for b in index_boxes),
-                    min(b[1] for b in index_boxes),
-                    max(b[2] for b in index_boxes),
-                    max(b[3] for b in index_boxes),
-                ]
-            )
+            index_box = _bounds([e["source_bbox"] for e in page_sheet_index["entries"]])
+            if _covers_the_sheet(index_box):
+                logger.info(
+                    f"page {page_number}: a drawing index was read across most of the "
+                    "sheet, which an index never is, so it was not used"
+                )
+                page_sheet_index = None
+            else:
+                table_regions.append(index_box)
 
         drawing_lines = [
             line
@@ -543,6 +584,8 @@ def analyze_page(
             len(detected_dimensions),
             len(detected_schedules),
             config,
+            legend_count=len(detected_legends),
+            has_drawing_index=bool(page_sheet_index),
         )
 
         # Day 4. Scale is calibrated before anything is measured with it, and
@@ -557,7 +600,20 @@ def analyze_page(
         # hatch, and reporting those as walls would bury the real ones.
         wall_settings = config.get("walls", {})
         wall_page_types = wall_settings.get("detect_on_page_types", ["floor_plan"])
-        draws_rooms = len(detected_rooms) >= int(wall_settings.get("min_rooms_on_sheet", 4))
+        # **How much has to be printed on a sheet before its walls are traced
+        # depends on how the sheet was identified.** Where the drawing itself
+        # says it is a plan - in its title block or in its own caption - that
+        # is the strongest evidence there is, and a small building's plan may
+        # name only two or three rooms; requiring four meant an extension, a
+        # granny flat or a shed had no walls traced at all. Where the type was
+        # only inferred from what is printed, more content is required, because
+        # a section and an interior elevation print room names too.
+        rooms_needed = int(
+            wall_settings.get("min_rooms_when_sheet_says_plan", 1)
+            if page_type.get("named_as_a_plan")
+            else wall_settings.get("min_rooms_on_sheet", 4)
+        )
+        draws_rooms = len(detected_rooms) >= rooms_needed
         # A title block is a band across one edge of the sheet, and it is ruled
         # into cells whose rules are parallel lines a few millimetres apart at
         # drawing scale. Only the labels inside it were located, so the band is
@@ -572,6 +628,16 @@ def analyze_page(
         ] + [chain["sum_mm"] for chain in chains if chain.get("sum_mm")]
         sheet_span_mm = max(measured_spans) if measured_spans else None
 
+        # A site plan draws the block, not the building's walls. Its parallel
+        # lines are boundaries, setbacks, easements, fences and driveways, and
+        # at site-plan scale a wall is about one point thick, so nothing
+        # measured from it would be a wall thickness anyway. Reporting those as
+        # walls would bury the real ones from the floor plan.
+        never_trace_on = set(wall_settings.get("never_trace_walls_on", ["site_plan"]))
+        trace_walls_here = (
+            page_type["value"] in wall_page_types or page_type.get("draws_a_plan")
+        ) and page_type["value"] not in never_trace_on
+
         detected_walls = (
             detect_walls(
                 rulings,
@@ -582,8 +648,7 @@ def analyze_page(
                 page=page,
                 sheet_span_mm=sheet_span_mm,
             )
-            if (page_type["value"] in wall_page_types or page_type.get("draws_a_plan"))
-            and draws_rooms
+            if trace_walls_here and draws_rooms
             else []
         )
         if not page_type.get("draws_a_plan"):
@@ -634,11 +699,11 @@ def analyze_page(
         return _empty_page(page_number, f"Plan-reading analysis failed for this page: {e}")
 
 
-def page_lines_and_rulings(page, ocr_blocks: list, dpi: int):
+def page_lines_and_rulings(page, ocr_blocks: list, dpi: int, use_native_text: bool = True):
     """Convenience wrapper so intake has one call for the page's text model."""
     from pipeline.plan.textmodel import build_page_lines
 
-    lines, evidence = build_page_lines(page, ocr_blocks, dpi)
+    lines, evidence = build_page_lines(page, ocr_blocks, dpi, use_native_text)
     return lines, evidence, extract_rulings(page)
 
 
