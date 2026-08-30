@@ -416,8 +416,6 @@
         "STORMWATER PLAN",
         "SEWER PLAN",
         "HYDRAULIC PLAN",
-        "ROOF PLAN",
-        "ROOF LAYOUT",
         "FURNITURE LAYOUT",
         "DEMOLITION PLAN",
         "AREA PLAN",
@@ -433,7 +431,6 @@
         "PLUMBING PLAN",
         "MECHANICAL PLAN",
         "SPRINKLER PLAN",
-        "TRUSS LAYOUT",
         "WALL FRAMING",
         "JOIST LAYOUT",
         "DECK PLAN",
@@ -486,6 +483,13 @@
         "CONSTRUCTION DETAIL",
         "TYPICAL DETAIL",
         "CONNECTION DETAIL"
+      ],
+      "roof_plan": [
+        "ROOF PLAN",
+        "ROOF LAYOUT",
+        "ROOF FRAMING PLAN",
+        "ROOF FRAMING",
+        "TRUSS LAYOUT"
       ]
     },
     "_floor_plan_evidence_note": "A page claiming to be a floor plan is confirmed by real floor-plan evidence: several room labels plus dimension strings. Where the title says one thing and the content says another, both are reported and the disagreement is flagged rather than silently resolved.",
@@ -509,7 +513,8 @@
     "min_level_markers_for_vertical_drawing": 3,
     "_level_marker_note": "Printed height levels (RL, FFL, NGL, AHD) are how a drawing states a height. A sheet with this many of them and no room names is a drawing of the building seen from the side or cut through, never a plan.",
     "min_sentence_share_for_notes": 0.5,
-    "_sentence_share_note": "The share of a sheet's lines that read as written sentences rather than drawing labels. Above this, with no dimensions on the sheet, it is a notes or specification sheet."
+    "_sentence_share_note": "The share of a sheet's lines that read as written sentences rather than drawing labels. Above this, with no dimensions on the sheet, it is a notes or specification sheet.",
+    "_roof_plan_note": "A roof plan is drawn looking down like a floor plan, but it shows the roof: its parallel lines are battens, ridges, valleys and gutter lines, not walls, and it names no rooms. Keeping it apart from floor plans stops 200 roof lines being reported as walls of the building."
   },
   "discipline": {
     "_comment": "Discipline is taken from the sheet number's letter prefix first (an AU drawing convention), then from the page type, and only then from a discipline word printed on the sheet. A discipline word found inside a drawing index or a consultant's letterhead describes another sheet, not this one, so those regions are excluded before this fallback runs.",
@@ -1144,7 +1149,6 @@
     "detect_on_page_types": [
       "floor_plan"
     ],
-    "min_rooms_on_sheet": 4,
     "_merge_note": "A wall face is interrupted wherever a door or window sits in it, so the drawing contains it as several collinear pieces. Pieces on the same line separated by less than this are joined into one face: a wall with a window in it is still one wall. Without this the longest wall found on a 20 m building was 6 m.",
     "face_join_gap_mm": 6000,
     "_pairing_note": "Faces are paired by how far they run together, not by which is nearest. A long external wall has many lines near it — linings, hatching, joinery — and the nearest one is rarely its own other face. The longest shared run wins, a nominal thickness breaks ties, and each face belongs to one wall only.",
@@ -1152,12 +1156,14 @@
     "_length_allowance_comment": "A wall may run a little past the point a dimension string measures to, so a candidate is kept up to this multiple of the longest distance the sheet itself measures. Anything longer is not a wall of this building - it is the block boundary or an eave line - and is set aside as an item to check.",
     "opening_min_wall_each_side_mm": 300,
     "_opening_flank_comment": "A break in a wall counts as a door or window only when this much wall is drawn on both sides of it. A break running to the end of a wall is where the wall meets another wall, or where the drawing stopped - not an opening.",
-    "min_rooms_when_sheet_says_plan": 1,
-    "_min_rooms_when_sheet_says_plan_note": "How many room names must be found before walls are traced, when the sheet itself says it is a plan - in its title block or in its own caption. That is the strongest evidence there is, so little else is required. Where the type was only inferred from what is printed on the sheet, min_rooms_on_sheet applies instead.",
     "never_trace_walls_on": [
-      "site_plan"
+      "site_plan",
+      "roof_plan"
     ],
-    "_never_trace_walls_on_note": "Sheet kinds whose parallel lines are not walls. A site plan draws the block: its parallel lines are boundaries, setbacks, easements, fences and driveways, and at site-plan scale a wall is about one point thick, so nothing measured off it would be a wall thickness. Reporting those as walls would bury the real ones from the floor plan."
+    "_never_trace_walls_on_note": "Sheet kinds whose parallel lines are not walls. A site plan draws the block: its parallel lines are boundaries, setbacks, easements, fences and driveways, and at site-plan scale a wall is about one point thick, so nothing measured off it would be a wall thickness. Reporting those as walls would bury the real ones from the floor plan.",
+    "min_walls_for_an_unnamed_plan": 4,
+    "min_nominal_thickness_share_for_an_unnamed_plan": 0.4,
+    "_unnamed_plan_note": "How many rooms a sheet names says nothing about whether it is a plan: an extension, a granny flat, a studio or a shed names two or three, and a plan drawn without room names names none. So walls are looked for first and the result is judged. Where the sheet says it is a plan - in its title block or in its own caption - the walls found are the walls. Where the kind was only inferred from what is printed, the drawing must look like a building first: a building is a closed shape, so at least this many walls, and at least this share of them at a thickness the office actually builds."
   },
   "accuracy": {
     "_comment": "Tolerances used when comparing a run against tests/ground_truth.csv. A row in that file may override them with its own tolerance_pct. Text values are compared exactly; numeric ones within the tolerance below.",

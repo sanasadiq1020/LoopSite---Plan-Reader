@@ -25,11 +25,23 @@ wall stops and starts again. Only the width is claimed — not whether it is a
 door or a window, and not its height, because a plan does not show one. Recall
 on a picture-based sheet is well short of what the drawing contains.
 
-**A title block printed sideways reads most of its fields, not all.** Where an
-office runs its title strip up the edge of a sheet and does not rule the strip
-into cells, the boundary between one field and the next is not printed, and a
-field or two comes back as not found rather than wrong. A title block set out
-horizontally - along the top or the bottom - reads in full.
+**A title block is read wherever it is placed, except that a sideways strip
+loses a field or two.** A block set out horizontally reads in full at any of
+the eight positions an office uses - either end or the middle of the top or
+bottom edge, and partway up the left or right edge. Where the strip runs up an
+edge with the lettering turned 90 degrees, most fields read and one or two come
+back as not found rather than wrong.
+
+**A sheet with no title block is still read.** Its rooms, dimensions, walls and
+openings all come from the drawing, and it is identified by its position in the
+document. It says on its own view that no title block was found, and without a
+printed scale no lengths are taken from it.
+
+**A sheet not named as a plan needs its walls to look like a building.** Where
+a drawing does not say what kind of sheet it is, walls are reported only when
+enough of them are found at a thickness a wall is built to. A plan drawn at an
+unusual scale, or one whose walls are drawn faintly, may fall short of that and
+report none, saying so rather than showing an empty table.
 
 **Room and title-block vocabulary is configurable, not universal.** Wording
 outside `config/plan_reading.json` is reported as not found rather than

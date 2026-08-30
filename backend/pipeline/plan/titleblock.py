@@ -34,6 +34,7 @@ from functools import lru_cache
 from app.logging_setup import get_logger
 from pipeline.plan import validators
 from pipeline.plan.layout import (
+    drawn_box_around,
     enclosing_cell,
     find_label_lines,
     joined_text,
@@ -163,7 +164,18 @@ def _all_configured_labels(field_labels: dict) -> set:
     return labels
 
 
-def find_title_block_region(lines: list, field_labels: dict, page_width: float, page_height: float):
+# A ruled frame bigger than this share of the sheet is the drawing's own
+# border, not the title block inside it.
+_MAX_FRAME_SHEET_SHARE = 0.45
+
+
+def find_title_block_region(
+    lines: list,
+    field_labels: dict,
+    page_width: float,
+    page_height: float,
+    rulings: dict | None = None,
+):
     """The rectangle covering the densest cluster of printed title-block labels.
 
     Real drawings put their title block in different corners, and a cover
@@ -218,11 +230,46 @@ def find_title_block_region(lines: list, field_labels: dict, page_width: float, 
         clusters,
         key=lambda c: (len({normalize_label(ln["text"]) for ln in c}), -min(ln["bbox"][1] for ln in c)),
     )
+
+    # **The office drew where its title block ends; use that.** A rectangle
+    # padded around the labels is a guess, and on a sheet whose title block
+    # sits partway along an edge - with the drawing wrapped around it rather
+    # than only beside it - the guess spills into the plan and a field's value
+    # comes back with a room name attached. The ruled frame enclosing the
+    # labels is the office's own answer, and it is right wherever on the sheet
+    # the block was placed.
+    rulings = rulings or {"h": [], "v": []}
+    sheet_area = max(page_width * page_height, 1.0)
+
+    # The box the office actually drew around these labels. Tried for every
+    # group of labels worth trying - all of them together, then each cluster
+    # on its own - because a set may print the same words in two places, and
+    # the box holding the most of them is the title block.
+    groups = [label_lines] + sorted(clusters, key=len, reverse=True)
+    best_frame = None
+    best_inside = 0
+    for group in groups:
+        frame = drawn_box_around(
+            [ln["bbox"] for ln in group],
+            rulings,
+            page_width,
+            page_height,
+            _MAX_FRAME_SHEET_SHARE,
+        )
+        if frame is None:
+            continue
+        inside = sum(1 for ln in label_lines if _inside(ln["bbox"], frame))
+        if inside > best_inside:
+            best_frame, best_inside = frame, inside
+    if best_frame is not None:
+        return best_frame
+
     x0 = min(ln["bbox"][0] for ln in best)
     y0 = min(ln["bbox"][1] for ln in best)
     x1 = max(ln["bbox"][2] for ln in best)
     y1 = max(ln["bbox"][3] for ln in best)
-    # Pad so the values that belong to these labels fall inside the region too.
+    # No frame was drawn around these labels. Pad instead, so the values that
+    # belong to them fall inside the region too.
     pad_x = min(page_width, page_height) * 0.06
     pad_y = min(page_width, page_height) * 0.06
     return [
@@ -520,20 +567,56 @@ def _detect_sheet_title(
             continue
         candidates.append(line)
     if candidates:
+        # **A sheet can carry more than one drawing, each with its own
+        # caption.** One supplied sheet prints an existing sub-floor plan and
+        # an existing floor plan side by side, in identical type. Picking
+        # between them by which is nearer the title block is arbitrary - it
+        # flips whenever the title block is located a little differently - so
+        # the largest type wins and, among equals, the one printed first in
+        # reading order. The others are reported as further drawings on the
+        # sheet rather than quietly discarded.
         region_centre = None
         if region:
             region_centre = ((region[0] + region[2]) / 2.0, (region[1] + region[3]) / 2.0)
 
         def rank(line):
-            cx, cy = bbox_center(line["bbox"])
+            # Largest type first, because a title is set larger than the notes
+            # around it. Then nearest the title block, because a title printed
+            # inside it is the sheet's own title while one out on the paper is
+            # a caption for one of the drawings. Reading order last, so two
+            # captions that are equal in every other way still resolve the
+            # same way on every run.
             distance = 0.0
             if region_centre:
+                cx, cy = bbox_center(line["bbox"])
                 distance = ((cx - region_centre[0]) ** 2 + (cy - region_centre[1]) ** 2) ** 0.5
-            return (-round(line["size"], 1), distance)
+            return (
+                -round(line["size"], 1),
+                round(distance, 1),
+                round(line["bbox"][1], 1),
+                round(line["bbox"][0], 1),
+            )
 
-        best = min(candidates, key=rank)
+        candidates.sort(key=rank)
+        best = candidates[0]
+        largest = round(best["size"], 1)
+        others = []
+        for line in candidates[1:]:
+            if round(line["size"], 1) < largest:
+                break
+            result = validators.validate_sheet_title(line["text"], exclusion_keywords=[])
+            if result and result[0] != best["text"]:
+                others.append(result[0])
+
         value, note = validators.validate_sheet_title(best["text"], exclusion_keywords=[])
-        return _build_field(
+        if others:
+            note = "; ".join(
+                filter(
+                    None,
+                    [note, f"this sheet also carries: {', '.join(dict.fromkeys(others))}"],
+                )
+            )
+        field = _build_field(
             value=value,
             raw_text=best["text"],
             technique="title_keyword",
@@ -543,6 +626,9 @@ def _detect_sheet_title(
             thresholds=thresholds,
             note=note,
         )
+        if others:
+            field["conflicts"] = list(dict.fromkeys(others))
+        return field
 
     # Last resort: the largest type inside the title-block region. Confined to
     # that region so a callout inside the drawing can never be picked, and
@@ -640,7 +726,7 @@ def detect_title_block(
     field_labels = tb_config["field_labels"]
     separators = tb_config.get("inline_label_separators", [":"])
     all_labels = _all_configured_labels(field_labels)
-    region = find_title_block_region(lines, field_labels, page_width, page_height)
+    region = find_title_block_region(lines, field_labels, page_width, page_height, rulings)
 
     fields = {name: empty_field() for name in FIELD_NAMES}
     consumed_bboxes: set = set()

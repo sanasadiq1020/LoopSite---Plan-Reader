@@ -46,6 +46,10 @@ _TYPE_PRIORITY = (
     "section",
     "elevation",
     "site_plan",
+    # Checked before floor_plan: a roof plan is drawn looking down like one,
+    # but it shows the roof rather than the building, and its parallel lines
+    # are battens and ridges rather than walls.
+    "roof_plan",
     "floor_plan",
 )
 

@@ -30,7 +30,7 @@ ConfidenceBand = Literal["high", "review", "low"]
 ReviewStatus = Literal["confirmed", "needs_review", "unresolved"]
 PageType = Literal[
     "cover", "notes", "schedule", "detail", "section", "elevation",
-    "site_plan", "floor_plan", "unknown",
+    "site_plan", "roof_plan", "floor_plan", "unknown",
 ]
 
 
@@ -388,6 +388,10 @@ class PageReading(BaseModel):
     page_type: PageTypeResult
     title_block: TitleBlock
     title_block_region: Optional[list[float]] = None
+    # Whether a title block was located on this sheet, and what that means for
+    # the reader when it was not. A sheet without one is still read in full.
+    title_block_found: bool = False
+    title_block_note: Optional[str] = None
     rooms: list[RoomLabel]
     dimensions: list[DimensionItem]
     dimension_chains: list[DimensionChain] = []
@@ -396,6 +400,9 @@ class PageReading(BaseModel):
     opening_marks: list[OpeningMark] = []
     scale_calibration: Optional[ScaleCalibration] = None
     walls: list[WallCandidate] = []
+    # Why no walls are reported from a sheet that has parallel lines on it but
+    # does not look like a building.
+    walls_note: Optional[str] = None
     openings: list[Opening] = []
     sheet_index: Optional[SheetIndex] = None
     unresolved_items: list[UnresolvedItem]

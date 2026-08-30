@@ -63,6 +63,7 @@ export type PageType =
   | "section"
   | "elevation"
   | "site_plan"
+  | "roof_plan"
   | "floor_plan"
   | "unknown";
 
@@ -399,6 +400,10 @@ export interface PageReading {
   page_type: PageTypeResult;
   title_block: TitleBlock;
   title_block_region: number[] | null;
+  // Whether a title block was located on this sheet, and what it means for
+  // the reader when it was not. A sheet without one is still read in full.
+  title_block_found: boolean;
+  title_block_note: string | null;
   rooms: RoomLabel[];
   dimensions: DimensionItem[];
   dimension_chains: DimensionChain[];
@@ -407,6 +412,9 @@ export interface PageReading {
   opening_marks: OpeningMark[];
   scale_calibration: ScaleCalibration | null;
   walls: WallCandidate[];
+  // Why no walls are reported from a sheet that has parallel lines on it but
+  // does not look like a building.
+  walls_note: string | null;
   openings: Opening[];
   sheet_index: SheetIndex | null;
   unresolved_items: UnresolvedItem[];
@@ -851,6 +859,7 @@ const PAGE_TYPE_LABELS: Record<string, string> = {
   section: "Section",
   elevation: "Elevation",
   site_plan: "Site plan",
+  roof_plan: "Roof plan",
   floor_plan: "Floor plan",
   // Said as what it is, not as a category: the sheet does not name a kind of
   // drawing anywhere on it. Everything found on it is still listed.

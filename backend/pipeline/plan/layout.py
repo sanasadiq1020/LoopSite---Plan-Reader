@@ -188,6 +188,155 @@ def enclosing_cell(x: float, y: float, rulings: dict, page_width: float, page_he
     return (left, top, right, bottom)
 
 
+def enclosing_frame(boxes: list, rulings: dict, page_width: float, page_height: float):
+    """The smallest ruled rectangle that encloses all of the given boxes.
+
+    **A title block is a ruled box.** Finding it from where its labels happen
+    to sit gives a rectangle around the words, which is not the same thing: on
+    a sheet whose title block sits partway along an edge, with the drawing
+    wrapped around it, the search for a field's value ran straight out of the
+    block and returned a room name from the plan.
+
+    The rules the office actually drew are a better answer than any padding,
+    because they are where the office says the block ends. Where a side has no
+    ruling, None is returned rather than the page edge: half a frame is not a
+    frame, and pretending otherwise would put a boundary where none is printed.
+    """
+    if not boxes:
+        return None
+
+    x0 = min(b[0] for b in boxes)
+    y0 = min(b[1] for b in boxes)
+    x1 = max(b[2] for b in boxes)
+    y1 = max(b[3] for b in boxes)
+
+    left = right = top = bottom = None
+    # A ruling only bounds the group if it runs past the whole group, which is
+    # what makes it the frame rather than one cell's divider.
+    for vx, vy0, vy1 in rulings.get("v", []):
+        if vy0 > y0 + 1.0 or vy1 < y1 - 1.0:
+            continue
+        if vx <= x0 + 1.0 and (left is None or vx > left):
+            left = vx
+        if vx >= x1 - 1.0 and (right is None or vx < right):
+            right = vx
+
+    for hy, hx0, hx1 in rulings.get("h", []):
+        if hx0 > x0 + 1.0 or hx1 < x1 - 1.0:
+            continue
+        if hy <= y0 + 1.0 and (top is None or hy > top):
+            top = hy
+        if hy >= y1 - 1.0 and (bottom is None or hy < bottom):
+            bottom = hy
+
+    if None in (left, right, top, bottom):
+        return None
+    if right - left <= 0 or bottom - top <= 0:
+        return None
+    return [left, top, right, bottom]
+
+
+_FRAME_SIDE_CANDIDATES = 6
+_FRAME_SPAN_TOLERANCE_PT = 2.0
+
+
+def _spans(position_lines, position, start, end):
+    """Whether a drawn line at ``position`` runs the whole way from start to end."""
+    for pos, a, b in position_lines:
+        if abs(pos - position) > _FRAME_SPAN_TOLERANCE_PT:
+            continue
+        if a <= start + _FRAME_SPAN_TOLERANCE_PT and b >= end - _FRAME_SPAN_TOLERANCE_PT:
+            return True
+    return False
+
+
+def drawn_box_around(boxes: list, rulings: dict, page_width: float, page_height: float,
+                     max_area_share: float):
+    """The ruled rectangle that holds the most of the given boxes.
+
+    **A title block is a box the office drew.** Reading it needs its real
+    edges, not a rectangle padded around wherever its labels happen to sit: on
+    a sheet whose title block sits partway along an edge, with the drawing
+    wrapped round it, a padded rectangle spills into the plan and a field's
+    value comes back with a room name attached to it.
+
+    Taking the *nearest* ruling on each side is not enough either. A title
+    block ruled into two columns stops at the divider between them, and half
+    the block is then outside its own frame. So candidate edges are tried
+    outward from the labels, every four are checked to be lines that really
+    run the whole side, and the box holding the most labels wins - with the
+    smaller box preferred when two hold the same number, and any box as big as
+    the sheet's own border rejected.
+    """
+    if not boxes:
+        return None
+
+    lx0 = min(b[0] for b in boxes)
+    ly0 = min(b[1] for b in boxes)
+    lx1 = max(b[2] for b in boxes)
+    ly1 = max(b[3] for b in boxes)
+
+    verticals = rulings.get("v", [])
+    horizontals = rulings.get("h", [])
+    tol = _FRAME_SPAN_TOLERANCE_PT
+
+    # **Only lines long enough to be a side of the box are candidates.** Taking
+    # the nearest few ruling positions instead fails wherever the drawing lies
+    # between the labels and the block's own edge: on a title block partway
+    # along an edge, the nearest verticals to its right are the plan's wall
+    # lines, and the block's real right-hand edge is never reached. A wall line
+    # does not run the full height of the title block; the block's edge does.
+    lefts = sorted(
+        {vx for vx, a, b in verticals if vx <= lx0 + tol and a <= ly0 + tol and b >= ly1 - tol},
+        reverse=True,
+    )
+    rights = sorted(
+        {vx for vx, a, b in verticals if vx >= lx1 - tol and a <= ly0 + tol and b >= ly1 - tol}
+    )
+    tops = sorted(
+        {hy for hy, a, b in horizontals if hy <= ly0 + tol and a <= lx0 + tol and b >= lx1 - tol},
+        reverse=True,
+    )
+    bottoms = sorted(
+        {hy for hy, a, b in horizontals if hy >= ly1 - tol and a <= lx0 + tol and b >= lx1 - tol}
+    )
+    if not (lefts and rights and tops and bottoms):
+        return None
+
+    sheet_area = max(page_width * page_height, 1.0)
+    best = None
+    best_score = (-1, 0.0)
+    for left in lefts[:_FRAME_SIDE_CANDIDATES]:
+        for right in rights[:_FRAME_SIDE_CANDIDATES]:
+            if right - left <= 0:
+                continue
+            for top in tops[:_FRAME_SIDE_CANDIDATES]:
+                for bottom in bottoms[:_FRAME_SIDE_CANDIDATES]:
+                    if bottom - top <= 0:
+                        continue
+                    area = (right - left) * (bottom - top)
+                    if area / sheet_area > max_area_share:
+                        continue
+                    if not (
+                        _spans(verticals, left, top, bottom)
+                        and _spans(verticals, right, top, bottom)
+                        and _spans(horizontals, top, left, right)
+                        and _spans(horizontals, bottom, left, right)
+                    ):
+                        continue
+                    held = sum(
+                        1
+                        for b in boxes
+                        if left <= (b[0] + b[2]) / 2.0 <= right
+                        and top <= (b[1] + b[3]) / 2.0 <= bottom
+                    )
+                    score = (held, -area)
+                    if score > best_score:
+                        best_score = score
+                        best = [left, top, right, bottom]
+    return best
+
+
 def find_label_lines(lines: list, wanted_label: str) -> list:
     """Lines whose whole text is exactly the wanted label.
 

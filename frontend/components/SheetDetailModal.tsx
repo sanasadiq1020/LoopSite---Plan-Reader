@@ -207,6 +207,18 @@ export function SheetDetailModal({
             </div>
           )}
 
+          {/* A sheet without a title block is still read in full. Saying which
+              happened is the difference between a reader trusting the reading
+              and doubting all of it. */}
+          {reading && tab === "titleblock" && reading.title_block_note && (
+            <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+              <p className="text-sm font-semibold text-amber-900">No title block found</p>
+              <p className="mt-1 text-sm leading-relaxed text-amber-800">
+                {reading.title_block_note}
+              </p>
+            </div>
+          )}
+
           {reading && tab === "titleblock" && (
             <Card
               title="Sheet details"
@@ -271,6 +283,13 @@ export function SheetDetailModal({
                   <LegendTable legend={legend} />
                 </Card>
               ))}
+            </div>
+          )}
+
+          {reading && tab === "walls" && reading.walls_note && (
+            <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+              <p className="text-sm font-semibold text-amber-900">No walls reported</p>
+              <p className="mt-1 text-sm leading-relaxed text-amber-800">{reading.walls_note}</p>
             </div>
           )}
 

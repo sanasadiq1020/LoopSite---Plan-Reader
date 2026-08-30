@@ -112,6 +112,8 @@ def _empty_page(page_number: int, reason: str) -> dict:
         },
         "title_block": _empty_title_block(),
         "title_block_region": None,
+        "title_block_found": False,
+        "title_block_note": None,
         "rooms": [],
         "dimensions": [],
         "dimension_chains": [],
@@ -131,6 +133,7 @@ def _empty_page(page_number: int, reason: str) -> dict:
             "note": reason,
         },
         "walls": [],
+        "walls_note": None,
         "openings": [],
         "sheet_index": None,
         "unresolved_items": [
@@ -465,6 +468,37 @@ def analyze_page(
         region = title["region"]
         sheet_id, sheet_id_source = sheet_id_for(fields, page_number)
 
+        # **A sheet with no title block still has to be usable.** Some sheets
+        # simply do not carry one - a continuation sheet, a sketch, a page from
+        # a report bound into the set - and some carry one this reader could not
+        # find. Either way the sheet is still read in full: its rooms, its
+        # dimensions, its walls and its openings are all found from the drawing
+        # itself, and it is identified by its position in the document. Saying
+        # which of those happened is the difference between a reader trusting
+        # the reading and doubting all of it.
+        title_block_found = region is not None
+        title_block_note = None
+        if not title_block_found:
+            printed = [
+                name
+                for name in fields
+                if fields[name]["value"]
+                and fields[name]["technique"] != "derived_from_page_order"
+            ]
+            if printed:
+                title_block_note = (
+                    "No title block could be located on this sheet, so its details were "
+                    "read from wherever they are printed on it. Everything else on the "
+                    "sheet was read as usual."
+                )
+            else:
+                title_block_note = (
+                    "This sheet carries no title block that could be found, so it has no "
+                    "printed drawing number, title or scale to report. It is identified "
+                    "by its position in the document. Everything drawn on it was still "
+                    "read, and without a scale no lengths are taken from it."
+                )
+
         # Everything the title block already accounted for, plus everything
         # inside the title-block region, is excluded from the content
         # detectors. The region matters as much as the individual values: a
@@ -600,20 +634,6 @@ def analyze_page(
         # hatch, and reporting those as walls would bury the real ones.
         wall_settings = config.get("walls", {})
         wall_page_types = wall_settings.get("detect_on_page_types", ["floor_plan"])
-        # **How much has to be printed on a sheet before its walls are traced
-        # depends on how the sheet was identified.** Where the drawing itself
-        # says it is a plan - in its title block or in its own caption - that
-        # is the strongest evidence there is, and a small building's plan may
-        # name only two or three rooms; requiring four meant an extension, a
-        # granny flat or a shed had no walls traced at all. Where the type was
-        # only inferred from what is printed, more content is required, because
-        # a section and an interior elevation print room names too.
-        rooms_needed = int(
-            wall_settings.get("min_rooms_when_sheet_says_plan", 1)
-            if page_type.get("named_as_a_plan")
-            else wall_settings.get("min_rooms_on_sheet", 4)
-        )
-        draws_rooms = len(detected_rooms) >= rooms_needed
         # A title block is a band across one edge of the sheet, and it is ruled
         # into cells whose rules are parallel lines a few millimetres apart at
         # drawing scale. Only the labels inside it were located, so the band is
@@ -638,6 +658,19 @@ def analyze_page(
             page_type["value"] in wall_page_types or page_type.get("draws_a_plan")
         ) and page_type["value"] not in never_trace_on
 
+        # **How many rooms a sheet names is not what makes it a plan.** Walls
+        # used to be traced only on a sheet naming at least four rooms, which
+        # is a guess about the size of the building rather than a fact about
+        # the drawing: an extension, a granny flat, a studio or a shed names
+        # two or three, and a plan drawn without room names at all names none.
+        # Those sheets produced no walls, and so no model and no quantities.
+        #
+        # So the walls are looked for first and the result is judged, which is
+        # evidence rather than a guess. Where the sheet says it is a plan, the
+        # walls found are the walls. Where the kind was only inferred from what
+        # is printed, the drawing has to look like a building before they are
+        # reported: a building is a closed shape, so it takes at least four
+        # walls, and enough of them at a thickness the office actually builds.
         detected_walls = (
             detect_walls(
                 rulings,
@@ -648,9 +681,26 @@ def analyze_page(
                 page=page,
                 sheet_span_mm=sheet_span_mm,
             )
-            if trace_walls_here and draws_rooms
+            if trace_walls_here
             else []
         )
+        walls_note = None
+        if detected_walls and not page_type.get("named_as_a_plan"):
+            min_walls = int(wall_settings.get("min_walls_for_an_unnamed_plan", 4))
+            min_nominal_share = float(
+                wall_settings.get("min_nominal_thickness_share_for_an_unnamed_plan", 0.4)
+            )
+            at_nominal = sum(1 for w in detected_walls if w.get("matches_nominal_thickness"))
+            share = at_nominal / len(detected_walls)
+            if len(detected_walls) < min_walls or share < min_nominal_share:
+                walls_note = (
+                    f"This sheet does not say it is a plan, and the {len(detected_walls)} "
+                    f"pairs of parallel lines found on it do not look like a building "
+                    f"({at_nominal} of them are at a thickness a wall is built to), so no "
+                    "walls are reported from it."
+                )
+                logger.info(f"{sheet_id}: {walls_note}")
+                detected_walls = []
         if not page_type.get("draws_a_plan"):
             detected_rooms = []
 
@@ -677,6 +727,8 @@ def analyze_page(
             "page_type": page_type,
             "title_block": fields,
             "title_block_region": [round(v, 2) for v in region] if region else None,
+            "title_block_found": title_block_found,
+            "title_block_note": title_block_note,
             "rooms": detected_rooms,
             "dimensions": detected_dimensions,
             "dimension_chains": chains,
@@ -685,6 +737,7 @@ def analyze_page(
             "opening_marks": opening_marks,
             "scale_calibration": calibration,
             "walls": detected_walls,
+            "walls_note": walls_note,
             "openings": detected_openings,
             "sheet_index": page_sheet_index,
             "unresolved_items": [],

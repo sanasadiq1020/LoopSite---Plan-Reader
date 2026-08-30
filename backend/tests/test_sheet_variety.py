@@ -194,3 +194,105 @@ def test_a_table_read_across_the_whole_sheet_is_not_believed(config):
     assert page["error"] is None
     # The rooms printed on the drawing survive: no table swallowed them.
     assert len(page["rooms"]) >= 1
+
+
+# --- The title block is wherever the office put it -------------------------
+
+
+def _ruled_block(x, y, cols=4, cell_w=165.0, cell_h=27.0):
+    """A title block of eight ruled label/value cells at a given corner."""
+    fields = [
+        ("PROJECT", "RIVERBEND STAGE 2"), ("DRAWING TITLE", "GROUND FLOOR PLAN"),
+        ("DRAWING NO", "AR-104"), ("SCALE", "1:100"), ("REVISION", "C"),
+        ("DATE", "14.03.2025"), ("DRAWN BY", "TMK"), ("CHECKED BY", "RJP"),
+    ]
+    rows_count = len(fields) // cols
+    lines, horizontals, verticals = [], [], []
+    for i, (label, value) in enumerate(fields):
+        cx = x + (i % cols) * cell_w
+        cy = y + (i // cols) * cell_h
+        lines.append(line(label, cx + 2, cy + 4, cx + 40, cy + 10, size=6.0))
+        lines.append(line(value, cx + 2, cy + 14, cx + 90, cy + 23, size=9.0))
+    width, height = cols * cell_w, rows_count * cell_h
+    # The block's own frame, which is what says where it ends.
+    horizontals += [(y, x, x + width), (y + height, x, x + width)]
+    verticals += [(x, y, y + height), (x + width, y, y + height)]
+    return lines, {"h": horizontals, "v": verticals}, [x, y, x + width, y + height]
+
+
+@pytest.mark.parametrize(
+    "corner",
+    ["top_left", "top_middle", "top_right", "left_middle", "right_middle",
+     "bottom_left", "bottom_middle", "bottom_right"],
+)
+def test_a_title_block_is_found_wherever_the_office_put_it(corner):
+    """Offices put the block on any edge and at any end of it. Finding it from
+    the box the office drew works at every one of those positions; a rectangle
+    padded around wherever its labels sit does not."""
+    from pipeline.plan.titleblock import find_title_block_region
+    from pipeline.plan.reading import load_config
+
+    page_width, page_height = 1191.0, 842.0
+    width, height = 660.0, 54.0
+    xs = {"left": 20.0, "middle": (page_width - width) / 2, "right": page_width - width - 20}
+    ys = {"top": 20.0, "middle": (page_height - height) / 2, "bottom": page_height - height - 20}
+    vertical, horizontal = corner.split("_")
+    if vertical in ("left", "right"):        # a block partway up an edge
+        x, y = xs[vertical], ys["middle"]
+    else:
+        x, y = xs[horizontal], ys[vertical]
+
+    lines, rulings, expected = _ruled_block(x, y)
+    region = find_title_block_region(
+        lines, load_config()["title_block"]["field_labels"], page_width, page_height, rulings
+    )
+    assert region is not None, f"no title block found at {corner}"
+    assert region == pytest.approx(expected, abs=1.0), f"wrong box at {corner}"
+
+
+def test_a_sheet_with_no_title_block_is_still_read_and_says_so():
+    """Some sheets simply do not carry a title block. That sheet is still read
+    in full and identified by its position in the document - what it must not
+    do is come back blank with no explanation."""
+    lines = room_and_dimension_lines(rooms=6, dimensions=8)
+    page = reading.analyze_page(
+        page_number=3, page_count=6, page_width=1191.0, page_height=842.0,
+        lines=lines, text_evidence={}, rulings={"h": [], "v": []},
+    )
+    assert page["error"] is None
+    assert page["title_block_found"] is False
+    assert page["title_block_note"] and "No title block" in page["title_block_note"]
+    assert page["sheet_id"], "a sheet must always be identifiable"
+    assert len(page["rooms"]) >= 1, "the drawing is still read without a title block"
+
+
+def test_a_sheet_with_nothing_printed_on_it_still_gets_an_identity():
+    """The plainest case of all: no title block and nothing to read. The sheet
+    is still listed, still numbered by its place in the document, and says
+    what it could not find."""
+    page = reading.analyze_page(
+        page_number=4, page_count=6, page_width=1191.0, page_height=842.0,
+        lines=[], text_evidence={}, rulings={"h": [], "v": []},
+    )
+    assert page["error"] is None
+    assert page["title_block_found"] is False
+    assert page["title_block_note"] and "position in the document" in page["title_block_note"]
+    assert page["sheet_id"]
+    assert page["page_type"]["value"] == "unknown"
+
+
+# --- A roof plan is not a floor plan ---------------------------------------
+
+
+def test_a_roof_plan_is_its_own_kind_of_sheet(config):
+    """A roof plan is drawn looking down like a floor plan, but its parallel
+    lines are battens, ridges and gutters. Treating it as a floor plan
+    reported 202 of them as walls of the building."""
+    result = detect_page_type("ROOF PLAN", [], 0, 0, 0, config)
+    assert result["value"] == "roof_plan"
+    assert result["draws_a_plan"] is False
+
+
+def test_walls_are_never_traced_on_a_roof_plan_or_a_site_plan(config):
+    never = set(config["walls"]["never_trace_walls_on"])
+    assert {"roof_plan", "site_plan"} <= never
