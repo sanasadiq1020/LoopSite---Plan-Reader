@@ -55,16 +55,17 @@ approve it there.
 
 ## 2. Deploy the API
 
-The API is a container. Two places to put it are described here; **Hugging Face
-Spaces is the one to choose** unless you already have a paid Render service
-running well.
+The API is a Python service. Two places to put it are described here;
+**Hugging Face Spaces is the one to choose** unless you already have a paid
+Render service running well.
 
-| | Hugging Face Spaces (free) | Render (Starter, paid) |
+| | Hugging Face Space (free) | Render (Starter, paid) |
 |---|---|---|
 | Memory | **16 GB** | 512 MB |
 | Processors | 2 | 0.5 |
 | Cost | free | monthly |
-| Sleeps when unused | after 48 hours, wakes on the next visit (~1 min) | no |
+| Started by | `space_app.py` | `Dockerfile` |
+| Sleeps when unused | yes, wakes on the next visit (~1 min) | no |
 | Files kept between restarts | no | no |
 
 Memory is the whole story. Reading a plan holds a sheet's line work, its text
@@ -78,6 +79,29 @@ people who were only reading results. On 16 GB it is not close.
 
 ### 2a. Hugging Face Spaces — recommended
 
+**Choose the Gradio SDK, not Static and not Docker.**
+
+| What the platform offers | Can it run this API? |
+|---|---|
+| **Static** | **No.** A Static Space serves files — HTML, CSS, JavaScript — from a CDN and runs no code at all. This API is a Python program that reads PDFs and writes files; there is nothing for a Static Space to run. |
+| **Gradio** | **Yes.** A Gradio Space runs a Python file, and `space_app.py` in this repository is that file: it starts the same API, on the port a Space listens on. |
+| **Docker** | Yes, and it is what `Dockerfile` is for — but only where the platform offers it. |
+
+`space_app.py` is not a second copy of anything. It puts `backend/` on the
+import path and starts `app.main:app`, which is what every other way of running
+this application starts. It also mounts a one-paragraph page at `/` saying what
+the address is, because a Space shows whatever its application serves there and
+an API on its own serves nothing.
+
+**Hardware: take the free CPU option. Not a GPU one.** This service never uses
+a GPU — it reads PDFs, measures line work and writes files, all of which are
+processor and memory work. A GPU tier adds constraints and costs for something
+that would sit unused. What it does need is **memory**, and the free CPU tier
+has 16 GB where a small paid container has 512 MB. If the hardware list names
+the free option differently, take whichever one says **free**.
+
+---
+
 1. Create an account at **huggingface.co**.
 
 2. **New → Space** (huggingface.co/new-space), and fill in:
@@ -86,9 +110,14 @@ people who were only reading results. On 16 GB it is not close.
    |---|---|
    | **Space name** | `loopsite-plan-reader-api` |
    | **License** | your choice |
-   | **Space SDK** | **Docker → Blank** |
-   | **Hardware** | **CPU basic — free** (2 vCPU, 16 GB) |
+   | **Space SDK** | **Gradio** |
+   | **Template** | **Blank** |
+   | **Hardware** | the free CPU option |
    | **Visibility** | **Public** |
+
+   > **Blank, not one of the example templates.** A template writes its own
+   > `app.py` and `requirements.txt` into the Space, and the first push from
+   > this repository would have to overwrite both.
 
    > **It has to be Public.** A private Space needs an access token on every
    > request, and the interface calls this API straight from the visitor's
@@ -113,9 +142,18 @@ people who were only reading results. On 16 GB it is not close.
    > GitHub; `git push space main` sends the same code to the Space. Push to
    > both whenever you change something.
 
+   These four files at the top of the repository are what the Space reads:
+
+   | | |
+   |---|---|
+   | `README.md` | the block at the very top names the SDK and the file to run |
+   | `space_app.py` | starts the API |
+   | `requirements.txt` | points at `backend/requirements.txt`, so there is only one list |
+   | `packages.txt` | one system library the image may not already carry |
+
 5. The Space starts building on its own. Open it and watch the **Building**
-   log. The first build takes fifteen to twenty-five minutes — it is compiling
-   a large set of packages. Later builds are much faster.
+   log. The first build takes ten to twenty-five minutes — character
+   recognition is a large set of packages. Later builds are much faster.
 
 6. When the badge says **Running**, your API address is:
 
@@ -123,9 +161,10 @@ people who were only reading results. On 16 GB it is not close.
    https://YOUR-NAME-loopsite-plan-reader-api.hf.space
    ```
 
-   All lower case, with the dash between your name and the Space name. Check it
+   All lower case, with a dash between your name and the Space name. Check it
    is alive by opening `<that address>/api/plan/health` — it should answer with
-   `{"status":"ok", ...}`.
+   `{"status":"ok", ...}`. Opening the address on its own shows a short page
+   saying what the service is; that page is not the interface.
 
 7. **Settings → Variables and secrets**, and add these as **Variables**
    (not secrets — none of them is one):
@@ -146,12 +185,20 @@ people who were only reading results. On 16 GB it is not close.
 
 **What to expect from a free Space**
 
-- It **sleeps after 48 hours** with no visitors. The next person to open it
+- It **sleeps after a period with no visitors**. The next person to open it
   waits about a minute while it wakes. Nothing is lost by sleeping except the
   uploaded plans, which are not kept anyway.
 - Its **disk is wiped on every restart and rebuild.** A plan being read at that
   moment is lost and has to be uploaded again. This is by design — a plan lives
   only as long as somebody is reading it.
+
+**If the build fails**
+
+| What the log says | What to do |
+|---|---|
+| a package will not install, naming `paddlepaddle` or `paddleocr` | Remove those two lines from `backend/requirements.txt` and push again. Everything works except scanned sheets with no text of their own, which then say so on screen rather than coming back blank. |
+| `libGL.so.1` or a similar library is missing | Add its name on its own line in `packages.txt` and push again. |
+| it stops without a message | Almost always the build timing out on the large packages. The first row applies. |
 
 ---
 
@@ -315,8 +362,15 @@ the free instance becomes viable.
 
 ## Keeping it up to date
 
-Both platforms watch the repository. Push to `main` and both rebuild on their
-own — Vercel in a minute or two, Render in rather longer.
+Vercel watches the repository and rebuilds on its own, in a minute or two.
+
+A Space is a git repository of its own, so it does not see a push to GitHub.
+Send it the same commit:
+
+```
+git push origin main    # GitHub
+git push space main     # the Space, which then rebuilds
+```
 
 To change what the product says about itself — its version, what it does, its
 known limitations — edit `config/version.json` and push. The interface reads
@@ -329,7 +383,8 @@ that file live under *About this tool*; nothing is written into a screen.
 | | |
 |---|---|
 | Vercel | Free. The interface is a static build well inside the free allowance. |
-| Render, with character recognition | Starter, around **$7 per month** |
+| Hugging Face Space, free CPU tier | Free, with the sleeping described above |
+| Render, with character recognition | Starter, a monthly charge |
 | Render, without it | Free, with the sleep behaviour described above |
 
 ---

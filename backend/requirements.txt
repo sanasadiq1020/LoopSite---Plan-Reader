@@ -1,4 +1,8 @@
-fastapi==0.115.6
+# A range rather than one version. A hosted Space installs its own toolkit
+# alongside this list, and that toolkit needs a newer FastAPI than a single
+# pinned version allows — pinning it makes the install fail before anything
+# runs. Tested on both ends of the range.
+fastapi>=0.115.6,<1.0
 uvicorn[standard]==0.34.0
 python-multipart==0.0.20
 PyMuPDF==1.25.1

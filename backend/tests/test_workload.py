@@ -8,6 +8,7 @@ the reader who was still looking at it.
 
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -166,3 +167,58 @@ def test_asking_whether_recognition_is_available_costs_nothing():
         )
     if not available:
         assert why, "an unavailable engine must say why"
+
+
+# --- the entry point a hosted Space starts --------------------------------
+
+
+def test_the_space_entry_point_serves_the_same_api():
+    """A Space runs one Python file, and that file must start the same
+    application — not a second copy of it that can drift."""
+    import importlib.util
+
+    root = Path(__file__).resolve().parents[2]
+    entry = root / "space_app.py"
+    assert entry.is_file(), "the file a Space is told to run is missing"
+
+    spec = importlib.util.spec_from_file_location("space_app_under_test", entry)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    from app.main import app as the_real_api
+
+    assert module.api is the_real_api, "the Space would start a different application"
+
+
+def test_the_landing_page_never_stands_in_front_of_the_api():
+    """The page mounted at / is a courtesy. A mount that swallowed /api/... would
+    take the whole service down while looking perfectly healthy.
+
+    Asked of the application rather than of its list of routes, because what
+    matters is which one answers — and a newer FastAPI does not keep an
+    included router's routes in a flat list to be read off.
+    """
+    import importlib.util
+
+    from fastapi.testclient import TestClient
+
+    root = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location(
+        "space_app_routes", root / "space_app.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    with TestClient(module._with_a_landing_page(module.api)) as client:
+        answer = client.get("/api/plan/health")
+        assert answer.status_code == 200, "the landing page answered for the API"
+        assert answer.json()["status"] == "ok"
+
+
+def test_a_space_reads_one_list_of_packages_not_two():
+    """Two lists drift apart, and the drift is only found when a deployment
+    breaks."""
+    root = Path(__file__).resolve().parents[2]
+    at_the_root = (root / "requirements.txt").read_text(encoding="utf-8")
+    assert "-r backend/requirements.txt" in at_the_root
+    assert "fastapi" not in at_the_root, "the root list repeats a package instead of pointing at it"

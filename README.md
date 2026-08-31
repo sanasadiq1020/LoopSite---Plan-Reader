@@ -3,15 +3,16 @@ title: LoopSite Plan Reader API
 emoji: "📐"
 colorFrom: blue
 colorTo: indigo
-sdk: docker
-app_port: 7860
+sdk: gradio
+app_file: space_app.py
+python_version: "3.10"
 pinned: false
 short_description: Reads an Australian residential plan set and builds a 3D model
 ---
 
 <!-- The block above is read by the hosting platform this API is deployed to:
-     it says the service is a container and which port it listens on. It is
-     ignored everywhere else, and nothing in the application reads it. -->
+     it names the file that starts the service. It is ignored everywhere else,
+     and nothing in the application reads it. -->
 
 # LoopSite Plan Reader
 

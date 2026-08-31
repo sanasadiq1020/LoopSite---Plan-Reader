@@ -1,0 +1,5 @@
+# What a Space installs. The list itself lives in backend/requirements.txt so
+# there is only ever one of it — this file points at it rather than repeating
+# it, because two lists of packages drift apart and the drift is only found
+# when a deployment breaks.
+-r backend/requirements.txt
