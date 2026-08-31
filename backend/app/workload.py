@@ -15,7 +15,10 @@ Three settings, all with working defaults and all environment-driven, because
 they describe the machine rather than the drawings:
 
 ``MAX_CONCURRENT_READINGS``
-    How many plans may be read at once. Default 1.
+    How many plans may be read at once. **Left unset, this is worked out from
+    the memory the machine actually has** — one at a time is right for a small
+    container and wrong for a large one, and which of the two this is only
+    becomes knowable once it is running. Set it to override.
 
 ``MAX_WAITING_READINGS``
     How many more may be queued behind them. Past this the next upload is
@@ -45,8 +48,104 @@ def _positive_int(name: str, default: int) -> int:
     return value if value > 0 else default
 
 
-MAX_CONCURRENT = _positive_int("MAX_CONCURRENT_READINGS", 1)
-MAX_WAITING = _positive_int("MAX_WAITING_READINGS", 4)
+# Measured by watching the process read every plan set in `input/`: the
+# heaviest peaks at 345 MB, and it does not creep up over repeated reads. The
+# figures below carry a margin on top of that, and room is set aside for the
+# process itself and for the character recognition models when a scanned sheet
+# needs them.
+_MEMORY_PER_READING_MB = 350
+_MEMORY_TO_LEAVE_ALONE_MB = 512
+# Past this, processors are the limit rather than memory, and a longer queue
+# serves people better than more half-speed readings.
+_MOST_WORTH_RUNNING_AT_ONCE = 4
+
+
+def _memory_this_machine_has_mb():
+    """Total memory available here, in MB, or None when it cannot be told.
+
+    A container is asked about **its own** limit first. The machine underneath
+    may have far more, and answering from that is how a service decides it can
+    read six plans at once inside a box that allows one.
+    """
+    for path, unlimited in (
+        ("/sys/fs/cgroup/memory.max", "max"),  # cgroup v2
+        ("/sys/fs/cgroup/memory/memory.limit_in_bytes", None),  # cgroup v1
+    ):
+        try:
+            raw = open(path).read().strip()
+        except OSError:
+            continue
+        if raw == unlimited:
+            break
+        try:
+            value = int(raw)
+        except ValueError:
+            continue
+        # cgroup v1 reports an enormous number to mean "no limit".
+        if 0 < value < (1 << 60):
+            return value / (1024 * 1024)
+
+    try:
+        return (os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")) / (1024 * 1024)
+    except (ValueError, OSError, AttributeError):
+        pass
+
+    # Windows has no sysconf. A development machine is not where this decision
+    # matters, but a function that answers on one platform and shrugs on the
+    # other cannot be checked on the machine it is written on.
+    try:
+        import ctypes
+
+        class _MemoryStatus(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = _MemoryStatus()
+        status.dwLength = ctypes.sizeof(_MemoryStatus)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return status.ullTotalPhys / (1024 * 1024)
+    except Exception:
+        pass
+    return None
+
+
+def _how_many_fit() -> int:
+    """How many plans this machine has the memory to read at once.
+
+    **One at a time is right for a small box and wrong for a large one**, and
+    which box this is only becomes knowable once it is running. So it is
+    worked out from the memory actually available rather than fixed in advance,
+    and ``MAX_CONCURRENT_READINGS`` overrides it wherever that is not wanted.
+    """
+    memory = _memory_this_machine_has_mb()
+    if not memory:
+        return 1
+    room = memory - _MEMORY_TO_LEAVE_ALONE_MB
+    if room <= 0:
+        return 1
+    return max(1, min(int(room // _MEMORY_PER_READING_MB), _MOST_WORTH_RUNNING_AT_ONCE))
+
+
+MAX_CONCURRENT = _positive_int("MAX_CONCURRENT_READINGS", _how_many_fit())
+MAX_WAITING = _positive_int("MAX_WAITING_READINGS", max(4, MAX_CONCURRENT * 4))
+
+_memory = _memory_this_machine_has_mb()
+logger.info(
+    "this server will read "
+    + (
+        f"{MAX_CONCURRENT} plan(s) at once, with room for {MAX_WAITING} waiting"
+    )
+    + (f" ({_memory:.0f} MB available)" if _memory else " (memory unknown, so one at a time)")
+)
 QUEUE_TIMEOUT_SECONDS = _positive_int("READING_QUEUE_TIMEOUT_SECONDS", 600)
 
 # How often a waiting upload says that it is still waiting.

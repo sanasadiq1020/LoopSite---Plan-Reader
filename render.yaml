@@ -27,11 +27,6 @@ services:
         value: "true"
       - key: PYTHONUNBUFFERED
         value: "1"
-      # How many plans this instance reads at the same time, and how many may
-      # queue behind them. Reading two at once on a small instance is how it
-      # runs out of memory and is killed, which loses every plan on it — the
-      # ones being read and the ones people were only looking at.
-      - key: MAX_CONCURRENT_READINGS
-        value: "1"
-      - key: MAX_WAITING_READINGS
-        value: "4"
+      # How many plans are read at once is worked out from the memory this
+      # instance actually has - 350 MB per reading - so it needs no setting
+      # here. MAX_CONCURRENT_READINGS overrides it if ever wanted.

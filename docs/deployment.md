@@ -93,10 +93,20 @@ back blank.
 | Render **Starter** | 512 MB | `Dockerfile` | **no** — the same 512 MB; it buys processor, not memory |
 | Anything with ~1 GB | 1 GB | either | yes |
 
-Whichever it is, set **`MAX_CONCURRENT_READINGS=1`** on a machine under 1 GB.
-Reading two plans at once is what doubles the figure above, and being killed
-loses **every** plan on the server — including those belonging to people who
-were only reading results.
+**How many are read at once is not something you have to set.** The server
+works it out from the memory it actually has — 350 MB per reading, 512 MB left
+for everything else — because one at a time is right for a small container and
+wrong for a large one, and which of the two it is only becomes knowable once it
+is running:
+
+| The machine has | It reads |
+|---|---|
+| 512 MB | 1 at a time |
+| 1 GB | 1 at a time |
+| 2 GB or more | 4 at a time |
+
+Everyone else queues and is told where they are. `MAX_CONCURRENT_READINGS`
+overrides it where that is wanted.
 
 ---
 
@@ -203,16 +213,23 @@ is being read.
 
    | Name | Value |
    |---|---|
-   | `ALLOWED_ORIGINS` | leave empty for now — filled in at step 4 |
+   | `ALLOWED_ORIGINS` | the Vercel address — filled in at step 4 |
    | `COOKIE_CROSS_SITE` | `true` |
-   | `MAX_CONCURRENT_READINGS` | `2` — or `1` if the host has under 1 GB |
-   | `MAX_WAITING_READINGS` | `8` |
-   | `OCR_ENABLED` | leave unset. Set it to `false` only if the host runs out of memory on a scanned sheet |
 
-   The middle two are how many plans are read at once and how many may queue
-   behind them. Two at a time is comfortable in 16 GB; anyone arriving after
-   that waits their turn and is told so, rather than everyone running out of
-   memory together.
+   **That is all that has to be set.** How many plans are read at once is
+   worked out from the memory the machine actually has — 350 MB is set aside
+   for each reading and 512 MB for everything else, so a 16 GB Space reads
+   four at a time while a 512 MB container reads one. Anyone arriving after
+   that waits their turn and is told where they are in the queue, rather than
+   everyone running out of memory together. The first line of the log says
+   which figure it chose.
+
+   Two settings exist for overriding that, and neither is needed to start:
+
+   | Name | When |
+   |---|---|
+   | `MAX_CONCURRENT_READINGS` | to fix the number yourself |
+   | `OCR_ENABLED` | set to `false` only if a scanned sheet exhausts the memory |
 
 **Keep that address.** The interface needs it next.
 
@@ -250,8 +267,11 @@ is being read.
    |---|---|
    | `ALLOWED_ORIGINS` | leave empty for now — filled in at step 4 |
    | `COOKIE_CROSS_SITE` | `true` |
-   | `MAX_CONCURRENT_READINGS` | `1` |
-   | `MAX_WAITING_READINGS` | `4` |
+   | `OCR_ENABLED` | `false`, on a 512 MB instance |
+
+   512 MB holds one reading (345 MB) but not one reading plus the recognition
+   models (529 MB). How many are read at once needs no setting: on this
+   instance the server works out one, on its own.
 
 4. Deploy, and check `<your address>/api/plan/health` when it finishes.
 

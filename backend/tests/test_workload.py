@@ -72,22 +72,37 @@ def test_a_waiting_plan_keeps_saying_that_it_is_waiting(monkeypatch):
     # have to wait out a real queue to prove the report is made.
     monkeypatch.setattr(workload, "_WAIT_TICK_SECONDS", 0.05)
     said = []
-    holder_started = threading.Event()
+    holding = threading.Event()
+    holders_in = threading.Semaphore(0)
 
-    def hold_the_slot():
+    def hold_a_slot():
         with workload.a_turn_to_read():
-            holder_started.set()
-            time.sleep(0.4)
+            holders_in.release()
+            holding.wait(timeout=10)
 
-    workload.claim_a_place()
-    holder = threading.Thread(target=hold_the_slot)
-    holder.start()
-    assert holder_started.wait(timeout=10)
+    # Every slot has to be taken before anything waits, and how many there are
+    # depends on the memory this machine has.
+    holders = []
+    for _ in range(workload.MAX_CONCURRENT):
+        workload.claim_a_place()
+        holder = threading.Thread(target=hold_a_slot)
+        holder.start()
+        holders.append(holder)
+    for _ in range(workload.MAX_CONCURRENT):
+        assert holders_in.acquire(timeout=10)
 
-    workload.claim_a_place()
-    with workload.a_turn_to_read(on_wait=lambda state: said.append(state)):
-        pass
-    holder.join(timeout=10)
+    def wait_for_a_turn():
+        workload.claim_a_place()
+        with workload.a_turn_to_read(on_wait=lambda state: said.append(state)):
+            pass
+
+    waiter = threading.Thread(target=wait_for_a_turn)
+    waiter.start()
+    time.sleep(0.3)
+    holding.set()
+    waiter.join(timeout=10)
+    for holder in holders:
+        holder.join(timeout=10)
 
     assert said, "a plan that waited said nothing while it waited"
 
@@ -252,3 +267,45 @@ def test_a_sheet_says_recognition_was_switched_off_rather_than_coming_back_blank
     assert result["status"] == "unavailable"
     assert result["blocks"] == []
     assert "not available on this server" in result["error"]
+
+
+def test_how_many_plans_at_once_follows_the_memory_the_machine_has():
+    """One at a time is right for a small container and wrong for a large one,
+    and which of the two this is only becomes knowable once it is running."""
+    from app.workload import (
+        _MEMORY_PER_READING_MB,
+        _MEMORY_TO_LEAVE_ALONE_MB,
+        _MOST_WORTH_RUNNING_AT_ONCE,
+    )
+
+    def fits(megabytes):
+        room = megabytes - _MEMORY_TO_LEAVE_ALONE_MB
+        if room <= 0:
+            return 1
+        return max(1, min(int(room // _MEMORY_PER_READING_MB), _MOST_WORTH_RUNNING_AT_ONCE))
+
+    # 345 MB is the measured peak for one reading. A box that cannot hold two
+    # of those must never try, whatever else is true.
+    assert fits(512) == 1
+    assert fits(1024) == 1
+    assert fits(16384) == _MOST_WORTH_RUNNING_AT_ONCE
+    assert fits(64) == 1, "a figure smaller than the reserve must not go negative"
+
+
+def test_a_container_is_asked_about_its_own_limit_first(tmp_path, monkeypatch):
+    """The machine underneath a container may have far more memory than the
+    container is allowed. Answering from the machine is how a service decides
+    it can read six plans at once inside a box that allows one."""
+    from app import workload
+
+    limit = tmp_path / "memory.max"
+    limit.write_text("536870912")  # 512 MB
+    real_open = open
+
+    def fake_open(path, *args, **kwargs):
+        if str(path) == "/sys/fs/cgroup/memory.max":
+            return real_open(limit, *args, **kwargs)
+        raise OSError("not this one")
+
+    monkeypatch.setattr("builtins.open", fake_open)
+    assert round(workload._memory_this_machine_has_mb()) == 512
