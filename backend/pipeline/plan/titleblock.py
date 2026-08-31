@@ -408,6 +408,15 @@ def _field_from_labels(
     other_values: list = []
     max_value_gap = float(max_value_gap_label_heights)
 
+    # The inline form ('SCALE: 1:100') needs a separator between the label and
+    # the value, so a line without one can never be it. Working that out once
+    # per sheet, rather than for every line against every label, removes about
+    # seven hundred thousand comparisons from a plan set of this size.
+    marks = separators or [":"]
+    inline_candidates = [
+        line for line in lines if any(mark in line["text"] for mark in marks)
+    ]
+
     for raw_label in label_list:
         wanted = normalize_label(raw_label)
 
@@ -490,7 +499,7 @@ def _field_from_labels(
                     other_values.append(value)
 
         # Inline form: the label and the value share one line.
-        for line in lines:
+        for line in inline_candidates:
             remainder = _inline_label_match(line["text"], wanted, separators)
             if remainder is None:
                 continue

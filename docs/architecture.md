@@ -26,13 +26,33 @@ problems.
 
 ---
 
+## What happens when
+
+**An upload does only what the first screen needs.** For each sheet: classify
+the page, read its text (from the page image where it has none of its own),
+build one text model, then read the sheet - title block, rooms, dimensions,
+schedules, legends, opening marks, page type, scale, walls, openings. Once
+every sheet is read, the drawing index is cross-checked against each of them,
+opening marks are reconciled against the whole document's schedules, the
+tables are written and the metrics computed.
+
+**What is not done during an upload:** no picture of a page and no marked-up
+sheet is drawn. Nothing on the first screen shows either, and a reader opens
+two or three sheets out of twenty. Both are drawn the first time one is asked
+for, from the saved source PDF and the reading already stored for that page,
+and kept once made. Making all of them up front was more than half of an
+upload's time.
+
+**The 3D model** is built when a reader chooses a sheet, never during an
+upload.
+
 ## The reading pipeline
 
 Each module does one thing and hands on a plain data structure.
 
 | Module | What it does |
 |---|---|
-| `intake` | Opens the PDF, classifies each page, renders it once, orchestrates the rest |
+| `intake` | Opens the PDF, classifies each page, orchestrates the rest, and makes a sheet's images when one is asked for |
 | `textmodel` | One text model per page: writing direction, font size, de-duplication, overprints — and the page's own rotation applied |
 | `layout` | Ruling lines, table cells, and pairing a label with its value by geometry |
 | `validators` | Per-field format checks; a value that fails is reported as not found, never stored raw |

@@ -31,12 +31,20 @@ export function SheetDetailModal({
   onClose: () => void;
 }) {
   const [tab, setTab] = useState("overlay");
+  // The marked-up sheet is drawn the first time it is asked for, so it can
+  // fail at that moment rather than during the upload. When it does, the
+  // original page is shown instead of a broken image.
+  const [markUpFailed, setMarkUpFailed] = useState(false);
 
   // Escape closes the sheet, the same way the Close button and the browser's
   // Back button do. The history entry that makes Back work is pushed by the
   // page when a sheet is opened, not here: an effect is invoked twice in
   // development, which pushed one entry and immediately unwound another, and
   // the sheet closed the instant it opened.
+  useEffect(() => {
+    setMarkUpFailed(false);
+  }, [sheet.page_number]);
+
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
@@ -164,7 +172,7 @@ export function SheetDetailModal({
                 outline is a confirmed value; a dashed outline is one worth checking. The key
                 in the corner shows what each colour means.
               </p>
-              {reading.overlay_url ? (
+              {reading.overlay_url && !markUpFailed ? (
                 <>
                   <a
                     href={`${fileUrl(reading.overlay_url)}?download=true`}
@@ -190,6 +198,7 @@ export function SheetDetailModal({
                   <img
                     src={fileUrl(reading.overlay_url)}
                     alt={`Marked-up view of sheet ${sheetLabel}`}
+                    onError={() => setMarkUpFailed(true)}
                     className="w-full rounded-lg border border-slate-200 bg-white shadow-sm"
                   />
                 </>

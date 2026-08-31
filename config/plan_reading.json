@@ -1212,7 +1212,9 @@
   },
   "rendering": {
     "_comment": "How large a page image the machine reading the plan is willing to hold. Drawing sizes are not bounded, and a very large sheet rendered at full resolution can need more memory than a small server has, which ends the run part way through. A sheet larger than this allowance is rendered at a lower resolution instead - never cropped - and the reduction is recorded. An A3 or A1 sheet is nowhere near this limit; raise it on a larger machine if very big drawings need to be read at full detail.",
-    "max_megapixels": 40
+    "max_megapixels": 40,
+    "preview_dpi": 72,
+    "_preview_dpi_note": "The resolution a sheet is shown at when a reader opens it. A person looking at a sheet and a program reading letters off it want different things: at 150 DPI an A3 sheet is a 600 KB image that takes a quarter of a second to write, and at 72 DPI it is 200 KB and looks the same on screen. Reading letters from a picture uses ocr.render_dpi instead, and only on the sheets that need it."
   },
   "tables": {
     "_comment": "A schedule, a legend and a drawing index are panels printed on a sheet; the drawing occupies the rest of it. The area a table covers is excluded from room and dimension detection, so a table read wrongly can swallow the drawing. A table claiming more than this share of the sheet is not a table, and is dropped rather than allowed to hide the drawing behind it.",

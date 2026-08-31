@@ -456,15 +456,14 @@ def process_upload(
                 or page_evidence["drawing_count"] > 0
             )
 
+            # **The page image is not written here.** Nothing on the results
+            # screen shows it: the sheet list is a table, and the picture of a
+            # sheet is only ever wanted when a reader opens that sheet. Writing
+            # all of them during the upload cost a fifth of the whole run for
+            # images most readers never look at. The address is fixed by the
+            # page number, so it can be given out now and the file made the
+            # first time somebody asks for it.
             thumb_filename = f"page_{page_number:03d}.png"
-            thumb_path = pages_dir / thumb_filename
-            # Rendered, written, and released. Holding every page's render to
-            # save re-rendering it for the marked-up sheet later was free on a
-            # development machine and fatal on a small server: 23 A3 sheets at
-            # 150 DPI is 301 MB held at once, and the process was killed part
-            # way through. One page's pixels at a time is the only amount that
-            # does not grow with how many sheets a plan has.
-            render_thumbnail(page, thumb_path)
 
             text_blocks = extract_native_text_blocks(page)
             native_char_count = sum(len(b["text"]) for b in text_blocks)
@@ -519,7 +518,20 @@ def process_upload(
                     )
                 else:
                     logger.info(f"run={run_id} page={page_number} running OCR fallback")
-                    ocr_result = run_ocr_on_page(thumb_path)
+                    # Reading letters off a picture needs a picture at the
+                    # resolution reading needs, which is not the resolution a
+                    # reader wants to look at. It is made here, used, and
+                    # deleted - so only the sheets that actually need it pay
+                    # for it.
+                    ocr_image = run_dir / f"_ocr_page_{page_number:03d}.png"
+                    render_thumbnail(page, ocr_image, dpi=ocr_render_dpi(THUMBNAIL_DPI))
+                    try:
+                        ocr_result = run_ocr_on_page(ocr_image)
+                    finally:
+                        try:
+                            ocr_image.unlink(missing_ok=True)
+                        except Exception:
+                            pass
                     ocr_blocks = ocr_result["blocks"]
                     ocr_char_count = sum(len(b["text"]) for b in ocr_blocks)
                     ocr_status = ocr_result["status"]
@@ -700,19 +712,19 @@ def process_upload(
         cross_check = {}
 
     # --- Source overlays --------------------------------------------------
-    overlays_dir = run_dir / "overlays"
-    overlays_dir.mkdir(parents=True, exist_ok=True)
+    # **Drawn when a reader opens the sheet, not during the upload.** Marking
+    # up all of them was the single most expensive thing an upload did - more
+    # than a third of the whole run - and on a plan set of twenty sheets a
+    # reader opens two or three. The address is fixed by the page number, so
+    # it is given out now and the image is drawn the first time it is asked
+    # for, which takes about a second.
+    progress.set_stage(progress_token, "Writing the tables", 88)
+    (run_dir / "overlays").mkdir(parents=True, exist_ok=True)
     for reading in plan_reading_pages:
-        progress.set_stage(progress_token, "Marking up the sheets", 88)
-        page = page_objects.get(reading["page_number"])
-        if page is None:
+        if reading.get("error"):
             continue
         overlay_filename = f"overlay_{reading['page_number']:03d}.png"
-        # The page is rendered again here rather than kept from earlier. It
-        # costs about a second per sheet, and it is what keeps memory flat
-        # however many sheets a plan has.
-        if render_overlay(page, reading, overlays_dir / overlay_filename, config):
-            reading["overlay_url"] = f"/api/plan/{run_id}/overlays/{overlay_filename}"
+        reading["overlay_url"] = f"/api/plan/{run_id}/overlays/{overlay_filename}"
 
     # --- Fold the reading back into the sheet register (Gate 2) -----------
     reading_by_page = {r["page_number"]: r for r in plan_reading_pages}
@@ -948,16 +960,71 @@ def load_manifest(run_id: str) -> dict | None:
 _PAGE_FILENAME_RE = re.compile(r"^page_\d{3}\.png$")
 
 
+def _page_number_in(filename: str) -> int | None:
+    digits = re.findall(r"(\d{3})", filename)
+    return int(digits[0]) if digits else None
+
+
+def _open_source_page(run_id: str, page_number: int):
+    """The saved source PDF and one page of it, or (None, None).
+
+    The upload keeps the approved PDF exactly as it arrived, so any picture of
+    a sheet can be made again later from the drawing itself rather than from
+    something derived from it.
+    """
+    source = run_plan_dir(run_id) / "source.pdf"
+    if not source.is_file() or page_number is None or page_number < 1:
+        return None, None
+    try:
+        doc = fitz.open(source)
+        if page_number > doc.page_count:
+            doc.close()
+            return None, None
+        return doc, doc.load_page(page_number - 1)
+    except Exception as e:
+        logger.exception(f"run={run_id} could not open the saved source PDF: {e}")
+        return None, None
+
+
+def preview_dpi() -> int:
+    """The resolution a sheet is shown at when a reader looks at the page.
+
+    Lower than the resolution character recognition needs, because a person
+    looking at a sheet and a program reading letters off it want different
+    things: at 150 DPI an A3 sheet is a 600 KB image that takes a quarter of a
+    second to write, and at 72 DPI it is 200 KB and looks the same on screen.
+    """
+    try:
+        return int(load_config().get("rendering", {}).get("preview_dpi", 72))
+    except Exception:
+        return 72
+
+
 def resolve_page_image_path(run_id: str, filename: str) -> Path | None:
-    """Only ever returns a path inside this run's own pages/ folder, and only
-    for filenames matching the exact pattern this pipeline generates — blocks
-    path traversal (`../../secrets`) regardless of what the caller sends."""
+    """The picture of one sheet, made the first time it is asked for.
+
+    Only ever returns a path inside this run's own pages/ folder, and only for
+    filenames matching the exact pattern this pipeline generates — blocks path
+    traversal (`../../secrets`) regardless of what the caller sends.
+    """
     if not _PAGE_FILENAME_RE.match(filename):
         return None
     path = run_plan_dir(run_id) / "pages" / filename
-    if not path.is_file():
+    if path.is_file():
+        return path
+
+    doc, page = _open_source_page(run_id, _page_number_in(filename))
+    if page is None:
         return None
-    return path
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        render_thumbnail(page, path, dpi=preview_dpi())
+        return path if path.is_file() else None
+    except Exception as e:
+        logger.exception(f"run={run_id} could not make the picture of {filename}: {e}")
+        return None
+    finally:
+        doc.close()
 
 
 def resolve_sheet_register_csv_path(run_id: str) -> Path | None:
@@ -971,14 +1038,42 @@ _OVERLAY_FILENAME_RE = re.compile(r"^overlay_\d{3}\.png$")
 
 
 def resolve_overlay_image_path(run_id: str, filename: str) -> Path | None:
-    """Same containment rule as the page images: only a filename this
-    pipeline generates, only inside this run's own folder."""
+    """The marked-up sheet for one page, drawn the first time it is asked for.
+
+    Same containment rule as the page images: only a filename this pipeline
+    generates, only inside this run's own folder. Everything it draws comes
+    from the reading already saved for that page, so the marked-up sheet
+    always shows exactly what was reported for it.
+    """
     if not _OVERLAY_FILENAME_RE.match(filename):
         return None
     path = run_plan_dir(run_id) / "overlays" / filename
-    if not path.is_file():
+    if path.is_file():
+        return path
+
+    page_number = _page_number_in(filename)
+    reading = load_plan_reading(run_id)
+    if reading is None or page_number is None:
         return None
-    return path
+    page_reading = next(
+        (p for p in reading.get("pages", []) if p.get("page_number") == page_number), None
+    )
+    if page_reading is None:
+        return None
+
+    doc, page = _open_source_page(run_id, page_number)
+    if page is None:
+        return None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if render_overlay(page, page_reading, path, load_config()):
+            return path if path.is_file() else None
+        return None
+    except Exception as e:
+        logger.exception(f"run={run_id} could not mark up sheet {page_number}: {e}")
+        return None
+    finally:
+        doc.close()
 
 
 _EXPORT_FILENAMES = {
@@ -1009,6 +1104,17 @@ def build_overlays_zip(run_id: str) -> Path | None:
     overlays currently on disk.
     """
     import zipfile
+
+    # Marked-up sheets are drawn when a sheet is opened, so a reader who
+    # downloads the set without opening every sheet would otherwise get a
+    # part of it. Any that are missing are drawn here first.
+    reading = load_plan_reading(run_id)
+    for page_reading in (reading or {}).get("pages", []):
+        if page_reading.get("error"):
+            continue
+        resolve_overlay_image_path(
+            run_id, f"overlay_{page_reading['page_number']:03d}.png"
+        )
 
     overlays_dir = run_plan_dir(run_id) / "overlays"
     if not overlays_dir.is_dir():

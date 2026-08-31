@@ -240,13 +240,31 @@ _FRAME_SIDE_CANDIDATES = 6
 _FRAME_SPAN_TOLERANCE_PT = 2.0
 
 
-def _spans(position_lines, position, start, end):
-    """Whether a drawn line at ``position`` runs the whole way from start to end."""
+def _by_position(position_lines):
+    """Drawn lines grouped by where they sit, so a lookup does not scan them all.
+
+    A busy sheet has eight hundred vertical lines on it, and the search for a
+    title block asks "is there a line here that runs the whole side?" thousands
+    of times. Scanning the whole list each time was measured at a twentieth of
+    the whole upload; grouping them first makes each question cost a handful of
+    comparisons instead of eight hundred.
+    """
+    buckets: dict = {}
+    step = _FRAME_SPAN_TOLERANCE_PT
     for pos, a, b in position_lines:
-        if abs(pos - position) > _FRAME_SPAN_TOLERANCE_PT:
-            continue
-        if a <= start + _FRAME_SPAN_TOLERANCE_PT and b >= end - _FRAME_SPAN_TOLERANCE_PT:
-            return True
+        buckets.setdefault(int(pos // step), []).append((pos, a, b))
+    return buckets
+
+
+def _spans(buckets, position, start, end):
+    """Whether a drawn line at ``position`` runs the whole way from start to end."""
+    key = int(position // _FRAME_SPAN_TOLERANCE_PT)
+    for nearby in (key - 1, key, key + 1):
+        for pos, a, b in buckets.get(nearby, ()):
+            if abs(pos - position) > _FRAME_SPAN_TOLERANCE_PT:
+                continue
+            if a <= start + _FRAME_SPAN_TOLERANCE_PT and b >= end - _FRAME_SPAN_TOLERANCE_PT:
+                return True
     return False
 
 
@@ -304,6 +322,8 @@ def drawn_box_around(boxes: list, rulings: dict, page_width: float, page_height:
         return None
 
     sheet_area = max(page_width * page_height, 1.0)
+    vertical_buckets = _by_position(verticals)
+    horizontal_buckets = _by_position(horizontals)
     best = None
     best_score = (-1, 0.0)
     for left in lefts[:_FRAME_SIDE_CANDIDATES]:
@@ -318,10 +338,10 @@ def drawn_box_around(boxes: list, rulings: dict, page_width: float, page_height:
                     if area / sheet_area > max_area_share:
                         continue
                     if not (
-                        _spans(verticals, left, top, bottom)
-                        and _spans(verticals, right, top, bottom)
-                        and _spans(horizontals, top, left, right)
-                        and _spans(horizontals, bottom, left, right)
+                        _spans(vertical_buckets, left, top, bottom)
+                        and _spans(vertical_buckets, right, top, bottom)
+                        and _spans(horizontal_buckets, top, left, right)
+                        and _spans(horizontal_buckets, bottom, left, right)
                     ):
                         continue
                     held = sum(
