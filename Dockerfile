@@ -23,7 +23,7 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
 WORKDIR /install
 # The build context is the project root, not backend/, because the image also
 # needs /config alongside the code.
-COPY backend/requirements.txt .
+COPY requirements.txt .
 
 # Set to "false" for a much smaller image without scanned-sheet support. The
 # reader handles its absence: a page with no text layer is reported as not

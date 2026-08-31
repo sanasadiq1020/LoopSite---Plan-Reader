@@ -1,5 +1,24 @@
-# What a Space installs. The list itself lives in backend/requirements.txt so
-# there is only ever one of it — this file points at it rather than repeating
-# it, because two lists of packages drift apart and the drift is only found
-# when a deployment breaks.
--r backend/requirements.txt
+# Every package this application needs, and the only list of them.
+#
+# It lives at the top of the repository because that is where a hosted Space
+# looks: a Space mounts this one file on its own to install from, with none of
+# the repository around it, so a list that points at another file with `-r`
+# cannot be followed and the build stops before anything is installed.
+#
+# A range rather than one version. A hosted Space installs its own toolkit
+# alongside this list, and that toolkit needs a newer FastAPI than a single
+# pinned version allows — pinning it makes the install fail before anything
+# runs. Tested on both ends of the range.
+fastapi>=0.115.6,<1.0
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+PyMuPDF==1.25.1
+Pillow==11.1.0
+pydantic==2.10.4
+paddlepaddle>=3.0
+paddleocr>=3.0
+opencv-python-headless>=4.10.0
+pytest>=8.0
+# Day 5: the canonical model written as IFC, the format the
+# construction industry exchanges.
+ifcopenshell>=0.8.0

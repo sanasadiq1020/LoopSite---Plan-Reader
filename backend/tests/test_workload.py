@@ -230,13 +230,17 @@ def test_the_landing_page_never_stands_in_front_of_the_api():
         assert answer.json()["status"] == "ok"
 
 
-def test_a_space_reads_one_list_of_packages_not_two():
+def test_there_is_exactly_one_list_of_packages():
     """Two lists drift apart, and the drift is only found when a deployment
-    breaks."""
+    breaks. It has to be the one at the top of the repository, because a Space
+    mounts that file on its own with none of the repository around it — a list
+    pointing elsewhere with `-r` cannot be followed, and the build stops before
+    anything is installed."""
     root = Path(__file__).resolve().parents[2]
     at_the_root = (root / "requirements.txt").read_text(encoding="utf-8")
-    assert "-r backend/requirements.txt" in at_the_root
-    assert "fastapi" not in at_the_root, "the root list repeats a package instead of pointing at it"
+    assert "fastapi" in at_the_root, "the real list must be the one a Space can read"
+    assert "-r " not in at_the_root, "a Space cannot follow a pointer to another file"
+    assert not (root / "backend" / "requirements.txt").exists(), "there are two lists again"
 
 
 def test_character_recognition_can_be_turned_off_without_rebuilding(monkeypatch):

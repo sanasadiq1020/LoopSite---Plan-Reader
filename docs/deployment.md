@@ -190,7 +190,7 @@ is being read.
    |---|---|
    | `README.md` | the block at the very top names the SDK and the file to run |
    | `space_app.py` | starts the API |
-   | `requirements.txt` | points at `backend/requirements.txt`, so there is only one list |
+   | `requirements.txt` | every package it needs — a Space mounts this file on its own, so it cannot point at another |
    | `packages.txt` | one system library the image may not already carry |
 
 5. The Space starts building on its own. Open it and watch the **Building**
@@ -246,7 +246,7 @@ is being read.
 
 | What the log says | What to do |
 |---|---|
-| a package will not install, naming `paddlepaddle` or `paddleocr` | Remove those two lines from `backend/requirements.txt` and push again. Everything works except scanned sheets with no text of their own, which then say so on screen rather than coming back blank. |
+| a package will not install, naming `paddlepaddle` or `paddleocr` | Remove those two lines from `requirements.txt` and push again. Everything works except scanned sheets with no text of their own, which then say so on screen rather than coming back blank. |
 | `libGL.so.1` or a similar library is missing | Add its name on its own line in `packages.txt` and push again. |
 | it stops without a message | Almost always the build timing out on the large packages. The first row applies. |
 
@@ -420,7 +420,7 @@ build, at the cost of a rebuild to change your mind:
 | Where | Name | Value |
 |---|---|---|
 | a Docker host, under Environment | `BUILD_WITH_OCR` | `false` |
-| a Space | delete the `paddlepaddle` and `paddleocr` lines from `backend/requirements.txt` | |
+| a Space | delete the `paddlepaddle` and `paddleocr` lines from `requirements.txt` | |
 
 The image drops by roughly 400 MB.
 
