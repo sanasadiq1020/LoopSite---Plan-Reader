@@ -224,7 +224,7 @@ def test_the_landing_page_never_stands_in_front_of_the_api():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    with TestClient(module.api) as client:
+    with TestClient(module._with_a_landing_page(module.api)) as client:
         answer = client.get("/api/plan/health")
         assert answer.status_code == 200, "the landing page answered for the API"
         assert answer.json()["status"] == "ok"
@@ -234,15 +234,15 @@ def test_the_landing_page_never_stands_in_front_of_the_api():
         assert "text/html" in page.headers["content-type"]
 
 
-def test_the_space_entry_point_brings_in_nothing_that_takes_a_port():
-    """The page used to be built with the Space's own toolkit, and mounting
-    that takes a port of its own - by default the very port the API is served
-    on, so the API could never bind it. It worked on a laptop and failed on the
-    Space, which is the worst way for this to be wrong."""
+def test_the_landing_page_never_takes_a_port_of_its_own():
+    """Mounted with its defaults, the Space's toolkit starts a Node rendering
+    server on the very port the API is served on, and the API can then never
+    bind it. It worked on a laptop, where Node is not installed, and failed on
+    the Space, where it is."""
     root = Path(__file__).resolve().parents[2]
     source = (root / "space_app.py").read_text(encoding="utf-8")
-    assert "import gradio" not in source
-    assert "mount_gradio_app" not in source
+    assert "mount_gradio_app" in source
+    assert "ssr_mode=False" in source, "the rendering server would take the API's port"
 
 
 def test_there_is_exactly_one_list_of_packages():
