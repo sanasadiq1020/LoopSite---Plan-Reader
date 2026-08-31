@@ -8,7 +8,7 @@ sdk_version: 6.26.0
 app_file: space_app.py
 python_version: "3.10"
 pinned: false
-short_description: Reads an Australian residential plan set and builds a 3D model
+short_description: Reads an Australian residential plan set into a 3D model
 ---
 
 <!-- The block above is read by the hosting platform this API is deployed to:
