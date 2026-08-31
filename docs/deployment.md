@@ -55,25 +55,48 @@ approve it there.
 
 ## 2. Deploy the API
 
-The API is a Python service. Two places to put it are described here;
-**Hugging Face Spaces is the one to choose** unless you already have a paid
-Render service running well.
+### How much machine this actually needs — measured, not guessed
 
-| | Hugging Face Space (free) | Render (Starter, paid) |
-|---|---|---|
-| Memory | **16 GB** | 512 MB |
-| Processors | 2 | 0.5 |
-| Cost | free | monthly |
-| Started by | `space_app.py` | `Dockerfile` |
-| Sleeps when unused | yes, wakes on the next visit (~1 min) | no |
-| Files kept between restarts | no | no |
+Every number below was taken by watching the process while it read the plan
+sets in `input/`, largest first:
 
-Memory is the whole story. Reading a plan holds a sheet's line work, its text
-and its picture at once, and character recognition adds about 184 MB more while
-it runs. On 512 MB that is close to the limit with one plan and past it with
-two — which is what "memory limit exceeded" means, and when it happens the
-service is killed and **every** plan on it is lost, including those belonging to
-people who were only reading results. On 16 GB it is not close.
+| | Memory |
+|---|---|
+| Idle, with everything loaded | **45 MB** |
+| Reading the heaviest plan set (17 sheets, drawn as pictures) | **345 MB at its peak** |
+| The same set read four times over | **still 345 MB** — it does not creep up |
+| Character recognition models, while a scanned sheet is being read | **+184 MB** |
+| Two plans read at the same moment | **roughly double** |
+
+Two things follow, and they decide everything else on this page:
+
+*   **Without character recognition, one plan at a time fits in 512 MB.**
+    345 MB of working set leaves real headroom.
+*   **With it, 512 MB is not enough.** 345 + 184 is 529 MB before the operating
+    system has taken anything, which is why a 512 MB instance was killed. It
+    needs about **1 GB**.
+
+Character recognition is only ever used on a sheet that carries **no text of
+its own** — a scan, or a drawing exported as an image. Every one of the plan
+sets in use is read completely without it. It is now a **setting**
+(`OCR_ENABLED=false`) rather than something baked into the image, so a small
+host can turn it off and a larger one can turn it on, without rebuilding
+anything. A sheet that needed it then says so on its own row instead of coming
+back blank.
+
+### Which host
+
+| | Memory | Runs | Character recognition |
+|---|---|---|---|
+| A free Space with a CPU tier | 16 GB | Python (`space_app.py`) | yes, comfortably |
+| Render **free** | 512 MB | `Dockerfile` | **no** — set `OCR_ENABLED=false` |
+| Render **Starter** | 512 MB | `Dockerfile` | **no** — the same 512 MB; it buys processor, not memory |
+| Anything with ~1 GB | 1 GB | either | yes |
+
+Whichever it is, set **`MAX_CONCURRENT_READINGS=1`** on a machine under 1 GB.
+Reading two plans at once is what doubles the figure above, and being killed
+loses **every** plan on the server — including those belonging to people who
+were only reading results.
 
 ---
 
@@ -93,12 +116,21 @@ this application starts. It also mounts a one-paragraph page at `/` saying what
 the address is, because a Space shows whatever its application serves there and
 an API on its own serves nothing.
 
-**Hardware: take the free CPU option. Not a GPU one.** This service never uses
-a GPU — it reads PDFs, measures line work and writes files, all of which are
-processor and memory work. A GPU tier adds constraints and costs for something
-that would sit unused. What it does need is **memory**, and the free CPU tier
-has 16 GB where a small paid container has 512 MB. If the hardware list names
-the free option differently, take whichever one says **free**.
+**Hardware.** This service never uses a GPU — it reads PDFs, measures line
+work and writes files, all of which are processor and memory work. What it
+needs is memory: 345 MB to read a plan, and 184 MB more while a scanned sheet
+is being read.
+
+*   **A free CPU tier is the right one.** Take it if it is offered.
+*   **If the only free tier on offer is a GPU one, it is still worth trying.**
+    A GPU tier runs an ordinary Python process on ordinary processors and
+    attaches a GPU only to code that asks for one; nothing here ever asks, so
+    the GPU sits unused and the service runs on the part that is not the GPU.
+    It costs twenty minutes to find out.
+*   **If it does not run there, the fallback is a small container host with
+    `OCR_ENABLED=false`** — see the table above. 345 MB fits in 512 MB, which
+    means a free container tier is enough for everything except scanned
+    sheets, and those say so on screen rather than coming back empty.
 
 ---
 
@@ -173,10 +205,11 @@ the free option differently, take whichever one says **free**.
    |---|---|
    | `ALLOWED_ORIGINS` | leave empty for now — filled in at step 4 |
    | `COOKIE_CROSS_SITE` | `true` |
-   | `MAX_CONCURRENT_READINGS` | `2` |
+   | `MAX_CONCURRENT_READINGS` | `2` — or `1` if the host has under 1 GB |
    | `MAX_WAITING_READINGS` | `8` |
+   | `OCR_ENABLED` | leave unset. Set it to `false` only if the host runs out of memory on a scanned sheet |
 
-   The last two are how many plans are read at once and how many may queue
+   The middle two are how many plans are read at once and how many may queue
    behind them. Two at a time is comfortable in 16 GB; anyone arriving after
    that waits their turn and is told so, rather than everyone running out of
    memory together.
@@ -345,18 +378,31 @@ runtime. Either move to a larger instance, or leave it out.
 ## Leaving character recognition out
 
 A smaller, cheaper deployment that reads drawings which carry their own text —
-which is most of them. Sheets stored as images are still read for their line
-work; only their *text* is not recovered, and each such sheet says so rather
-than appearing empty.
+which is most of them, and all of the plan sets in use here. Sheets stored as
+images are still read for their line work; only their *text* is not recovered,
+and each such sheet says so on its own row rather than appearing empty.
 
-On Render, under **Environment**, add:
+**Two ways, and they are for different situations.**
+
+**To turn it off on a running service** — the one to reach for first, because
+it takes effect on the next restart and can be undone just as quickly:
 
 | Name | Value |
 |---|---|
-| `BUILD_WITH_OCR` | `false` |
+| `OCR_ENABLED` | `false` |
 
-Render passes it to the Docker build. The image drops by roughly 400 MB and
-the free instance becomes viable.
+Nothing is rebuilt. The models are simply never loaded, so the 184 MB they
+occupy is never taken and a 512 MB machine has room to read a plan.
+
+**To leave it out of the image altogether** — a smaller image and a faster
+build, at the cost of a rebuild to change your mind:
+
+| Where | Name | Value |
+|---|---|---|
+| a Docker host, under Environment | `BUILD_WITH_OCR` | `false` |
+| a Space | delete the `paddlepaddle` and `paddleocr` lines from `backend/requirements.txt` | |
+
+The image drops by roughly 400 MB.
 
 ---
 

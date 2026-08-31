@@ -222,3 +222,33 @@ def test_a_space_reads_one_list_of_packages_not_two():
     at_the_root = (root / "requirements.txt").read_text(encoding="utf-8")
     assert "-r backend/requirements.txt" in at_the_root
     assert "fastapi" not in at_the_root, "the root list repeats a package instead of pointing at it"
+
+
+def test_character_recognition_can_be_turned_off_without_rebuilding(monkeypatch):
+    """The recognition models are the largest thing this application holds -
+    184 MB on top of a 345 MB working set. Whether a machine has room for them
+    is a fact about the machine, so it is a setting rather than a rebuild."""
+    from pipeline.plan.ocr import ocr_is_available
+
+    monkeypatch.setenv("OCR_ENABLED", "false")
+    available, why = ocr_is_available()
+    assert available is False
+    assert "switched off" in why
+
+    monkeypatch.setenv("OCR_ENABLED", "true")
+    available, _ = ocr_is_available()
+    assert available is True
+
+
+def test_a_sheet_says_recognition_was_switched_off_rather_than_coming_back_blank(
+    monkeypatch, tmp_path
+):
+    """A reader cannot tell a drawing with nothing on it from a drawing this
+    tool could not read. Every sheet that produces no text says why."""
+    from pipeline.plan.ocr import run_ocr_on_page
+
+    monkeypatch.setenv("OCR_ENABLED", "false")
+    result = run_ocr_on_page(tmp_path / "never_read.png")
+    assert result["status"] == "unavailable"
+    assert result["blocks"] == []
+    assert "not available on this server" in result["error"]

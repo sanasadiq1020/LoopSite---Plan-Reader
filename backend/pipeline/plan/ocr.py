@@ -186,6 +186,26 @@ def text_layer_is_usable(text: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _turned_off() -> bool:
+    """Whether this deployment has been told not to use character recognition.
+
+    A **runtime** switch, not a build-time one. The recognition models are the
+    largest thing this application ever holds — measured at 184 MB on top of a
+    345 MB working set — and whether a machine has room for them is a fact
+    about the machine, not about the code. Leaving it out of the image means
+    rebuilding to change your mind; an environment variable means turning it
+    off on a small host and on again on a larger one.
+
+    Everything else is unaffected: a sheet that carries its own text is read
+    from that text either way, and a sheet that does not says plainly that
+    recognition is switched off here rather than coming back blank.
+    """
+    raw = os.environ.get("OCR_ENABLED")
+    if raw is None:
+        return False
+    return raw.strip().lower() in ("0", "false", "no", "off")
+
+
 def ocr_is_available() -> tuple[bool, str]:
     """Whether character recognition can run here at all, and why not.
 
@@ -202,6 +222,8 @@ def ocr_is_available() -> tuple[bool, str]:
     system without loading anything, so that is what is asked here; the
     library itself is loaded only when a sheet genuinely has to be read.
     """
+    if _turned_off():
+        return False, "character recognition is switched off on this server"
     if importlib.util.find_spec("paddleocr") is None:
         return False, "the character recognition package is not installed here"
     return True, ""
