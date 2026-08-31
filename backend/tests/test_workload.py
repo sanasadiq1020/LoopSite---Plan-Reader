@@ -206,7 +206,7 @@ def test_the_space_entry_point_serves_the_same_api():
 
 
 def test_the_landing_page_never_stands_in_front_of_the_api():
-    """The page mounted at / is a courtesy. A mount that swallowed /api/... would
+    """The page at / is a courtesy. Anything that answered for /api/... would
     take the whole service down while looking perfectly healthy.
 
     Asked of the application rather than of its list of routes, because what
@@ -224,10 +224,25 @@ def test_the_landing_page_never_stands_in_front_of_the_api():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    with TestClient(module._with_a_landing_page(module.api)) as client:
+    with TestClient(module.api) as client:
         answer = client.get("/api/plan/health")
         assert answer.status_code == 200, "the landing page answered for the API"
         assert answer.json()["status"] == "ok"
+
+        page = client.get("/")
+        assert page.status_code == 200
+        assert "text/html" in page.headers["content-type"]
+
+
+def test_the_space_entry_point_brings_in_nothing_that_takes_a_port():
+    """The page used to be built with the Space's own toolkit, and mounting
+    that takes a port of its own - by default the very port the API is served
+    on, so the API could never bind it. It worked on a laptop and failed on the
+    Space, which is the worst way for this to be wrong."""
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "space_app.py").read_text(encoding="utf-8")
+    assert "import gradio" not in source
+    assert "mount_gradio_app" not in source
 
 
 def test_there_is_exactly_one_list_of_packages():
