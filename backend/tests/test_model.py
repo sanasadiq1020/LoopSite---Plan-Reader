@@ -11,7 +11,7 @@ import struct
 import pytest
 
 from pipeline.model.canonical import build_model, choose_default_sheet, modellable_sheets
-from pipeline.model.exporters import _wall_corners, write_glb, write_ifc, write_obj
+from pipeline.model.exporters import wall_pieces, write_glb, write_ifc, write_obj
 from pipeline.model.height import resolve_storey_height
 from pipeline.plan.reading import load_config
 
@@ -242,7 +242,9 @@ def test_a_figure_printed_once_is_not_the_storey_height(config):
 
 def test_a_wall_becomes_a_box_of_the_right_size(config):
     model = build_model(_page(), _HEIGHT, config, "run", "plan.pdf", 800.0)
-    corners = _wall_corners(model["walls"][0])
+    boxes = wall_pieces(model["walls"][0], [])
+    assert len(boxes) == 1, "a wall with no openings in it is one box"
+    corners = boxes[0]
     assert len(corners) == 8
     xs = [c[0] for c in corners]
     ys = [c[1] for c in corners]
@@ -300,3 +302,137 @@ def test_the_ifc_is_a_building_measured_in_millimetres(tmp_path, config):
         "METRE",
     ), "a silent unit change is the failure Week 1 names first"
     assert ifc.by_type("IfcBuildingStorey"), "walls have to sit on a storey"
+
+
+# --- doors and windows cut into the walls ---------------------------------
+
+
+def _opening(**overrides):
+    """A door 1 m along the test wall, 900 wide, from a schedule."""
+    opening = {
+        "opening_id": "A02-OP001",
+        "mark": "D1",
+        "element_type": "door",
+        "wall_id": "A02-W001",
+        "wall_note": None,
+        "position_on_wall": {
+            "start_fraction": 0.1,
+            "end_fraction": 0.28,
+            "centre_fraction": 0.19,
+            "from_wall_start_mm": 950.0,
+            "width_mm": 900.0,
+            "measured_from": "break_in_the_wall",
+        },
+        "width_mm": 900.0,
+        "height_mm": 2040.0,
+        "sill_height_mm": 0.0,
+        "head_height_mm": 2040.0,
+        "found_by": "mark_on_the_drawing",
+        "source_sheet": "A02",
+        "source_bbox": [150.0, 195.0, 240.0, 205.0],
+        "confidence": 0.9,
+        "confidence_band": "high",
+        "review_status": "needs_review",
+        "in_schedule": True,
+    }
+    opening.update(overrides)
+    return opening
+
+
+def test_a_door_is_cut_as_a_void_and_leaves_three_pieces_of_wall(config):
+    """A door reaching the floor leaves wall either side of it and a lintel
+    over it — and nothing under it."""
+    model = build_model(
+        _page(openings=[_opening()]), _HEIGHT, config, "run", "plan.pdf", 800.0
+    )
+    opening = model["openings"][0]
+    assert opening["geometry"]["cut_as_void"] is True
+    assert opening["not_cut_because"] is None
+    assert opening["dimensions"]["height_source"] == "schedule"
+
+    boxes = wall_pieces(model["walls"][0], model["openings"])
+    assert len(boxes) == 3, "wall, lintel, wall"
+    heights = sorted(round(max(c[2] for c in box) - min(c[2] for c in box)) for box in boxes)
+    assert heights == [660, 2700, 2700], "the lintel is what is left above the door"
+
+
+def test_a_window_also_leaves_the_wall_under_its_sill(config):
+    window = _opening(
+        mark="W1", element_type="window", height_mm=1200.0, sill_height_mm=900.0
+    )
+    model = build_model(
+        _page(openings=[window]), _HEIGHT, config, "run", "plan.pdf", 800.0
+    )
+    boxes = wall_pieces(model["walls"][0], model["openings"])
+    assert len(boxes) == 4, "wall, the piece under the sill, the lintel, wall"
+    heights = sorted(round(max(c[2] for c in box) - min(c[2] for c in box)) for box in boxes)
+    assert heights == [600, 900, 2700, 2700]
+
+
+def test_the_hole_is_where_the_plan_puts_it_along_the_wall(config):
+    model = build_model(
+        _page(openings=[_opening()]), _HEIGHT, config, "run", "plan.pdf", 800.0
+    )
+    opening = model["openings"][0]
+    # The wall runs 5 m east from the building's own south-west corner, and
+    # the opening sits 19% of the way along it.
+    assert round(opening["geometry"]["centre_mm"][0]) == 950
+    assert round(opening["geometry"]["offset_along_wall_mm"]) == 950
+
+
+def test_an_opening_whose_kind_the_drawing_never_states_is_not_cut(config):
+    """A plan is a horizontal cut, so it shows no height. Where nothing says
+    whether this is a door or a window, no hole is invented."""
+    unknown = _opening(
+        mark="", element_type=None, height_mm=None, sill_height_mm=None,
+        head_height_mm=None, found_by="gap_in_the_wall", in_schedule=False,
+    )
+    model = build_model(
+        _page(openings=[unknown]), _HEIGHT, config, "run", "plan.pdf", 800.0
+    )
+    opening = model["openings"][0]
+    assert opening["geometry"]["cut_as_void"] is False
+    assert "door or a window" in opening["not_cut_because"]
+    assert len(wall_pieces(model["walls"][0], model["openings"])) == 1
+
+
+def test_an_opening_with_no_schedule_uses_the_office_default_and_says_so(config):
+    """Where the kind is known but no schedule gives a size, the office default
+    is used — and the opening carries it as an assumption, never silently."""
+    described = _opening(
+        mark="", height_mm=None, sill_height_mm=None, head_height_mm=None,
+        found_by="gap_in_the_wall", in_schedule=False,
+    )
+    model = build_model(
+        _page(openings=[described]), _HEIGHT, config, "run", "plan.pdf", 800.0
+    )
+    opening = model["openings"][0]
+    assert opening["geometry"]["cut_as_void"] is True
+    assert opening["dimensions"]["height_source"] == "office_default"
+    assert any("office default" in a for a in opening["assumptions"])
+
+
+def test_an_opening_taller_than_the_storey_is_reported_rather_than_cut(config):
+    tall = _opening(height_mm=4000.0, head_height_mm=4000.0)
+    model = build_model(_page(openings=[tall]), _HEIGHT, config, "run", "plan.pdf", 800.0)
+    opening = model["openings"][0]
+    assert opening["geometry"]["cut_as_void"] is False
+    assert "storey height" in opening["not_cut_because"]
+
+
+def test_the_glb_still_parses_once_a_wall_has_a_hole_in_it(tmp_path, config):
+    model = build_model(
+        _page(openings=[_opening()]), _HEIGHT, config, "run", "plan.pdf", 800.0
+    )
+    path = tmp_path / "m.glb"
+    assert write_glb(model, path)
+    raw = path.read_bytes()
+    assert raw[:4] == b"glTF"
+    _version, total = struct.unpack("<II", raw[4:12])
+    assert total == len(raw)
+
+    length = struct.unpack("<I", raw[12:16])[0]
+    gltf = json.loads(raw[20 : 20 + length].decode("utf-8"))
+    # Three boxes, one wall: still one node, so a click still names one wall.
+    assert len(gltf["nodes"]) == 1
+    assert gltf["accessors"][0]["count"] == 24

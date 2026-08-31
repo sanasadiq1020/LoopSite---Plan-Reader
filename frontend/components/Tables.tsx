@@ -22,6 +22,7 @@ import {
   TITLE_BLOCK_FIELDS,
   wallLineSourceLabel,
   openingFoundByLabel,
+  positionSourceLabel,
 } from "@/lib/api";
 import {
   ClassificationBadge,
@@ -827,14 +828,38 @@ export function OpeningsTable({
     },
     {
       key: "wall",
-      header: "Wall",
+      header: "Wall it is in",
       render: (row) =>
         row.wall_id ? (
-          <span className="font-mono text-xs text-slate-700">{row.wall_id}</span>
+          <span className="font-mono text-xs text-slate-700" title={row.wall_note ?? undefined}>
+            {row.wall_id}
+          </span>
         ) : (
           <span className="text-xs text-slate-400">{row.wall_note}</span>
         ),
       sortValue: (row) => row.wall_id ?? "",
+    },
+    {
+      // Which wall a door is in is not enough to cut it: the hole has to go
+      // somewhere along that wall. This says where, and whether that was
+      // measured off the drawing or taken from where the mark is printed.
+      key: "position",
+      header: "Where on the wall",
+      width: "200px",
+      render: (row) =>
+        row.position_on_wall ? (
+          <div>
+            <span className="tabular-nums">
+              {formatMm(row.position_on_wall.from_wall_start_mm)} from the wall&rsquo;s start
+            </span>
+            <span className="mt-0.5 block text-xs text-slate-400">
+              {positionSourceLabel(row.position_on_wall.measured_from)}
+            </span>
+          </div>
+        ) : (
+          <span className="text-xs text-slate-400">Not established</span>
+        ),
+      sortValue: (row) => row.position_on_wall?.from_wall_start_mm ?? -1,
     },
     {
       key: "schedule",

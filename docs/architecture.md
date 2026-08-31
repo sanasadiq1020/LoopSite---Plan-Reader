@@ -76,8 +76,30 @@ Each module does one thing and hands on a plain data structure.
 |---|---|
 | `model/height` | The storey height, from the drawing where it states one |
 | `model/canonical` | The building model in millimetres, with stable element identifiers |
-| `model/exporters` | IFC, GLB and OBJ, each written from the model and never from each other |
+| `model/exporters` | IFC, GLB and OBJ, each written from the model and never from each other. A wall is built as the solid pieces left once its openings are taken out; IFC carries them as real `IfcOpeningElement` voids |
 | `model/build` | Builds and writes one sheet's model on request |
+
+---
+
+## How an opening reaches the model
+
+An opening exists in two places on a plan set — a mark on the drawing and a row
+in a schedule — and the schedules are printed on their own sheets. So it is
+assembled in four steps, each doing one thing:
+
+1. `openings.place_openings_on_walls` — per sheet, gathers every wall the mark
+   could be labelling, with the breaks in each.
+2. `openings.reconcile_openings_with_schedules` — once the whole document has
+   been read, joins each mark to its schedule row.
+3. `openings.settle_opening_placement` — chooses the wall and the place along
+   it, now that the schedule's width is known. A break beside the mark that
+   measures what the schedule says is the opening itself; where there is no
+   such break the mark's own position is used, and the record says which.
+   A break holds one opening, so the breaks on a sheet are handed out
+   best-first rather than each mark taking its favourite.
+4. `model/canonical` — turns that into a hole: which wall, where along it, how
+   wide, how tall. Anything the drawings do not establish is carried on the
+   model uncut, with one sentence saying which of the four is missing.
 
 ---
 

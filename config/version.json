@@ -1,30 +1,33 @@
 {
   "_comment": "The release this build is, and what it can and cannot do. Read by the application and shown on screen; never written into the interface as fixed text.",
   "product": "LoopSite Plan Reader",
-  "version": "v0.3",
-  "released": "2026-08-29",
-  "stage": "Plan reading and building model",
+  "version": "v0.4",
+  "released": "2026-09-01",
+  "stage": "Plan reading, building model and openings",
   "what_it_does": [
     "Reads an approved Australian residential plan set from a single PDF.",
     "Lists every sheet with its drawing number, title, scale, revision and what it draws.",
     "Extracts rooms and areas, dimensions, schedules, legends, wall lines and door and window openings.",
     "Checks each sheet's printed scale against the sheet's own dimension strings before measuring anything from it.",
-    "Marks everything found over the original drawing, so it can be checked by eye.",
-    "Builds a canonical building model in millimetres and a 3D wall model, exported as IFC, GLB and OBJ.",
+    "Reports one wall once: overlapping readings of the same wall are recognised as one and keep every opening any of them found.",
+    "Says which wall each door and window is in and where along it, and whether that was measured from the break in the wall or taken from where the mark is printed.",
+    "Marks everything found over the original drawing, including where each opening was placed on its wall, so it can be checked by eye.",
+    "Builds a canonical building model in millimetres and a 3D wall model with its doors and windows cut as real openings, exported as IFC, GLB and OBJ.",
     "Shows where every value came from: the sheet, the place on it, how it was read, and how certain it is."
   ],
   "known_limitations": [
     "Walls are candidates for review, not confirmed walls. They are pairs of parallel lines measured from the drawing, and a competent reviewer should confirm them against the sheet.",
-    "The 3D model is walls only. Doors and windows are carried in the model with the wall they belong to, but are not yet cut as openings in it.",
+    "A plan is a horizontal cut, so it never shows how tall an opening is. Where a schedule gives a height it is used; where the drawing names the opening a door or a window but gives no size, a standard height is used and the opening is marked as an assumption; where nothing states which it is, no opening is cut and the model says so.",
+    "An opening whose mark could not be told apart between two equally close walls is reported unplaced with the reason, rather than cut into a guess.",
+    "Where no break was traced in the wall, an opening's place along it comes from where its mark is printed. That is approximate, and every such opening says so.",
     "One storey at a time. A model is built from a single sheet; sheets are not combined into a multi-storey building.",
     "A plan set that states no storey height anywhere uses the office default from the configuration. Every height in such a model is an assumption, and it is marked as one on screen.",
     "A sheet whose drawing is stored as a picture rather than as line work has its walls traced from the page image. Those measurements are less exact than ones read from the drawing's own lines, and each says which it is.",
     "A scanned sheet with no text layer is read by character recognition, which is slow and can misread a character. Each upload has a fixed budget for it; past that, remaining sheets are read from whatever text they carry and say so.",
-    "Room names and title-block wording are recognised from a configurable vocabulary. A plan using wording outside it reports those values as not found rather than guessing them.",
+    "Room names, opening descriptions and title-block wording are recognised from a configurable vocabulary. A plan using wording outside it reports those values as not found rather than guessing them.",
     "No certification, code compliance, engineering approval or structural adequacy is claimed or implied. Everything produced is a draft for review by a qualified Australian construction professional."
   ],
   "not_in_this_release": [
-    "Cutting door and window openings into the 3D walls",
     "Generated 2D elevations",
     "Material take-off, cost estimate and crew work packages",
     "Multi-storey assembly and site context"

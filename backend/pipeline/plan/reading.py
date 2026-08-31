@@ -714,7 +714,7 @@ def analyze_page(
         # size and type; a break carries only what can be measured.
         if not detected_openings:
             detected_openings = openings_from_wall_gaps(
-                detected_walls, calibration, config, sheet_id
+                detected_walls, calibration, config, sheet_id, lines
             )
         fields["discipline"] = resolve_discipline(
             fields, page_type["value"], lines, region, config
@@ -778,6 +778,7 @@ def compute_metrics(pages: list, cross_check: dict, opening_reconciliation=None)
     room_total = dimension_total = schedule_row_total = legend_entry_total = 0
     wall_total = wall_nominal = 0
     opening_total = opening_in_schedule = opening_on_wall = 0
+    opening_on_a_plan = opening_position_measured = 0
     distinct_openings: set = set()
     scale_confirmed = scale_contradicted = scale_unchecked = 0
     chain_checked = chain_passed = 0
@@ -849,8 +850,18 @@ def compute_metrics(pages: list, cross_check: dict, opening_reconciliation=None)
                 distinct_openings.add(opening["mark"].upper())
             if opening["in_schedule"]:
                 opening_in_schedule += 1
-            if opening["wall_id"]:
-                opening_on_wall += 1
+            # An opening can only be placed on a wall of a sheet that has
+            # walls. The same door is marked again on an elevation and on a
+            # section, and there is no wall there to place it on — counting
+            # those in the denominator reported one in three placed on a plan
+            # where nine in ten actually were.
+            if page.get("walls"):
+                opening_on_a_plan += 1
+                if opening["wall_id"]:
+                    opening_on_wall += 1
+                position = opening.get("position_on_wall") or {}
+                if position.get("measured_from") == "break_in_the_wall":
+                    opening_position_measured += 1
 
         outcome_scale = (page.get("scale_calibration") or {}).get("result")
         if outcome_scale == "confirmed":
@@ -932,8 +943,11 @@ def compute_metrics(pages: list, cross_check: dict, opening_reconciliation=None)
             "marks_on_drawings": opening_total,
             "matched_to_a_schedule": opening_in_schedule,
             "matched_to_a_schedule_pct": percentage(opening_in_schedule, opening_total),
+            "on_a_sheet_that_draws_a_plan": opening_on_a_plan,
             "placed_on_a_wall": opening_on_wall,
-            "placed_on_a_wall_pct": percentage(opening_on_wall, opening_total),
+            "placed_on_a_wall_pct": percentage(opening_on_wall, opening_on_a_plan),
+            "position_measured_from_the_drawing": opening_position_measured,
+            "position_measured_pct": percentage(opening_position_measured, opening_on_a_plan),
             "scheduled_marks_not_drawn": len(
                 (opening_reconciliation or {}).get("scheduled_marks_not_drawn", [])
             ),
@@ -1132,7 +1146,8 @@ def write_plan_reading_csvs(run_dir: Path, run_id: str, pages: list) -> None:
                 "run_id", "page_number", "sheet_id", "opening_id", "mark", "element_type",
                 "wall_id", "width_mm", "height_mm", "sill_height_mm", "head_height_mm",
                 "location_on_plan", "schedule_sheet", "schedule_row_id", "in_schedule",
-                "found_by", "confidence", "confidence_band", "source_bbox",
+                "found_by", "position_along_the_wall_mm", "position_measured_from",
+                "how_it_was_placed", "confidence", "confidence_band", "source_bbox",
             ]
         )
         for page in pages:
@@ -1148,6 +1163,9 @@ def write_plan_reading_csvs(run_dir: Path, run_id: str, pages: list) -> None:
                         opening["location_on_plan"] or "", opening["schedule_sheet"] or "",
                         opening["schedule_row_id"] or "", opening["in_schedule"],
                         opening.get("found_by", "mark_on_the_drawing"),
+                        (opening.get("position_on_wall") or {}).get("from_wall_start_mm", ""),
+                        _plain_position_source(opening),
+                        opening.get("wall_note") or "",
                         opening["confidence"], opening["confidence_band"],
                         json.dumps(opening["source_bbox"]),
                     ]
@@ -1181,3 +1199,13 @@ def write_plan_reading_csvs(run_dir: Path, run_id: str, pages: list) -> None:
                         ]
                         + [row["values"].get(column, "") for column in columns]
                     )
+
+
+def _plain_position_source(opening: dict) -> str:
+    """How an opening's place along its wall was arrived at, in a reader's words."""
+    position = opening.get("position_on_wall") or {}
+    if position.get("measured_from") == "break_in_the_wall":
+        return "Measured from the break in the wall"
+    if position.get("measured_from") == "the_mark_on_the_drawing":
+        return "Taken from where the mark is printed"
+    return ""

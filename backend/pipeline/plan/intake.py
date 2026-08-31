@@ -53,7 +53,11 @@ from pipeline.plan.accuracy import (
     write_accuracy_report,
     write_ground_truth_template,
 )
-from pipeline.plan.openings import reconcile_openings_with_schedules
+from pipeline.plan.openings import (
+    reconcile_openings_with_schedules,
+    score_openings,
+    settle_opening_placement,
+)
 from pipeline.plan.sheetindex import cross_check_pages
 
 logger = get_logger()
@@ -704,6 +708,15 @@ def process_upload(
     except Exception as e:
         logger.exception(f"run={run_id} opening reconciliation failed: {e}")
         opening_reconciliation = {}
+
+    # Which wall each mark labels, and where along it. This has to follow the
+    # reconciliation: the schedule gives the mark its width, and that width is
+    # the strongest evidence for which break in which wall it is labelling.
+    try:
+        opening_reconciliation.update(settle_opening_placement(plan_reading_pages, config))
+        opening_reconciliation.update(score_openings(plan_reading_pages))
+    except Exception as e:
+        logger.exception(f"run={run_id} opening placement failed: {e}")
 
     try:
         cross_check = cross_check_pages(plan_reading_pages, sheet_index, config)

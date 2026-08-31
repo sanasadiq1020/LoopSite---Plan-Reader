@@ -318,12 +318,23 @@ export interface WallCandidate {
   linked_opening_marks: string[];
 }
 
+/** Where an opening sits along its wall, and how that was established. */
+export interface PositionOnWall {
+  start_fraction: number;
+  end_fraction: number;
+  centre_fraction: number;
+  from_wall_start_mm: number;
+  width_mm: number;
+  measured_from: "break_in_the_wall" | "the_mark_on_the_drawing";
+}
+
 export interface Opening {
   opening_id: string;
   mark: string;
   element_type: string | null;
   wall_id: string | null;
   wall_note: string | null;
+  position_on_wall: PositionOnWall | null;
   width_mm: number | null;
   height_mm: number | null;
   sill_height_mm: number | null;
@@ -914,6 +925,13 @@ export function openingFoundByLabel(source: string): string {
   return "Labelled on the drawing";
 }
 
+/** How an opening's place along its wall was arrived at, in a reader's words. */
+export function positionSourceLabel(source: string | undefined): string {
+  if (source === "break_in_the_wall") return "Measured from the break in the wall";
+  if (source === "the_mark_on_the_drawing") return "Taken from where the mark is printed";
+  return "";
+}
+
 // --- Day 5: the canonical model and its 3D files -------------------------
 
 /** One sheet, and whether a 3D model can be built from it. */
@@ -968,6 +986,30 @@ export interface ModelWall {
   from_wall_id: string;
 }
 
+/** One door or window in the model, and whether it was cut into its wall. */
+export interface ModelOpening {
+  element_id: string;
+  element_type: string;
+  mark: string | null;
+  in_wall: string | null;
+  not_cut_because: string | null;
+  geometry: {
+    centre_mm: number[] | null;
+    offset_along_wall_mm: number | null;
+    sill_height_mm: number | null;
+    head_height_mm: number | null;
+    position_measured_from: string | null;
+    cut_as_void: boolean;
+  };
+  dimensions: {
+    width_mm: number | null;
+    height_mm: number | null;
+    sill_height_mm: number | null;
+    height_source: "schedule" | "office_default" | "not_established";
+  };
+  assumptions: string[];
+}
+
 export interface ProjectModel {
   format_version: number;
   generated_at: string;
@@ -991,13 +1033,14 @@ export interface ProjectModel {
   extent_mm: { x: number; y: number; z: number };
   storeys: ModelStorey[];
   walls: ModelWall[];
-  openings: {
-    element_id: string;
-    element_type: string;
-    mark: string | null;
-    in_wall: string | null;
-    dimensions: { width_mm: number | null; height_mm: number | null };
-  }[];
+  openings: ModelOpening[];
+  openings_summary?: {
+    total: number;
+    cut_as_voids: number;
+    not_cut: number;
+    height_from_a_schedule: number;
+    height_from_the_office_default: number;
+  };
   assumptions: { about: string; statement: string; confidence: number }[];
   files?: Record<string, boolean>;
 }

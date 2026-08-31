@@ -93,6 +93,7 @@ def _collect_marks(page_reading: dict) -> list:
     # Week 1 Gate 8 asks the overlay to show wall candidates and opening marks
     # alongside the text, so a reviewer can see a wrong wall or a missed
     # opening without reading a single number.
+    walls_by_id = {w["wall_id"]: w for w in page_reading.get("walls", [])}
     for wall in page_reading.get("walls", []):
         confirmed = wall["confidence_band"] == "high" and wall["matches_nominal_thickness"]
         # Only long walls are labelled. A floor plan carries dozens of short
@@ -116,6 +117,15 @@ def _collect_marks(page_reading: dict) -> list:
             label = f"{label} {opening['width_mm']:.0f} wide".strip()
         confirmed = bool(opening.get("in_schedule") and opening.get("wall_id"))
         marks.append(("opening", opening["source_bbox"], label, confirmed))
+
+        # **And where the opening itself was put.** The box above is where the
+        # mark is printed, which is beside the door rather than on it. A
+        # reviewer checking whether a hole is in the right place needs to see
+        # the hole, so the place the opening was given on its wall is drawn too
+        # — the same evidence the 3D model is cut from.
+        placed = _opening_on_its_wall(opening, walls_by_id)
+        if placed:
+            marks.append(("opening", placed, "", confirmed))
 
     for table in page_reading.get("schedules", []):
         for row in table["rows"]:
@@ -252,3 +262,30 @@ def render_overlay(page, page_reading: dict, out_path, config: dict, page_pixmap
     except Exception as e:
         logger.exception(f"render_overlay failed for {out_path}: {e}")
         return False
+
+
+def _opening_on_its_wall(opening: dict, walls_by_id: dict):
+    """The box the opening occupies on its wall, in page points.
+
+    The fractions are measured from the wall's own start point, so turning
+    them back into a place on the page needs nothing but that wall.
+    """
+    position = opening.get("position_on_wall") or {}
+    wall = walls_by_id.get(opening.get("wall_id"))
+    if not position or wall is None:
+        return None
+    try:
+        start, end = wall["start_point_pt"], wall["end_point_pt"]
+        first, last = float(position["start_fraction"]), float(position["end_fraction"])
+        low = [start[i] + (end[i] - start[i]) * first for i in (0, 1)]
+        high = [start[i] + (end[i] - start[i]) * last for i in (0, 1)]
+        faces = sorted(wall.get("face_positions_pt") or [])
+        if len(faces) != 2:
+            return None
+        if wall["runs_along"] == "x":
+            return [min(low[0], high[0]), faces[0], max(low[0], high[0]), faces[1]]
+        return [faces[0], min(low[1], high[1]), faces[1], max(low[1], high[1])]
+    except Exception:
+        # An overlay is evidence, not a calculation — a mark that cannot be
+        # placed is left off rather than failing the whole picture.
+        return None

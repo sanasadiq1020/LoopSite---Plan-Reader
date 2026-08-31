@@ -94,6 +94,20 @@ export function ModelPanel({ runId }: { runId: string }) {
   const storey = model?.storeys[0];
   const selectedWall = model?.walls.find((w) => w.element_id === selectedId) ?? null;
 
+  // The openings that were not cut, grouped by the reason. One sentence
+  // repeated twenty times is noise; the same sentence with a count beside it
+  // is what a reader can act on.
+  const notCut = useMemo(() => {
+    const reasons = new Map<string, number>();
+    for (const opening of model?.openings ?? []) {
+      if (opening.geometry?.cut_as_void) continue;
+      const reason = opening.not_cut_because;
+      if (!reason) continue;
+      reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
+    }
+    return [...reasons.entries()].sort((a, b) => b[1] - a[1]);
+  }, [model]);
+
   if (sheets === null) {
     return (
       <Card>
@@ -209,6 +223,54 @@ export function ModelPanel({ runId }: { runId: string }) {
           </Card>
         )}
 
+        {model && model.openings_summary && (
+          <Card title="Doors and windows in this model">
+            <div className="px-4 py-4">
+              <p className="text-3xl font-bold tabular-nums text-slate-900">
+                {model.openings_summary.cut_as_voids}
+                <span className="ml-1 text-base font-medium text-slate-500">
+                  of {model.openings_summary.total} cut as real openings
+                </span>
+              </p>
+              <p className="mt-2 text-xs leading-relaxed text-slate-500">
+                {model.openings_summary.height_from_a_schedule > 0 && (
+                  <>
+                    {model.openings_summary.height_from_a_schedule} take their height from
+                    this plan set&rsquo;s own schedule.{" "}
+                  </>
+                )}
+                {model.openings_summary.height_from_the_office_default > 0 && (
+                  <>
+                    {model.openings_summary.height_from_the_office_default} use a standard
+                    height because no schedule gives one — check those before measuring
+                    anything from them.{" "}
+                  </>
+                )}
+              </p>
+              {notCut.length > 0 && (
+                <div className="mt-3 border-t border-slate-100 pt-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    Not cut, and why
+                  </p>
+                  <ul className="mt-2 space-y-1.5">
+                    {notCut.map(([reason, count]) => (
+                      <li key={reason} className="text-xs leading-relaxed text-slate-600">
+                        <span className="font-semibold tabular-nums">{count}</span> — {reason}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <p className="mt-3 text-xs leading-relaxed text-slate-400">
+                A hole needs four things: which wall, where along it, how wide and how tall.
+                A plan is a horizontal cut, so it can never show the last one — a schedule
+                can. Anything the drawings do not establish is carried on the model with its
+                wall and left uncut rather than guessed.
+              </p>
+            </div>
+          </Card>
+        )}
+
         {model && (
           <Card title="What this model rests on">
             <ul className="divide-y divide-slate-100">
@@ -248,7 +310,9 @@ export function ModelPanel({ runId }: { runId: string }) {
               title={`${model.modelled_sheet.sheet_number || model.modelled_sheet.sheet_id} — ${
                 model.modelled_sheet.sheet_title || "3D model"
               }`}
-              subtitle={`${model.walls.length} walls · ${(model.extent_mm.x / 1000).toFixed(1)} m × ${(
+              subtitle={`${model.walls.length} walls · ${
+                model.openings_summary?.cut_as_voids ?? 0
+              } doors and windows cut into them · ${(model.extent_mm.x / 1000).toFixed(1)} m × ${(
                 model.extent_mm.y / 1000
               ).toFixed(1)} m × ${(model.extent_mm.z / 1000).toFixed(2)} m tall · millimetres`}
             >

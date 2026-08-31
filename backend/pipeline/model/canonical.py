@@ -228,28 +228,38 @@ def build_model(
             }
         )
 
-    # --- openings are carried, not yet cut -------------------------------
-    # Day 6 cuts these as voids in the same walls. They are in the canonical
-    # model now because the model is the contract: Day 6 reads from here, not
-    # from the plan again.
+    # --- openings are cut, where the drawing establishes one ------------
+    # A hole needs four things: which wall, where along it, how wide and how
+    # tall. The plan gives the first three; a plan is a horizontal cut, so it
+    # can never give the fourth, and the schedule does. Where all four are
+    # known the opening is cut as a void. Where any is missing it is still
+    # carried on the model, with the wall it belongs to, and says in plain
+    # words why it is not a hole.
+    opening_settings = config.get("openings", {})
+    defaults = {
+        "door_height_mm": float(opening_settings.get("default_door_height_mm", 2040)),
+        "window_height_mm": float(opening_settings.get("default_window_height_mm", 1200)),
+        "window_sill_mm": float(opening_settings.get("default_window_sill_height_mm", 900)),
+    }
+
     openings = []
     by_wall = {e["from_wall_id"]: e for e in elements}
     for position, opening in enumerate(page.get("openings", []), 1):
         host = by_wall.get(opening.get("wall_id"))
+        geometry, dimensions, assumptions, reason = _opening_geometry(
+            opening, host, storey, defaults
+        )
         openings.append(
             {
                 "element_id": f"{page['sheet_id']}-M-O{position:03d}",
                 "element_type": opening.get("element_type") or "opening",
                 "storey": storey["storey_id"],
-                "geometry": {"centre_mm": None, "cut_as_void": False},
-                "dimensions": {
-                    "width_mm": opening.get("width_mm"),
-                    "height_mm": opening.get("height_mm"),
-                    "sill_height_mm": opening.get("sill_height_mm"),
-                },
+                "geometry": geometry,
+                "dimensions": dimensions,
                 "material": None,
                 "mark": opening.get("mark"),
                 "in_wall": host["element_id"] if host else None,
+                "not_cut_because": reason,
                 "source_sheet": opening.get("source_sheet"),
                 "source_bbox": opening.get("source_bbox"),
                 "extraction_method": opening.get("found_by", "mark_on_the_drawing"),
@@ -257,10 +267,7 @@ def build_model(
                 "confidence_band": opening.get("confidence_band", "review"),
                 "review_status": opening.get("review_status", "needs_review"),
                 "linked_issue_ids": [],
-                "assumptions": [
-                    "Carried into the model with the wall it belongs to, but not yet cut as an "
-            "opening in it."
-                ],
+                "assumptions": assumptions,
             }
         )
         if host:
@@ -296,12 +303,28 @@ def build_model(
         "storeys": [storey],
         "walls": elements,
         "openings": openings,
+        "openings_summary": {
+            "total": len(openings),
+            "cut_as_voids": sum(1 for o in openings if o["geometry"]["cut_as_void"]),
+            "not_cut": sum(1 for o in openings if not o["geometry"]["cut_as_void"]),
+            "height_from_a_schedule": sum(
+                1
+                for o in openings
+                if o["dimensions"].get("height_source") == "schedule"
+            ),
+            "height_from_the_office_default": sum(
+                1
+                for o in openings
+                if o["dimensions"].get("height_source") == "office_default"
+            ),
+        },
         "assumptions": _collect_assumptions(height, thickness_assumed, len(elements), page),
     }
     logger.info(
         f"canonical model for {page['sheet_id']}: {len(elements)} walls, "
-        f"{len(openings)} openings, storey {storey['height_mm']:.0f} mm "
-        f"({storey['height_source']})"
+        f"{len(openings)} openings of which "
+        f"{model['openings_summary']['cut_as_voids']} cut as voids, storey "
+        f"{storey['height_mm']:.0f} mm ({storey['height_source']})"
     )
     return model
 
@@ -361,3 +384,151 @@ def _collect_assumptions(height: dict, thickness_assumed: int, wall_count: int, 
             }
         )
     return out
+
+
+def _lerp(start, end, fraction: float):
+    """A point the given fraction of the way from one end of a wall to the other."""
+    return [
+        round(start[0] + (end[0] - start[0]) * fraction, 1),
+        round(start[1] + (end[1] - start[1]) * fraction, 1),
+    ]
+
+
+def _opening_height(opening: dict, defaults: dict):
+    """How tall this opening is, and where that came from.
+
+    **A plan is a horizontal cut, so it never shows a height.** The schedule
+    does, and where a schedule row was matched its figures are used unchanged.
+    Where there is no schedule row, the office default for a door or a window
+    is used and the opening says on its face that it is an assumption.
+
+    An opening whose kind the drawing never states gets **no height at all**.
+    That is the case on a plan set that prints no marks and simply draws its
+    openings: the width is measured from the break in the wall, but nothing on
+    the sheet says whether it is a door reaching the floor or a window sitting
+    above a sill, and a hole in the wrong place is worse than a hole that was
+    honestly not cut.
+    """
+    height = opening.get("height_mm")
+    sill = opening.get("sill_height_mm")
+    kind = (opening.get("element_type") or "").lower()
+
+    if height:
+        source = "schedule"
+        if sill is None:
+            sill = 0.0 if kind == "door" else defaults["window_sill_mm"]
+        return float(height), float(sill), source
+
+    if kind == "door":
+        return defaults["door_height_mm"], 0.0, "office_default"
+    if kind == "window":
+        return (
+            defaults["window_height_mm"],
+            float(sill) if sill is not None else defaults["window_sill_mm"],
+            "office_default",
+        )
+    return None, None, "not_established"
+
+
+def _opening_geometry(opening: dict, host, storey: dict, defaults: dict):
+    """Where this opening sits in the building, and whether it can be cut.
+
+    Returns its geometry, its dimensions, what it takes on trust, and — when it
+    cannot be cut — one sentence saying why, written for the person reading the
+    plan rather than for whoever wrote this.
+    """
+    position = opening.get("position_on_wall") or {}
+    width = opening.get("width_mm") or position.get("width_mm")
+    height, sill, height_source = _opening_height(opening, defaults)
+
+    geometry = {
+        "centre_mm": None,
+        "start_mm": None,
+        "end_mm": None,
+        "offset_along_wall_mm": position.get("from_wall_start_mm"),
+        "start_fraction": position.get("start_fraction"),
+        "end_fraction": position.get("end_fraction"),
+        "sill_height_mm": sill,
+        "head_height_mm": round(sill + height, 1) if (sill is not None and height) else None,
+        "position_measured_from": position.get("measured_from"),
+        "cut_as_void": False,
+    }
+    dimensions = {
+        "width_mm": round(float(width), 1) if width else None,
+        "height_mm": round(float(height), 1) if height else None,
+        "sill_height_mm": sill,
+        "height_source": height_source,
+    }
+    assumptions = []
+
+    if host is None:
+        # Say *why* it reached no wall rather than only that it did not. The
+        # placement step already worked that out and wrote it in a reader's
+        # words, so it is carried through instead of being restated vaguely.
+        why = opening.get("wall_note")
+        return geometry, dimensions, assumptions, (
+            "This opening is not on any traced wall, so there is nothing to cut it into."
+            + (f" {why}" if why else "")
+        )
+    if not position:
+        return geometry, dimensions, assumptions, (
+            "Where this opening sits along its wall was not established, so it is carried "
+            "with the wall rather than cut into it."
+        )
+    if not width:
+        return geometry, dimensions, assumptions, (
+            "No width was found for this opening, on the drawing or in a schedule."
+        )
+    if not height:
+        return geometry, dimensions, assumptions, (
+            "The drawing does not say whether this is a door or a window, and a plan does "
+            "not show a height, so no hole is cut where the size is unknown."
+        )
+
+    wall_length = float(host["dimensions"]["length_mm"])
+    wall_height = float(host["dimensions"]["height_mm"])
+    head = sill + height
+
+    if width > wall_length:
+        return geometry, dimensions, assumptions, (
+            f"This opening is wider ({width:.0f} mm) than the wall it was placed on "
+            f"({wall_length:.0f} mm), so it has not been cut."
+        )
+    if head > wall_height:
+        return geometry, dimensions, assumptions, (
+            f"This opening reaches {head:.0f} mm, above the {wall_height:.0f} mm storey "
+            "height read from the drawings, so it has not been cut."
+        )
+
+    start_point = host["geometry"]["start_mm"]
+    end_point = host["geometry"]["end_mm"]
+    half = (width / wall_length) / 2.0 if wall_length else 0.0
+    centre_fraction = position.get("centre_fraction")
+    if centre_fraction is None:
+        centre_fraction = 0.5
+    centre_fraction = min(max(float(centre_fraction), half), 1.0 - half)
+
+    geometry.update(
+        {
+            "centre_mm": _lerp(start_point, end_point, centre_fraction),
+            "start_mm": _lerp(start_point, end_point, centre_fraction - half),
+            "end_mm": _lerp(start_point, end_point, centre_fraction + half),
+            "offset_along_wall_mm": round(centre_fraction * wall_length, 1),
+            "start_fraction": round(centre_fraction - half, 5),
+            "end_fraction": round(centre_fraction + half, 5),
+            "cut_as_void": True,
+        }
+    )
+
+    if height_source == "office_default":
+        assumptions.append(
+            f"No schedule row gives this opening a size, so the office default of "
+            f"{height:.0f} mm high with a {sill:.0f} mm sill was used. Check it before "
+            "measuring anything from it."
+        )
+    if position.get("measured_from") == "the_mark_on_the_drawing":
+        assumptions.append(
+            "Where this opening sits along its wall is taken from where its mark is "
+            "printed; no break in the wall was traced there to measure."
+        )
+    return geometry, dimensions, assumptions, None

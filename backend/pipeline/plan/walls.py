@@ -273,6 +273,18 @@ def detect_walls(
             f"{limit / 1000:.1f} m this sheet measures and are marked for review"
         )
 
+    # An external wall is drawn with more lines than its own two faces, so the
+    # pairing above produces several overlapping candidates for one wall. Two
+    # solids cannot occupy the same space, so those are one wall and are
+    # reported once, keeping every break any of them recorded.
+    before = len(walls)
+    walls = merge_overlapping_walls(walls, mm_per_point, config)
+    if before != len(walls):
+        logger.info(
+            f"{sheet_id}: {before} candidates occupy {len(walls)} places, so "
+            f"{before - len(walls)} were copies of a wall already reported"
+        )
+
     walls.sort(key=lambda w: (-w["length_mm"], w["runs_along"]))
     for position, wall in enumerate(walls, start=1):
         wall["wall_id"] = f"{sheet_id}-W{position:03d}"
@@ -338,6 +350,7 @@ def _walls_from(
                     "confidence": round(confidence, 3),
                     "confidence_band": "high" if confidence >= 0.75 else "review",
                     "review_status": "needs_review",
+                    "merged_from": 1,
                     "linked_opening_marks": [],
                     "gaps_pt": [
                         [round(low, 2), round(high, 2)] for low, high in pair["gaps"]
@@ -353,3 +366,177 @@ def _wall_bbox(axis: str, pair: dict) -> list:
     if axis == "x":
         return [round(pair["start"], 2), round(low, 2), round(pair["end"], 2), round(high, 2)]
     return [round(low, 2), round(pair["start"], 2), round(high, 2), round(pair["end"], 2)]
+
+
+# --- One wall, reported once ---------------------------------------------
+
+
+def _band(wall: dict):
+    """The strip of paper this wall occupies across its own thickness."""
+    low, high = sorted(wall["face_positions_pt"])
+    return low, high
+
+
+def _run(wall: dict):
+    """Where this wall starts and ends along its own length, in points."""
+    start, end = wall["start_point_pt"], wall["end_point_pt"]
+    if wall["runs_along"] == "x":
+        return min(start[0], end[0]), max(start[0], end[0])
+    return min(start[1], end[1]), max(start[1], end[1])
+
+
+def _overlap(first, second) -> float:
+    return min(first[1], second[1]) - max(first[0], second[0])
+
+
+def merge_overlapping_walls(walls: list, mm_per_point: float, config: dict) -> list:
+    """Candidates occupying the same space are one wall, reported once.
+
+    **Two solids cannot occupy the same place**, which is a fact about
+    buildings rather than a setting. An external wall is drawn with more lines
+    than its two faces — a lining, a hatch boundary, a cavity — so the pairing
+    step, which uses each face once, produces several overlapping candidates
+    for the one wall. On a supplied floor plan three "walls" sat within 1.2
+    points of each other along the same run, and the effects were not cosmetic:
+
+    *   the wall count was roughly double the building's,
+    *   an opening mark had two or three equally close walls, so it was
+        reported as ambiguous and never placed — the reason only one mark in
+        sixteen ever reached a wall,
+    *   each duplicate held only some of the wall's breaks, so a door in the
+        wall was invisible to whichever copy did not record it,
+    *   and the model stacked overlapping boxes in the same place.
+
+    Candidates are merged when they run along the same axis, their thickness
+    bands intersect, and they run together for a real distance. The one kept is
+    the one that most looks like a wall — inside the length the sheet measures,
+    at a thickness the office builds, longest — and it inherits every break the
+    others recorded, so no opening is lost with the copy that held it.
+    """
+    settings = config.get("walls", {})
+    if not settings.get("merge_overlapping_candidates", True):
+        return walls
+    min_run_overlap = float(settings.get("merge_min_run_overlap_mm", 300)) / mm_per_point
+
+    kept = []
+    for axis in ("x", "y"):
+        group = [w for w in walls if w["runs_along"] == axis]
+        parent = list(range(len(group)))
+
+        def root(index: int) -> int:
+            while parent[index] != index:
+                parent[index] = parent[parent[index]]
+                index = parent[index]
+            return index
+
+        for i in range(len(group)):
+            for j in range(i + 1, len(group)):
+                if not _same_wall(group[i], group[j], mm_per_point, settings):
+                    continue
+                if _overlap(_run(group[i]), _run(group[j])) < min_run_overlap:
+                    continue
+                parent[root(i)] = root(j)
+
+        clusters: dict = {}
+        for index in range(len(group)):
+            clusters.setdefault(root(index), []).append(group[index])
+
+        for members in clusters.values():
+            kept.append(_best_candidate(members))
+
+    kept.sort(key=lambda w: (-w["length_mm"], w["runs_along"]))
+    return kept
+
+
+def _same_wall(first: dict, second: dict, mm_per_point: float, settings: dict) -> bool:
+    """Whether these two candidates are two readings of the one wall.
+
+    Three things have to hold, and each is a fact about walls rather than a
+    setting to be tuned:
+
+    *   **They occupy the same space.** Two solids cannot, so overlapping
+        thickness bands mean one of them is not a separate wall.
+    *   **Their centrelines nearly coincide.** An external wall is often drawn
+        as a brick skin and a frame side by side, and those are two real walls
+        whose bands can touch. Two readings of the *same* wall sit on the same
+        line.
+    *   **They measure nearly the same thickness.** A 79 mm reading and a
+        172 mm reading in the same place are not one wall read twice; one of
+        them is something else, and merging them loses whichever it was. On a
+        plan drawn as a picture, merging without this test cost five of its ten
+        openings.
+    """
+    if _overlap(_band(first), _band(second)) <= 0:
+        return False
+
+    first_low, first_high = _band(first)
+    second_low, second_high = _band(second)
+    apart_mm = abs((first_low + first_high) / 2 - (second_low + second_high) / 2) * mm_per_point
+    thinner = min(first["thickness_mm"], second["thickness_mm"])
+    share = float(settings.get("merge_centre_share_of_thickness", 0.5))
+    if apart_mm > thinner * share:
+        return False
+
+    tolerance = float(settings.get("merge_thickness_tolerance_mm", 40))
+    return abs(first["thickness_mm"] - second["thickness_mm"]) <= tolerance
+
+
+def _best_candidate(members: list) -> dict:
+    """The one of several overlapping candidates that most looks like a wall.
+
+    A candidate the sheet's own dimensions cannot account for is a boundary or
+    an eave line rather than a wall (see the length check above), so one that
+    fits is preferred over one that does not even when the one that does not is
+    longer. After that: a thickness the office actually builds, then length.
+    """
+    if len(members) == 1:
+        return members[0]
+
+    every_break = [
+        (start, end) for member in members for start, end in member.get("gaps_pt", [])
+    ]
+
+    def rank(wall: dict):
+        low, high = _run(wall)
+        # A copy that covers the openings is a better record of this wall than
+        # one that stops short of them: the break in a wall is a door, and
+        # keeping a copy that does not reach it throws that door away. On a
+        # plan drawn as a picture, ranking on length alone lost five of its ten
+        # openings.
+        kept = sum(1 for start, end in every_break if start >= low and end <= high)
+        return (
+            0 if wall.get("longer_than_sheet_measures") else 1,
+            1 if wall.get("matches_nominal_thickness") else 0,
+            kept,
+            wall["length_mm"],
+        )
+
+    best = max(members, key=rank)
+    low, high = _run(best)
+
+    breaks = []
+    for start, end in every_break:
+        start, end = max(start, low), min(end, high)
+        if end > start:
+            breaks.append([round(start, 2), round(end, 2)])
+    best["gaps_pt"] = _combine_breaks(breaks)
+    best["merged_from"] = len(members)
+    return best
+
+
+def _combine_breaks(breaks: list) -> list:
+    """Breaks recorded by several copies of one wall, as one list.
+
+    The same door recorded by two copies is one door, so overlapping breaks are
+    joined rather than reported twice.
+    """
+    if not breaks:
+        return []
+    breaks.sort()
+    combined = [list(breaks[0])]
+    for start, end in breaks[1:]:
+        if start <= combined[-1][1]:
+            combined[-1][1] = max(combined[-1][1], end)
+        else:
+            combined.append([start, end])
+    return [[round(s, 2), round(e, 2)] for s, e in combined]

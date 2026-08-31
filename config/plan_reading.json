@@ -951,9 +951,23 @@
       "min": 300,
       "max": 6000
     },
-    "mark_to_wall_max_distance_mm": 900,
+    "mark_to_wall_max_distance_mm": 2000,
+    "mark_beyond_wall_end_max_mm": 1200,
     "mark_to_wall_ambiguity_ratio": 1.6,
-    "_linking_note": "A mark is placed on a candidate wall only when one wall is clearly the closest: the mark must sit within the wall run, within the distance below, and no other wall may be within this ratio of that distance. Where two walls are equally close the opening is reported without a wall and the reason is given."
+    "break_width_tolerance_mm": 250,
+    "break_width_tolerance_share": 0.2,
+    "break_search_share_of_wall": 0.25,
+    "_linking_note": "A mark is printed beside the opening it labels, not on top of it, so it is allowed to sit this far across from a wall and this far past its ends. The strongest placement is a break in a wall that measures what the schedule says the opening is: allow the larger of the two width tolerances below, and look for it within this share of the wall's length from where the mark points. Where there is no such break, the mark is placed on the nearest wall and the position along it comes from the mark. Where two walls are equally close and neither has a break where the mark points nor a thickness the office builds, nothing is chosen - a hole in the wrong wall is worse than one waiting to be placed by hand.",
+    "type_word_max_distance_mm": 1500,
+    "type_words": {
+      "door": ["DOOR", "DOORS", "DOORWAY", "SLIDING DOOR", "STACKER", "STACKER DOOR", "CAVITY SLIDER", "BIFOLD", "BI FOLD", "BIFOLD DOOR", "FRENCH DOORS", "GARAGE DOOR", "ROLLER DOOR", "PANEL LIFT", "ENTRY DOOR", "SLIDER", "SD"],
+      "window": ["WINDOW", "WINDOWS", "GLAZING", "GLAZED", "DOUBLE GLAZED", "AWNING", "AW", "DOUBLE HUNG", "DH", "CASEMENT", "CW", "FIXED GLASS", "FIXED", "SASHLESS", "LOUVRE", "LOUVER", "OBSCURE", "FROSTED", "SKYLIGHT", "HIGHLIGHT", "SILL"]
+    },
+    "_type_words_note": "A plan set that prints no door and window marks still describes its openings in words on the drawing. The nearest of these words to an opening names its kind, which is what makes a height possible at all - a plan is a horizontal cut and shows no height, so a door reaching the floor and a window sitting above a sill can only be told apart by what the sheet says. Add an office's own wording here rather than in code. Where a door word and a window word are equally close, the drawing has not settled it and neither does the reader.",
+    "default_door_height_mm": 2040,
+    "default_window_height_mm": 1200,
+    "default_window_sill_height_mm": 900,
+    "_default_size_note": "A plan is a horizontal cut, so it never shows an opening's height. Where the schedule states one it is always used. These office defaults are used only when it does not, and every opening built from them is marked as an assumption on screen, in the model and in the issues log. An opening whose kind the drawing never states is not given a height at all and is not cut."
   },
   "schedules": {
     "_comment": "Door/window/finishes schedules are real tables. Their header row is found by matching printed column headers below, then every row beneath is read by column position — so the schedule's actual contents are extracted, not merely the fact that the word 'SCHEDULE' appeared somewhere.",
@@ -1154,6 +1168,11 @@
     "_pairing_note": "Faces are paired by how far they run together, not by which is nearest. A long external wall has many lines near it — linings, hatching, joinery — and the nearest one is rarely its own other face. The longest shared run wins, a nominal thickness breaks ties, and each face belongs to one wall only.",
     "length_allowance": 1.05,
     "_length_allowance_comment": "A wall may run a little past the point a dimension string measures to, so a candidate is kept up to this multiple of the longest distance the sheet itself measures. Anything longer is not a wall of this building - it is the block boundary or an eave line - and is set aside as an item to check.",
+    "merge_overlapping_candidates": true,
+    "merge_min_run_overlap_mm": 300,
+    "merge_centre_share_of_thickness": 0.5,
+    "merge_thickness_tolerance_mm": 40,
+    "_merge_overlapping_note": "Two solids cannot occupy the same space. A wall is drawn with more lines than its own two faces - a lining, a hatch boundary, a cavity - so the pairing above can produce several overlapping candidates for the one wall. Candidates whose thickness bands intersect and which run together for at least the distance below are one wall, reported once, keeping every break any of them recorded. Turn this off only to see the raw pairs.",
     "opening_min_wall_each_side_mm": 300,
     "_opening_flank_comment": "A break in a wall counts as a door or window only when this much wall is drawn on both sides of it. A break running to the end of a wall is where the wall meets another wall, or where the drawing stopped - not an opening.",
     "never_trace_walls_on": [

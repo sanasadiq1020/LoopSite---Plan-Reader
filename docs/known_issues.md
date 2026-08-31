@@ -71,8 +71,26 @@ recognition path and is separate work.
 
 ## Limits of the model
 
-**Walls only.** Doors and windows are carried in the canonical model with the
-wall they belong to, but are not yet cut as openings in the 3D geometry.
+**A hole needs four things, and a plan can only give three.** Which wall, where
+along it and how wide are all read off the drawing; how tall it is is the one
+thing a horizontal cut can never show. Where a schedule gives a height, the
+opening is cut as a real void in the wall and in the IFC. Where the drawing
+names it a door or a window but gives no size, the office default from the
+configuration is used and the opening carries that as a stated assumption.
+Where nothing on the sheet says which it is, **no opening is cut** — it stays
+on the model with its wall, and the model says in one sentence why.
+
+**Where no break was traced, an opening's place comes from its mark.** A wall
+drawn with its opening hatched leaves no break to measure, so the position is
+taken from where the mark is printed beside it. That is approximate to within
+the distance the mark sits from the opening, and every such opening says so on
+screen, in `openings.csv` and on the model element.
+
+**A mark between two equally likely walls is left unplaced.** Where nothing
+separates two candidate walls — neither has a break where the mark points and
+both are at a thickness the office builds — the opening is reported without a
+wall and with the reason. A hole in the wrong wall is worse than one waiting to
+be placed by hand.
 
 **One storey, one sheet.** A model is built from a single sheet. Sheets are not
 combined into a multi-storey building, and there is no site context.
@@ -93,7 +111,6 @@ themselves are correct; they are simply not separated into two drawings.
 
 ## Not in this release
 
-- Cutting door and window openings into the 3D walls
 - Generated 2D elevations from the model
 - Material take-off, cost estimate and crew work packages
 - Multi-storey assembly

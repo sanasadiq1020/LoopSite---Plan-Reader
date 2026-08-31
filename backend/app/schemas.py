@@ -338,6 +338,10 @@ class Opening(BaseModel):
     element_type: Optional[str] = None
     wall_id: Optional[str] = None
     wall_note: Optional[str] = None
+    # Where along the wall the opening sits, as fractions of the wall's own
+    # run, and whether that was measured from a break in the drawing or taken
+    # from where the mark is printed. Without it an opening cannot be cut.
+    position_on_wall: Optional[dict] = None
     width_mm: Optional[float] = None
     height_mm: Optional[float] = None
     sill_height_mm: Optional[float] = None

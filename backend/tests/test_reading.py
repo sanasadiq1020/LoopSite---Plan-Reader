@@ -1129,3 +1129,169 @@ def test_a_section_is_never_promoted_to_a_plan_by_its_contents(config):
     result = reading.detect_page_type("SECTION 1", [], 5, 14, 0, config)
     assert result["value"] == "section"
     assert result["draws_a_plan"] is False
+
+
+# --- one wall, reported once ---------------------------------------------
+
+
+def _candidate(wall_id, axis, line, start, end, thickness, breaks=None, nominal=True):
+    """A wall candidate as the pairing step produces one, in points."""
+    half = thickness / 10.0 / 2.0  # the tests below run at 10 mm per point
+    if axis == "x":
+        start_point, end_point = [start, line], [end, line]
+    else:
+        start_point, end_point = [line, start], [line, end]
+    return {
+        "wall_id": wall_id,
+        "runs_along": axis,
+        "length_mm": (end - start) * 10.0,
+        "thickness_mm": thickness,
+        "matches_nominal_thickness": nominal,
+        "start_point_pt": start_point,
+        "end_point_pt": end_point,
+        "face_positions_pt": [line - half, line + half],
+        "gaps_pt": list(breaks or []),
+        "longer_than_sheet_measures": False,
+        "linked_opening_marks": [],
+    }
+
+
+def test_two_readings_of_the_same_wall_are_reported_once(config):
+    """Two solids cannot occupy the same space. An external wall is drawn with
+    more lines than its own two faces, so the pairing step produces several
+    overlapping candidates for one wall — which doubled the wall count and left
+    every opening mark with two equally close walls to choose between."""
+    from pipeline.plan.walls import merge_overlapping_walls
+
+    walls = [
+        _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0),
+        _candidate("W2", "x", 200.4, 120.0, 580.0, 95.0),
+    ]
+    merged = merge_overlapping_walls(walls, 10.0, config)
+    assert len(merged) == 1
+    assert merged[0]["merged_from"] == 2
+
+
+def test_a_wall_keeps_every_opening_its_copies_recorded(config):
+    """Each copy holds only some of the wall's breaks, so a door in the wall is
+    invisible to whichever copy did not record it."""
+    from pipeline.plan.walls import merge_overlapping_walls
+
+    walls = [
+        _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0, breaks=[(150.0, 240.0)]),
+        _candidate("W2", "x", 200.4, 100.0, 600.0, 95.0, breaks=[(400.0, 490.0)]),
+    ]
+    merged = merge_overlapping_walls(walls, 10.0, config)
+    assert len(merged) == 1
+    assert merged[0]["gaps_pt"] == [[150.0, 240.0], [400.0, 490.0]]
+
+
+def test_two_real_walls_side_by_side_are_not_merged(config):
+    """A brick skin and a frame drawn beside each other are two walls. Merging
+    them on band overlap alone lost five of one plan set's ten openings."""
+    from pipeline.plan.walls import merge_overlapping_walls
+
+    walls = [
+        _candidate("W1", "x", 200.0, 100.0, 600.0, 80.0),
+        _candidate("W2", "x", 206.0, 100.0, 600.0, 180.0),
+    ]
+    assert len(merge_overlapping_walls(walls, 10.0, config)) == 2
+
+
+# --- where an opening sits on its wall ------------------------------------
+
+
+def _sheet_with(walls, openings, schedules=None):
+    return {
+        "page_number": 1,
+        "sheet_id": "A02",
+        "walls": walls,
+        "openings": openings,
+        "schedules": schedules or [],
+    }
+
+
+def _mark(mark_id, mark, bbox):
+    return {"mark_id": mark_id, "mark": mark, "element_type": "door", "bbox": bbox}
+
+
+def test_a_mark_is_placed_on_the_break_that_measures_what_the_schedule_says(config):
+    """A break beside the mark measuring the schedule's width *is* the opening:
+    both its position and its width are then measured off the drawing."""
+    calibration = {"measured_mm_per_point": 10.0, "usable_for_measurement": True}
+    walls = [
+        # The nearer wall has a break of the wrong width; the further one has
+        # the right one. The schedule settles it.
+        _candidate("A02-W001", "x", 205.0, 100.0, 600.0, 90.0, breaks=[(280.0, 300.0)]),
+        _candidate("A02-W002", "x", 230.0, 100.0, 600.0, 90.0, breaks=[(280.0, 362.0)]),
+    ]
+    marks = [_mark("m1", "D1", [290.0, 210.0, 310.0, 220.0])]
+    openings = openings_module.place_openings_on_walls(
+        marks, walls, calibration, config, "A02"
+    )
+    openings[0]["width_mm"] = 820.0
+    page = _sheet_with(walls, openings)
+    openings_module.settle_opening_placement([page], config)
+
+    assert openings[0]["wall_id"] == "A02-W002"
+    assert openings[0]["position_on_wall"]["measured_from"] == "break_in_the_wall"
+
+
+def test_two_doors_cannot_claim_the_same_break(config):
+    """A break holds one opening. Without this, two 820 mm doors both took the
+    same hole and one of them was cut in the wrong place."""
+    calibration = {"measured_mm_per_point": 10.0, "usable_for_measurement": True}
+    walls = [_candidate("A02-W001", "x", 200.0, 100.0, 600.0, 90.0, breaks=[(280.0, 362.0)])]
+    marks = [
+        _mark("m1", "D1", [300.0, 205.0, 320.0, 215.0]),
+        _mark("m2", "D2", [420.0, 205.0, 440.0, 215.0]),
+    ]
+    openings = openings_module.place_openings_on_walls(
+        marks, walls, calibration, config, "A02"
+    )
+    for opening in openings:
+        opening["width_mm"] = 820.0
+    openings_module.settle_opening_placement([_sheet_with(walls, openings)], config)
+
+    measured = [
+        o for o in openings
+        if (o["position_on_wall"] or {}).get("measured_from") == "break_in_the_wall"
+    ]
+    assert len(measured) == 1, "only one of them is the door in that hole"
+
+
+def test_a_mark_with_no_break_is_placed_from_where_it_is_printed(config):
+    """A wall drawn with its opening hatched has no break to measure. The mark
+    still says which wall and roughly where — and the record says exactly that
+    rather than implying it was measured."""
+    calibration = {"measured_mm_per_point": 10.0, "usable_for_measurement": True}
+    walls = [_candidate("A02-W001", "x", 200.0, 100.0, 600.0, 90.0)]
+    marks = [_mark("m1", "D1", [300.0, 215.0, 320.0, 225.0])]
+    openings = openings_module.place_openings_on_walls(
+        marks, walls, calibration, config, "A02"
+    )
+    openings[0]["width_mm"] = 820.0
+    openings_module.settle_opening_placement([_sheet_with(walls, openings)], config)
+
+    assert openings[0]["wall_id"] == "A02-W001"
+    assert openings[0]["position_on_wall"]["measured_from"] == "the_mark_on_the_drawing"
+    assert "no break" in openings[0]["wall_note"]
+
+
+def test_the_words_beside_an_unmarked_opening_name_its_kind(config):
+    """A plan set that prints no marks still describes its openings in words,
+    and the kind is what makes a height possible at all."""
+    lines = [{"text": "Sliding door", "bbox": [300.0, 180.0, 360.0, 190.0]}]
+    kind, described = openings_module.kind_from_words_beside_it(
+        [300.0, 195.0, 340.0, 205.0], lines, 10.0, config["openings"]
+    )
+    assert kind == "door"
+    assert described == "Sliding door"
+
+
+def test_a_word_too_far_from_the_opening_does_not_name_it(config):
+    lines = [{"text": "Sliding door", "bbox": [900.0, 900.0, 960.0, 910.0]}]
+    kind, _ = openings_module.kind_from_words_beside_it(
+        [300.0, 195.0, 340.0, 205.0], lines, 10.0, config["openings"]
+    )
+    assert kind is None
