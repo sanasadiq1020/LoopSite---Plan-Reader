@@ -5,20 +5,26 @@
 # the repository around it, so a list that points at another file with `-r`
 # cannot be followed and the build stops before anything is installed.
 #
-# A range rather than one version. A hosted Space installs its own toolkit
-# alongside this list, and that toolkit needs a newer FastAPI than a single
-# pinned version allows — pinning it makes the install fail before anything
-# runs. Tested on both ends of the range.
+# **Ranges, not exact versions, for anything a platform also installs.**
+# A hosted Space installs its own toolkit beside this list, and that toolkit
+# has its own requirements for FastAPI, Pydantic, uvicorn and Pillow. An exact
+# pin on any of them is a promise that nothing else will ever be installed
+# alongside — and a deployment is precisely where that stops being true. Two
+# builds failed this way before the pins came off, each naming one package.
+#
+# Tested at both ends: the lower bound of every range, and the versions a
+# Space actually resolves to. PyMuPDF stays pinned exactly, because nothing
+# else depends on it and its reading behaviour is what this product is.
 fastapi>=0.115.6,<1.0
-uvicorn[standard]==0.34.0
-python-multipart==0.0.20
+uvicorn[standard]>=0.34.0,<1.0
+python-multipart>=0.0.20,<1.0
 PyMuPDF==1.25.1
-Pillow==11.1.0
-pydantic==2.10.4
+Pillow>=11.1.0,<12
+pydantic>=2.10.4,<3
 paddlepaddle>=3.0
 paddleocr>=3.0
 opencv-python-headless>=4.10.0
 pytest>=8.0
-# Day 5: the canonical model written as IFC, the format the
-# construction industry exchanges.
+# The canonical model written as IFC, the format the construction industry
+# exchanges.
 ifcopenshell>=0.8.0
