@@ -27,6 +27,8 @@ Two behaviours keep this from harming a normal run:
    whole upload.
 """
 
+import gc
+import importlib.util
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -190,13 +192,36 @@ def ocr_is_available() -> tuple[bool, str]:
     A deployment may be built without it deliberately (a smaller image), or
     the machine may not have the memory to load the models. Either way the
     reader is told plainly rather than being shown an empty sheet.
-    """
-    try:
-        import paddleocr  # noqa: F401
 
-        return True, ""
-    except Exception as e:  # ImportError, or a native library that will not load
-        return False, str(e)
+    **Asking must not cost what answering costs.** This used to import the
+    recognition library to find out, and that import alone takes **184 MB and
+    24 seconds** — paid by every upload that so much as asked the question,
+    including one whose every sheet carries its own text and never needed
+    recognition at all. On a small server two of those at once is the whole
+    machine. Whether the library is installed can be answered from the import
+    system without loading anything, so that is what is asked here; the
+    library itself is loaded only when a sheet genuinely has to be read.
+    """
+    if importlib.util.find_spec("paddleocr") is None:
+        return False, "the character recognition package is not installed here"
+    return True, ""
+
+
+def release_engine() -> bool:
+    """Lets go of the loaded recognition models and gives the memory back.
+
+    The models are ~184 MB and are wanted only while a scanned sheet is being
+    read. Holding them for the rest of the container's life is what leaves no
+    room for the next reader's plan, so they are released once an upload is
+    done and loaded again if another upload needs them.
+    """
+    global _ocr_engine
+    if _ocr_engine is None:
+        return False
+    _ocr_engine = None
+    gc.collect()
+    logger.info("character recognition models released")
+    return True
 
 
 def _get_engine():

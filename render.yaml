@@ -7,13 +7,13 @@ services:
   - type: web
     name: loopsite-plan-reader-api
     runtime: docker
-    dockerfilePath: ./backend/Dockerfile
+    dockerfilePath: ./Dockerfile
     dockerContext: .
     # Character recognition needs more memory than the free instance has. On a
     # free instance, build with BUILD_WITH_OCR=false instead: sheets that carry
     # their own text still read in full.
     plan: starter
-    healthCheckPath: /api/plan/release
+    healthCheckPath: /api/plan/health
     envVars:
       # The address of the deployed interface. Set this to the Vercel URL once
       # it exists — several may be listed, separated by commas, so a preview
@@ -27,3 +27,11 @@ services:
         value: "true"
       - key: PYTHONUNBUFFERED
         value: "1"
+      # How many plans this instance reads at the same time, and how many may
+      # queue behind them. Reading two at once on a small instance is how it
+      # runs out of memory and is killed, which loses every plan on it — the
+      # ones being read and the ones people were only looking at.
+      - key: MAX_CONCURRENT_READINGS
+        value: "1"
+      - key: MAX_WAITING_READINGS
+        value: "4"

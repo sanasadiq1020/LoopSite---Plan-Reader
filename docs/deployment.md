@@ -5,8 +5,9 @@ are two different kinds of thing.
 
 ```
 GitHub repository
-   ├── frontend/   →  Vercel          the public link people open
-   └── backend/    →  Render          the API behind it
+   ├── frontend/   →  Vercel                  the public link people open
+   └── backend/    →  Hugging Face Spaces     the API behind it
+                      (or Render)
 ```
 
 **The API cannot go on Vercel.** Vercel runs serverless functions with a
@@ -22,10 +23,8 @@ You will need:
 
 - A **GitHub** account
 - A **Vercel** account (free is enough — the interface is a static build)
-- A **Render** account. With character recognition included the image needs
-  more memory than the free instance has, so this needs the **Starter** plan.
-  Without it, the free instance is enough — see *Leaving character recognition
-  out* below.
+- A **Hugging Face** account (free), or a **Render** account with the paid
+  Starter plan. Which, and why, is in step 2.
 
 ---
 
@@ -54,30 +53,127 @@ approve it there.
 
 ---
 
-## 2. Deploy the API on Render
+## 2. Deploy the API
+
+The API is a container. Two places to put it are described here; **Hugging Face
+Spaces is the one to choose** unless you already have a paid Render service
+running well.
+
+| | Hugging Face Spaces (free) | Render (Starter, paid) |
+|---|---|---|
+| Memory | **16 GB** | 512 MB |
+| Processors | 2 | 0.5 |
+| Cost | free | monthly |
+| Sleeps when unused | after 48 hours, wakes on the next visit (~1 min) | no |
+| Files kept between restarts | no | no |
+
+Memory is the whole story. Reading a plan holds a sheet's line work, its text
+and its picture at once, and character recognition adds about 184 MB more while
+it runs. On 512 MB that is close to the limit with one plan and past it with
+two — which is what "memory limit exceeded" means, and when it happens the
+service is killed and **every** plan on it is lost, including those belonging to
+people who were only reading results. On 16 GB it is not close.
+
+---
+
+### 2a. Hugging Face Spaces — recommended
+
+1. Create an account at **huggingface.co**.
+
+2. **New → Space** (huggingface.co/new-space), and fill in:
+
+   | | |
+   |---|---|
+   | **Space name** | `loopsite-plan-reader-api` |
+   | **License** | your choice |
+   | **Space SDK** | **Docker → Blank** |
+   | **Hardware** | **CPU basic — free** (2 vCPU, 16 GB) |
+   | **Visibility** | **Public** |
+
+   > **It has to be Public.** A private Space needs an access token on every
+   > request, and the interface calls this API straight from the visitor's
+   > browser, where there is nowhere safe to keep one. Public exposes the API,
+   > not anyone's plan: every plan route still checks the session, so one
+   > visitor can never read another's upload.
+
+3. **Make an access token.** Your account **Settings → Access Tokens → Create
+   new token**, type **Write**. Copy it — a password will not work for pushing.
+
+4. **Push the code to the Space.** From the project folder:
+
+   ```
+   git remote add space https://huggingface.co/spaces/YOUR-NAME/loopsite-plan-reader-api
+   git push space main
+   ```
+
+   When it asks: **username** is your Hugging Face username, **password** is
+   the token from step 3.
+
+   > This is a second remote, not a move. `git push origin main` still goes to
+   > GitHub; `git push space main` sends the same code to the Space. Push to
+   > both whenever you change something.
+
+5. The Space starts building on its own. Open it and watch the **Building**
+   log. The first build takes fifteen to twenty-five minutes — it is compiling
+   a large set of packages. Later builds are much faster.
+
+6. When the badge says **Running**, your API address is:
+
+   ```
+   https://YOUR-NAME-loopsite-plan-reader-api.hf.space
+   ```
+
+   All lower case, with the dash between your name and the Space name. Check it
+   is alive by opening `<that address>/api/plan/health` — it should answer with
+   `{"status":"ok", ...}`.
+
+7. **Settings → Variables and secrets**, and add these as **Variables**
+   (not secrets — none of them is one):
+
+   | Name | Value |
+   |---|---|
+   | `ALLOWED_ORIGINS` | leave empty for now — filled in at step 4 |
+   | `COOKIE_CROSS_SITE` | `true` |
+   | `MAX_CONCURRENT_READINGS` | `2` |
+   | `MAX_WAITING_READINGS` | `8` |
+
+   The last two are how many plans are read at once and how many may queue
+   behind them. Two at a time is comfortable in 16 GB; anyone arriving after
+   that waits their turn and is told so, rather than everyone running out of
+   memory together.
+
+**Keep that address.** The interface needs it next.
+
+**What to expect from a free Space**
+
+- It **sleeps after 48 hours** with no visitors. The next person to open it
+  waits about a minute while it wakes. Nothing is lost by sleeping except the
+  uploaded plans, which are not kept anyway.
+- Its **disk is wiped on every restart and rebuild.** A plan being read at that
+  moment is lost and has to be uploaded again. This is by design — a plan lives
+  only as long as somebody is reading it.
+
+---
+
+### 2b. Render — the alternative
 
 1. **New → Web Service**, and connect the repository.
 2. Render finds `render.yaml` and fills most of it in. Confirm:
    - **Runtime**: Docker
-   - **Dockerfile path**: `./backend/Dockerfile`
-   - **Docker build context**: `.` — the repository root, not `backend/`
-   - **Instance type**: Starter
+   - **Dockerfile path**: `./Dockerfile`
+   - **Docker build context**: `.` — the repository root
+   - **Instance type**: **Starter**. The free instance does not have the memory
+     for character recognition — see *Leaving character recognition out*.
 3. Under **Environment**, add:
 
    | Name | Value |
    |---|---|
    | `ALLOWED_ORIGINS` | leave empty for now — filled in at step 4 |
    | `COOKIE_CROSS_SITE` | `true` |
+   | `MAX_CONCURRENT_READINGS` | `1` |
+   | `MAX_WAITING_READINGS` | `4` |
 
-4. Deploy. The first build takes fifteen to twenty-five minutes: it is
-   compiling a large set of packages. Later builds are much faster.
-
-5. When it finishes, Render gives you an address such as
-   `https://loopsite-plan-reader-api.onrender.com`. Check it is alive by
-   opening `<that address>/api/plan/release` — it should return the release
-   description as JSON.
-
-**Keep that address.** The interface needs it next.
+4. Deploy, and check `<your address>/api/plan/health` when it finishes.
 
 ---
 
@@ -91,7 +187,7 @@ approve it there.
 
    | Name | Value |
    |---|---|
-   | `NEXT_PUBLIC_API_BASE_URL` | the Render address from step 2, with no trailing slash |
+   | `NEXT_PUBLIC_API_BASE_URL` | the API address from step 2, with no trailing slash |
 
 5. Deploy. This takes a minute or two.
 
@@ -113,7 +209,8 @@ Vercel gives you the public link — something like
 
 ## 4. Let the two talk to each other
 
-Go back to Render, and set `ALLOWED_ORIGINS` to the Vercel address:
+Go back to wherever the API is — the Space's **Settings → Variables**, or
+Render's **Environment** — and set `ALLOWED_ORIGINS` to the Vercel address:
 
 ```
 https://your-project.vercel.app
@@ -122,8 +219,8 @@ https://your-project.vercel.app
 No trailing slash. If you also want Vercel's preview deployments to work, list
 them separated by commas.
 
-Render restarts the service. **This step is not optional**: until the API knows
-which address is allowed to call it, the browser refuses every request and the
+The service restarts. **This step is not optional**: until the API knows which
+address is allowed to call it, the browser refuses every request and the
 interface sits there loading forever.
 
 ---

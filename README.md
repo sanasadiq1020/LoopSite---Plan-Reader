@@ -1,3 +1,18 @@
+---
+title: LoopSite Plan Reader API
+emoji: "📐"
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 7860
+pinned: false
+short_description: Reads an Australian residential plan set and builds a 3D model
+---
+
+<!-- The block above is read by the hosting platform this API is deployed to:
+     it says the service is a container and which port it listens on. It is
+     ignored everywhere else, and nothing in the application reads it. -->
+
 # LoopSite Plan Reader
 
 Upload one approved Australian residential construction PDF. Get back every
@@ -181,9 +196,13 @@ frontend/       the browser interface
 ```
 
 **One plan at a time.** The interface shows the plan just uploaded and nothing
-else — no upload history and no run browser. Uploading another plan, refreshing
-the page or closing it discards the previous run's folder, so what is on disk
-matches what is on screen.
+else — no upload history and no run browser. Refreshing the page keeps the plan
+you are looking at; uploading another one replaces it.
+
+**Busy is not broken.** The server reads a set number of plans at once and
+queues the rest, saying how many are ahead. Reading several at once on a small
+machine is how it runs out of memory, and that loses every plan on it — not
+just the ones being read.
 
 **Nobody else can see your plan.** Every browser gets its own anonymous
 session, and every file is served through a route that checks it. One session

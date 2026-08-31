@@ -187,9 +187,14 @@ interface and the API end up on different domains, the cookie needs
 `samesite=none` together with `secure=True`, or session isolation silently
 stops working across domains.
 
-**One run at a time on disk.** A new upload clears what came before it, and a
-run the reader leaves discards its own folder. What is on disk matches what is
-on screen.
+**A run stays until nobody can be reading it.** Every marked-up sheet, page
+image and download is drawn on demand from the run folder's saved source PDF,
+so removing a folder takes those away from whoever still has it open. A new
+upload used to clear every other run, which broke exactly that for anyone with
+the site open in a second tab. Now a run is cleared only once it is neither
+among the most recent few nor recently touched (`runs` in the configuration),
+and a reader who uploads another plan discards their own previous run and
+nothing else.
 
 ---
 

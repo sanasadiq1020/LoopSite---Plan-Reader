@@ -69,18 +69,23 @@ COPY tests/ /app/tests/
 # the container needs no persistent disk.
 RUN mkdir -p /app/output/plan /app/logs /app/input /app/data
 
-# Never run as root.
-RUN useradd --create-home --uid 10001 loopsite \
+# Never run as root. UID 1000 because that is the id some hosting platforms
+# expect a container's own user to have; with any other id the application
+# cannot write into its own folders there.
+RUN useradd --create-home --uid 1000 loopsite \
     && chown -R loopsite:loopsite /app
 USER loopsite
+ENV HOME=/home/loopsite
 
 WORKDIR /app/backend
 
-# The host tells the container which port to listen on.
-ENV PORT=8000
-EXPOSE 8000
+# The host tells the container which port to listen on. The default is 7860
+# because that is where a hosted Space looks for the application; a platform
+# that chooses its own port sets PORT and this gives way to it.
+ENV PORT=7860
+EXPOSE 7860
 
 # One worker on purpose: a run's files are written to the container's own disk
 # and read back by the same process. Several workers would each answer for
 # uploads the others hold. Scale by running more containers, not more workers.
-CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --timeout-keep-alive 120"]
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-7860} --workers 1 --timeout-keep-alive 120"]

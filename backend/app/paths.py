@@ -5,6 +5,7 @@ here instead, so the folder structure only needs to change in one place.
 """
 
 import shutil
+import time
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -30,33 +31,63 @@ def run_plan_dir(run_id: str) -> Path:
     return OUTPUT_PLAN_DIR / run_id
 
 
-def discard_other_runs(keep_run_id: str = "") -> int:
-    """Removes every plan-reading run folder except the one named.
+def remove_run(run_id: str) -> bool:
+    """Removes exactly one run's folder. Never touches another."""
+    if not run_id:
+        return False
+    folder = OUTPUT_PLAN_DIR / run_id
+    if not folder.is_dir():
+        return False
+    try:
+        shutil.rmtree(folder)
+        return True
+    except Exception:
+        # A folder still open in another window is left alone rather than
+        # failing the request the reader is waiting on.
+        return False
 
-    **A deliberate change from the Handbook's folder spec.** That spec keeps
-    every run so an older run's evidence is never overwritten, which is right
-    for a batch tool. This is a web app that shows one plan at a time: the
-    interface has no run browser, a reader only ever sees the plan they just
-    uploaded, and 210 stale folders on disk are not evidence of anything — they
-    are the leftovers of tests nobody will read. So the folder on disk now
-    matches what the screen shows.
 
-    The run being viewed is never removed, and this is only ever called when a
-    new upload replaces it or a reader discards it.
+def prune_runs(keep_run_id: str = "", keep_recent: int = 5, max_age_hours: float = 6.0) -> int:
+    """Clears out runs nobody is looking at any more, and only those.
+
+    **A new upload used to delete every other run on the server**, which was
+    right while the interface could only ever show one plan and one person
+    used it. It is wrong the moment two of them are open at once: the second
+    upload deleted the first one's folder, and that reader's marked-up sheets,
+    page images and downloads — all drawn on demand from the saved source PDF —
+    stopped existing underneath them. What they saw was a sheet that could not
+    be produced, with no picture behind it and no explanation.
+
+    So a run is now kept until there is a real reason to remove it: it is not
+    among the most recent few, **and** it is old enough that nobody can still
+    be reading it. Run folders are named by the moment they were created, so
+    "most recent" needs nothing but their names.
+
+    Traceability is unchanged — every kept run still holds its source PDF,
+    every table and its manifest — and session isolation is unchanged too: a
+    folder being on disk has never been what allows anyone to read it.
     """
     removed = 0
     if not OUTPUT_PLAN_DIR.is_dir():
         return removed
-    for folder in OUTPUT_PLAN_DIR.iterdir():
-        if not folder.is_dir() or folder.name == keep_run_id:
+
+    now = time.time()
+    folders = sorted(
+        (f for f in OUTPUT_PLAN_DIR.iterdir() if f.is_dir()),
+        key=lambda f: f.name,
+        reverse=True,
+    )
+    for position, folder in enumerate(folders):
+        if folder.name == keep_run_id or position < keep_recent:
             continue
         try:
-            shutil.rmtree(folder)
+            age_hours = (now - folder.stat().st_mtime) / 3600.0
+        except OSError:
+            age_hours = max_age_hours + 1
+        if age_hours < max_age_hours:
+            continue
+        if remove_run(folder.name):
             removed += 1
-        except Exception:
-            # A folder still open in another window is left alone rather than
-            # failing the upload the reader is waiting on.
-            pass
     return removed
 
 

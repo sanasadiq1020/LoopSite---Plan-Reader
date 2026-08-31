@@ -718,6 +718,15 @@ export async function uploadPlan(file: File, token = ""): Promise<UploadResponse
   return waitForReading(token);
 }
 
+/** The sheet register for a plan the server already holds.
+ *
+ *  Used to pick a plan back up after the page is refreshed: the run itself is
+ *  still on the server, so nothing has to be uploaded again. Throws if the run
+ *  is gone, which is how the caller knows to go back to the upload screen. */
+export async function fetchRegister(runId: string): Promise<UploadResponse> {
+  return requestJson<UploadResponse>(`/api/plan/${runId}/register`);
+}
+
 /** How long to keep waiting after the server last said anything at all. */
 const SILENCE_LIMIT_MS = 3 * 60 * 1000;
 

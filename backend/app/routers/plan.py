@@ -1,3 +1,4 @@
+import gc
 import threading
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -6,8 +7,8 @@ from starlette.concurrency import run_in_threadpool
 
 from app.logging_setup import get_logger
 from app.schemas import PlanReadingResponse, UploadResponse
-from app import progress
-from app.paths import discard_other_runs, run_plan_dir
+from app import progress, workload
+from app.paths import remove_run, run_plan_dir
 from pipeline.model.build import (
     available_sheets,
     build_for_sheet,
@@ -58,6 +59,17 @@ async def upload_plan(
         raise HTTPException(status_code=400, detail="That file could not be read.") from e
 
     filename = file.filename or "unnamed.pdf"
+
+    # **A full server says so; it does not fall over.** Reading two plans at
+    # once on a small machine is how it runs out of memory and is killed, and
+    # that loses every plan on it, including those belonging to people who were
+    # only reading results. So a place in the queue is claimed before the work
+    # is accepted, and when there is none the reply says to try again shortly.
+    try:
+        workload.claim_a_place()
+    except workload.TooBusy as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+
     progress.start(token, filename)
 
     # **The reading runs in the background and this request returns at once.**
@@ -72,10 +84,31 @@ async def upload_plan(
     # the reading itself changes.
     def read_the_plan():
         try:
-            process_upload(file_bytes, filename, session_id, token)
+            def still_waiting(state):
+                ahead = state["reading_now"] + state["waiting"]
+                progress.set_stage(
+                    token,
+                    "Waiting for the server to finish another plan"
+                    + (f" — {ahead} ahead of this one" if ahead > 1 else ""),
+                    2,
+                )
+
+            with workload.a_turn_to_read(on_wait=still_waiting):
+                progress.set_stage(token, "Opening the file", 4)
+                process_upload(file_bytes, filename, session_id, token)
+        except workload.TooBusy as e:
+            progress.fail(token, str(e))
         except ValueError as e:
             # Something about the file itself — the reader can act on this.
             progress.fail(token, str(e))
+        except MemoryError:
+            logger.exception(f"ran out of memory reading {filename}")
+            progress.fail(
+                token,
+                "This plan needed more memory than this server has. A smaller plan "
+                "set, or one sheet at a time, will read; nothing else on the server "
+                "was affected.",
+            )
         except Exception as e:
             logger.exception(f"reading {filename} failed: {e}")
             progress.fail(
@@ -83,6 +116,17 @@ async def upload_plan(
                 "This plan could not be read. It may be larger than this server can "
                 "handle, or the file may be damaged.",
             )
+        finally:
+            # The recognition models are ~184 MB and are wanted only while a
+            # scanned sheet is being read. Holding them for the rest of the
+            # container's life is what leaves no room for the next plan.
+            try:
+                from pipeline.plan.ocr import release_engine
+
+                release_engine()
+            except Exception:
+                pass
+            gc.collect()
 
     threading.Thread(target=read_the_plan, name=f"read:{token[:8]}", daemon=True).start()
     return {"accepted": True, "token": token}
@@ -301,9 +345,12 @@ async def discard_run(run_id: str, session_id: str = Depends(get_session_id)):
     """
     if not run_belongs_to_session(run_id, session_id):
         raise HTTPException(status_code=404, detail="Not found.")
-    removed = discard_other_runs(keep_run_id="__none__")
-    logger.info(f"run={run_id} discarded by the reader ({removed} folder(s) removed)")
-    return {"discarded": True}
+    # **This run, and nothing else.** It used to remove every folder on the
+    # server, so one reader closing their tab deleted the plan another reader
+    # was still looking at.
+    removed = remove_run(run_id)
+    logger.info(f"run={run_id} discarded by the reader (removed={removed})")
+    return {"discarded": removed}
 
 # --- Day 5: the canonical model and its 3D files -------------------------
 
@@ -422,6 +469,26 @@ async def get_model_file(
             filename=f"loopsite_model_{run_id}_{sheet}.{kind}",
         )
     return FileResponse(path, media_type=media_types[kind])
+
+@router.get("/health")
+async def get_health():
+    """Whether this server is up, and how much it is being asked to do.
+
+    Needs no session, because it describes the machine rather than anybody's
+    plan, and it is what a hosting platform polls to decide the service is
+    alive. It reports the queue honestly: a server reading one plan with three
+    waiting is healthy and busy, which is a different thing from unhealthy.
+    """
+    state = workload.snapshot()
+    return {
+        "status": "ok",
+        "reading_now": state["reading_now"],
+        "waiting": state["waiting"],
+        "reads_at_once": state["capacity"],
+        "queue_capacity": state["queue_capacity"],
+        "accepting_uploads": state["waiting"] < state["queue_capacity"],
+    }
+
 
 @router.get("/release")
 async def get_release():

@@ -17,6 +17,7 @@ import {
   type SheetEntry,
   type UploadResponse,
   discardRun,
+  fetchRegister,
   readUploadProgress,
 } from "@/lib/api";
 import { Card, Tabs } from "@/components/Ui";
@@ -48,8 +49,16 @@ function sheetLabelFor(page: PageReading): string {
   return page.title_block.sheet_number.value || "Page " + page.page_number;
 }
 
+// Where this tab remembers which plan it is showing, so a refresh picks it up
+// again instead of returning an empty upload screen. Per tab, not per browser:
+// two tabs may hold two different plans, which is exactly what happened when
+// they could not.
+const RUN_KEY = "loopsite.run_id";
+const NAME_KEY = "loopsite.filename";
+
 export default function Home() {
   const [isProcessing, setIsProcessing] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const [progress, setProgress] = useState<UploadProgress | null>(null);
   const [timeLeft, setTimeLeft] = useState<string | null>(null);
   const [showAbout, setShowAbout] = useState(false);
@@ -86,18 +95,68 @@ export default function Home() {
     else setSelectedPage(null);
   }, []);
 
-  // Closing or refreshing the page ends this reading, so the run behind it is
-  // discarded too — otherwise the folder outlives the only screen that could
-  // ever open it. `keepalive` is what lets the request survive the unload.
+  // **A refresh must not throw the plan away.** This used to discard the run
+  // as the page unloaded, which cannot tell a refresh from a closed tab — so
+  // pressing F5 deleted the uploaded plan on the server and returned an empty
+  // upload screen, with the file needing to be uploaded all over again.
+  //
+  // The run id is remembered for this tab instead, and picked up again below.
+  // Nothing accumulates on the server: a run is cleared once it is neither
+  // recent nor recently touched.
   useEffect(() => {
     const runId = result?.run_id;
     if (!runId) return;
-    const discardOnLeave = () => {
-      void discardRun(runId);
+    try {
+      sessionStorage.setItem(RUN_KEY, runId);
+      if (displayName) sessionStorage.setItem(NAME_KEY, displayName);
+    } catch {
+      // A browser with storage turned off simply loses the plan on refresh,
+      // exactly as before. Nothing else changes.
+    }
+  }, [result?.run_id, displayName]);
+
+  // Picking the plan back up after a refresh. The server still holds it, so
+  // the sheet register and the reading are asked for again — which is the same
+  // pair of requests the upload itself finishes with.
+  useEffect(() => {
+    let cancelled = false;
+    const restore = async () => {
+      let runId = "";
+      try {
+        runId = sessionStorage.getItem(RUN_KEY) || "";
+      } catch {
+        return;
+      }
+      if (!runId) return;
+      setRestoring(true);
+      try {
+        await ensureSession();
+        const register = await fetchRegister(runId);
+        if (cancelled) return;
+        setResult(register);
+        setDisplayName(register.original_filename);
+        await loadPlanReading(runId);
+      } catch {
+        // The plan is no longer on the server — it was cleared, or the server
+        // restarted. Say nothing alarming: the upload screen is the right
+        // place to be, and the forgotten id must not be tried again.
+        try {
+          sessionStorage.removeItem(RUN_KEY);
+          sessionStorage.removeItem(NAME_KEY);
+        } catch {
+          /* nothing to clean up */
+        }
+      } finally {
+        if (!cancelled) setRestoring(false);
+      }
     };
-    window.addEventListener("pagehide", discardOnLeave);
-    return () => window.removeEventListener("pagehide", discardOnLeave);
-  }, [result?.run_id]);
+    void restore();
+    return () => {
+      cancelled = true;
+    };
+    // Runs once, when the page is opened.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const closeOnBack = () => setSelectedPage(null);
@@ -229,8 +288,14 @@ export default function Home() {
 
   async function handleFileSelected(file: File) {
     // The plan on screen is replaced by this one, so the old run is no longer
-    // anything anybody can open. It goes with it.
+    // anything this tab can open. It goes with it — and only it.
     if (result) void discardRun(result.run_id);
+    try {
+      sessionStorage.removeItem(RUN_KEY);
+      sessionStorage.removeItem(NAME_KEY);
+    } catch {
+      /* storage is optional */
+    }
 
     setIsProcessing(true);
     setError(null);
@@ -434,7 +499,19 @@ export default function Home() {
           />
         )}
 
-        {!result && <UploadPanel onFileSelected={handleFileSelected} isProcessing={isProcessing} />}
+        {/* Picking the plan back up after a refresh. Shown instead of the
+            upload panel, because offering to upload a plan that is already on
+            the server is what made a refresh look like the plan was lost. */}
+        {restoring && !result && (
+          <div className="flex items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+            <span className="h-4 w-4 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
+            Bringing your plan back…
+          </div>
+        )}
+
+        {!result && !restoring && (
+          <UploadPanel onFileSelected={handleFileSelected} isProcessing={isProcessing} />
+        )}
 
         {error && (
           <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">

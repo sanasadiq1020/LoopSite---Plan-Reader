@@ -28,7 +28,7 @@ from app.paths import (
     OUTPUT_ISSUES_DIR,
     OUTPUT_PLAN_DIR,
     PROJECT_ROOT,
-    discard_other_runs,
+    prune_runs,
     run_plan_dir,
 )
 from pipeline.plan.ocr import render_dpi as ocr_render_dpi
@@ -84,12 +84,19 @@ def _image_rects(page: "fitz.Page") -> list:
     if cached is not None:
         return cached
 
+    # **Asked for in one call, not once per picture.** `get_image_rects` scans
+    # the whole page for each image it is asked about, so a sheet carrying ten
+    # pictures was scanned ten times over. `get_image_info` returns every
+    # picture's position from a single scan, which is the same answer for a
+    # fraction of the work.
     rects = []
-    for img in page.get_images(full=True):
-        try:
-            rects.extend(page.get_image_rects(img[0]))
-        except Exception:
-            continue
+    try:
+        for info in page.get_image_info(hashes=False, xrefs=False):
+            box = info.get("bbox")
+            if box:
+                rects.append(fitz.Rect(box))
+    except Exception:
+        rects = []
     try:
         page._loopsite_image_rects = rects
     except AttributeError:
@@ -888,13 +895,19 @@ def process_upload(
         json.dumps(manifest, indent=2), encoding="utf-8"
     )
 
-    # One plan at a time, on disk as well as on screen. The interface has no
-    # run browser (Section 3.B.14), so a folder for a plan nobody can open is
-    # only clutter. The run just written is kept; everything before it goes.
+    # Clear out runs nobody can still be reading. A new upload used to delete
+    # every other run on the server, which broke the marked-up sheets of
+    # anyone who had the site open in a second tab: those are drawn on demand
+    # from the saved source PDF, and the folder holding it had gone.
     try:
-        removed = discard_other_runs(keep_run_id=run_id)
+        settings = load_config().get("runs", {}) or {}
+        removed = prune_runs(
+            keep_run_id=run_id,
+            keep_recent=int(settings.get("keep_recent", 5)),
+            max_age_hours=float(settings.get("max_age_hours", 6)),
+        )
         if removed:
-            logger.info(f"run={run_id} cleared {removed} earlier run folder(s)")
+            logger.info(f"run={run_id} cleared {removed} run folder(s) nobody was reading")
     except Exception as e:
         logger.exception(f"run={run_id} could not clear earlier runs: {e}")
 

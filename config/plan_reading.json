@@ -913,6 +913,11 @@
     ],
     "_measured_to_note": "Notes an office may print after a dimension figure saying what it measures to - '10260 TO WALL', '2600 TO EAVE', '900 CLEAR'. The figure is read as the measurement and the note is kept alongside it, never dropped. Add an office's own wording here; no code changes are needed."
   },
+  "runs": {
+    "_comment": "How long an uploaded plan's folder stays on the server. A folder holds the source PDF every marked-up sheet and page image is drawn from, so removing one while somebody is still reading it takes their results away underneath them. The most recent runs are always kept; older ones go once nobody can still be looking at them.",
+    "keep_recent": 5,
+    "max_age_hours": 6
+  },
   "openings": {
     "_comment": "Door and window marks used on Australian residential plans. The prefix decides the element type; the number is the mark's instance. Extend this list for an office that uses different marks — nothing else in the pipeline needs changing.",
     "mark_prefixes": {
