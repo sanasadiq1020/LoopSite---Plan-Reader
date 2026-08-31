@@ -47,7 +47,10 @@ if str(BACKEND) not in sys.path:
 # way of starting this application.
 os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "False")
 
+from app.logging_setup import get_logger  # noqa: E402
 from app.main import app as api  # noqa: E402
+
+logger = get_logger()
 
 
 def _with_a_landing_page(application):
@@ -88,8 +91,55 @@ here lets one visitor read another's drawings.
             )
 
         return gr.mount_gradio_app(application, page, path="/", ssr_mode=False)
-    except Exception:
+    except Exception as e:
+        # Said out loud rather than swallowed. A page that quietly failed to
+        # mount looked identical, from the outside, to one that mounted fine —
+        # and the difference was the whole of one wasted deployment.
+        logger.warning(f"the landing page could not be mounted, so it is not shown: {e}")
         return application
+
+
+def _declare_the_gpu_work():
+    """Names the one piece of work here that a GPU could do, where the
+    hardware insists on being told.
+
+    Some hosted hardware allocates a GPU **only** to functions that ask for
+    one, and refuses to start an application that declares none at all:
+
+        No @spaces.GPU function detected during startup
+
+    Character recognition is the only thing here that a GPU would change — a
+    dense scanned sheet takes minutes on a processor. Everything else is
+    reading PDFs, measuring line work and writing files, none of which a GPU
+    helps with. So that is what is declared, and it is declared honestly: this
+    is the same recognition the reader already runs, and it is only reached on
+    a sheet that carries no text of its own.
+
+    On hardware that does not ask for this, nothing here runs or is imported.
+    """
+    if not os.environ.get("SPACE_ID"):
+        return None
+    try:
+        import spaces
+    except Exception:
+        return None
+
+    try:
+
+        @spaces.GPU(duration=120)
+        def recognise_characters_on_a_gpu(image_path: str):
+            from pipeline.plan.ocr import _run_ocr_sync
+
+            return _run_ocr_sync(image_path)
+
+        logger.info("character recognition is declared as this application's GPU work")
+        return recognise_characters_on_a_gpu
+    except Exception as e:
+        logger.warning(f"the GPU declaration could not be made: {e}")
+        return None
+
+
+gpu_work = _declare_the_gpu_work()
 
 
 if __name__ == "__main__":
