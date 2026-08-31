@@ -22,15 +22,28 @@ turned off.** Two failures taught this, and both are worth keeping:
     Node. A check that passes only because the machine lacks something proves
     nothing about the machine it has to run on.
 
-*   Serving the API alone, with a page of plain HTML, bound the port perfectly
-    and was then stopped from outside. A Space of this kind expects to find
-    that toolkit's own endpoints, and an application without them does not look
-    like a running Space.
+*   Serving the API alone, behind a page of plain HTML, bound the port
+    perfectly and was stopped from outside moments later.
 
 So the toolkit is used, and ``ssr_mode=False`` keeps it from taking a port.
 Whatever happens to it, the API is unaffected: the mount is attempted inside a
-``try``, and the routes it sits beside are the API's own, each of which still
-checks the session before returning anybody's plan.
+``try`` that says out loud when it fails, and the routes it sits beside are the
+API's own, each of which still checks the session before returning anybody's
+plan.
+
+**This will not run on GPU-allocating hardware, and that is not a bug to fix
+here.** Such hardware hands a GPU only to functions registered through the
+toolkit's own launch path, and refuses to start an application that presents
+none::
+
+    No @spaces.GPU function detected during startup
+
+Declaring one was tried and changed nothing: the declaration was made, logged,
+and the platform still reported none, because what it looks for is the
+toolkit's launch collecting them — and a REST API served by its own server
+never calls that. The code for it was removed rather than left in looking like
+it helped. This service wants processors and memory, not a GPU; run it on a
+CPU tier.
 """
 
 import os
@@ -97,49 +110,6 @@ here lets one visitor read another's drawings.
         # and the difference was the whole of one wasted deployment.
         logger.warning(f"the landing page could not be mounted, so it is not shown: {e}")
         return application
-
-
-def _declare_the_gpu_work():
-    """Names the one piece of work here that a GPU could do, where the
-    hardware insists on being told.
-
-    Some hosted hardware allocates a GPU **only** to functions that ask for
-    one, and refuses to start an application that declares none at all:
-
-        No @spaces.GPU function detected during startup
-
-    Character recognition is the only thing here that a GPU would change — a
-    dense scanned sheet takes minutes on a processor. Everything else is
-    reading PDFs, measuring line work and writing files, none of which a GPU
-    helps with. So that is what is declared, and it is declared honestly: this
-    is the same recognition the reader already runs, and it is only reached on
-    a sheet that carries no text of its own.
-
-    On hardware that does not ask for this, nothing here runs or is imported.
-    """
-    if not os.environ.get("SPACE_ID"):
-        return None
-    try:
-        import spaces
-    except Exception:
-        return None
-
-    try:
-
-        @spaces.GPU(duration=120)
-        def recognise_characters_on_a_gpu(image_path: str):
-            from pipeline.plan.ocr import _run_ocr_sync
-
-            return _run_ocr_sync(image_path)
-
-        logger.info("character recognition is declared as this application's GPU work")
-        return recognise_characters_on_a_gpu
-    except Exception as e:
-        logger.warning(f"the GPU declaration could not be made: {e}")
-        return None
-
-
-gpu_work = _declare_the_gpu_work()
 
 
 if __name__ == "__main__":

@@ -131,16 +131,23 @@ work and writes files, all of which are processor and memory work. What it
 needs is memory: 345 MB to read a plan, and 184 MB more while a scanned sheet
 is being read.
 
-*   **A free CPU tier is the right one.** Take it if it is offered.
-*   **If the only free tier on offer is a GPU one, it is still worth trying.**
-    A GPU tier runs an ordinary Python process on ordinary processors and
-    attaches a GPU only to code that asks for one; nothing here ever asks, so
-    the GPU sits unused and the service runs on the part that is not the GPU.
-    It costs twenty minutes to find out.
-*   **If it does not run there, the fallback is a small container host with
-    `OCR_ENABLED=false`** — see the table above. 345 MB fits in 512 MB, which
-    means a free container tier is enough for everything except scanned
-    sheets, and those say so on screen rather than coming back empty.
+*   **A CPU tier is the one to take**, and 2 vCPU with 16 GB is ample.
+*   **A GPU-allocating tier will not run this — tried, and refused.** Such
+    hardware hands a GPU only to functions registered through the toolkit's own
+    launch path, and refuses to start an application that presents none:
+
+    ```
+    stage:   RUNTIME_ERROR
+    message: No @spaces.GPU function detected during startup
+    ```
+
+    Declaring one changed nothing, because what it looks for is that launch
+    collecting them, and a REST API served by its own server never calls it.
+    The application starts, binds its port and is then stopped from outside.
+*   **Where no CPU tier is available, use a small container host instead**, with
+    `OCR_ENABLED=false` — see the table above. 345 MB fits in 512 MB, so a free
+    container tier is enough for everything except scanned sheets, and those
+    say so on screen rather than coming back empty.
 
 ---
 
@@ -154,7 +161,7 @@ is being read.
    | **License** | your choice |
    | **Space SDK** | **Gradio** |
    | **Template** | **Blank** |
-   | **Hardware** | the free CPU option |
+   | **Hardware** | a **CPU** option — not a GPU one, see above |
    | **Visibility** | **Public** |
 
    > **Blank, not one of the example templates.** A template writes its own
@@ -249,6 +256,9 @@ is being read.
 | a package will not install, naming `paddlepaddle` or `paddleocr` | Remove those two lines from `requirements.txt` and push again. Everything works except scanned sheets with no text of their own, which then say so on screen rather than coming back blank. |
 | `libGL.so.1` or a similar library is missing | Add its name on its own line in `packages.txt` and push again. |
 | it stops without a message | Almost always the build timing out on the large packages. The first row applies. |
+| `Could not open requirements file: '/tmp/backend/requirements.txt'` | A Space mounts `requirements.txt` on its own, with none of the repository around it, so that file cannot point at another with `-r`. The list at the top of the repository is the real one. |
+| `Cannot install ... because these package versions have conflicting dependencies` | An exact pin on a package the platform also installs. Turn it into a range. |
+| **It builds, starts, and is stopped moments later** — and the Space reports `No @spaces.GPU function detected` | The Space is on GPU hardware, which will not run this. Change it to a CPU tier under **Settings → Hardware**. |
 
 ---
 
