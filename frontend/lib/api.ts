@@ -583,10 +583,25 @@ function rememberSession(value: string | null) {
   }
 }
 
-/** Headers for a request made by script. */
-function sessionHeaders(): Record<string, string> {
-  const id = rememberedSession();
-  return id ? { [SESSION_HEADER]: id } : {};
+/**
+ * The session travels in the query string, never in a header.
+ *
+ * **A custom header is what makes a cross-origin request need a preflight**,
+ * and the preflight is answered by whatever sits in front of the API rather
+ * than by the API itself. One hosting platform's proxy answers every `OPTIONS`
+ * on its own and leaves out `Access-Control-Allow-Credentials` — which a
+ * browser requires before it will send a credentialed request. The result is
+ * that the real request is **never sent at all**: the browser reports only
+ * "Failed to fetch", and the reader is told their plan could not be processed.
+ * Nothing reaches the server, so nothing appears in any log.
+ *
+ * Sending the session in the query instead keeps every request "simple" in the
+ * browser's sense — no preflight, nothing in front of the API to get wrong.
+ * It is also what images and downloads have always done, so this is one
+ * mechanism rather than two.
+ */
+function sessionUrl(url: string): string {
+  return withSession(url);
 }
 
 /** Takes the session out of a response, whether or not the cookie survived. */
@@ -604,9 +619,8 @@ export async function ensureSession(): Promise<string | null> {
   const existing = rememberedSession();
   if (existing) return existing;
   try {
-    const res = await fetch(`${API_BASE_URL}/api/plan/session`, {
+    const res = await fetch(sessionUrl(`${API_BASE_URL}/api/plan/session`), {
       credentials: "include",
-      headers: sessionHeaders(),
     });
     noteSession(res);
     if (res.ok) {
@@ -653,9 +667,8 @@ export interface UploadProgress {
  */
 export async function readUploadProgress(token: string): Promise<UploadProgress> {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/plan/progress/${token}`, {
+    const res = await fetch(sessionUrl(`${API_BASE_URL}/api/plan/progress/${token}`), {
       credentials: "include",
-      headers: sessionHeaders(),
     });
     if (!res.ok) return { known: false };
     return (await res.json()) as UploadProgress;
@@ -668,10 +681,9 @@ export async function readUploadProgress(token: string): Promise<UploadProgress>
 /** Removes a run the reader has finished with, so one plan is on disk at a time. */
 export async function discardRun(runId: string): Promise<void> {
   try {
-    await fetch(`${API_BASE_URL}/api/plan/${runId}/discard`, {
+    await fetch(sessionUrl(`${API_BASE_URL}/api/plan/${runId}/discard`), {
       method: "POST",
       credentials: "include",
-      headers: sessionHeaders(),
       keepalive: true, // still sent when the page is closing
     });
   } catch {
@@ -696,11 +708,10 @@ export async function uploadPlan(file: File, token = ""): Promise<UploadResponse
   formData.append("file", file);
 
   const query = token ? `?token=${encodeURIComponent(token)}` : "";
-  const res = await fetch(`${API_BASE_URL}/api/plan/upload${query}`, {
+  const res = await fetch(sessionUrl(`${API_BASE_URL}/api/plan/upload${query}`), {
     method: "POST",
     body: formData,
     credentials: "include",
-    headers: sessionHeaders(),
   });
   noteSession(res);
 
@@ -766,9 +777,8 @@ async function waitForReading(token: string): Promise<UploadResponse> {
 }
 
 async function requestJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}${path}`, {
+  const res = await fetch(sessionUrl(`${API_BASE_URL}${path}`), {
     credentials: "include",
-    headers: sessionHeaders(),
   });
   noteSession(res);
   if (!res.ok) {
@@ -1065,11 +1075,10 @@ export async function buildSheetModel(
   runId: string,
   pageNumber: number
 ): Promise<ProjectModel> {
-  const res = await fetch(`${API_BASE_URL}/api/plan/${runId}/model/${pageNumber}`, {
-    method: "POST",
-    credentials: "include",
-    headers: sessionHeaders(),
-  });
+  const res = await fetch(
+    sessionUrl(`${API_BASE_URL}/api/plan/${runId}/model/${pageNumber}`),
+    { method: "POST", credentials: "include" }
+  );
   noteSession(res);
   if (!res.ok) {
     let detail = `The model could not be built (HTTP ${res.status}).`;

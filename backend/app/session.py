@@ -13,14 +13,25 @@ without a session, and the reader is told their plan could not be processed.
 Worse, it is invisible to whoever deployed it, because their own browser has
 usually visited the API's domain directly at some point and so keeps the cookie.
 
-So the browser holds its session itself and presents it explicitly:
+So the browser holds its session itself and presents it explicitly, as an
+``s`` query parameter, on **every** request — the ones fetched by script as
+much as the ones a browser loads by URL, such as an ``<img>`` or a download
+link, which cannot carry a header at all.
 
-*   an ``X-Session-Id`` header on anything fetched by script, and
-*   an ``s`` query parameter on anything a browser loads by URL — an ``<img>``
-    or a download link cannot carry a header.
+**It used to be a header on script requests, and that could not work behind a
+proxy.** A custom header is exactly what makes a cross-origin request need a
+preflight, and the preflight is answered by whatever sits in front of this API
+rather than by this API. One hosting platform answers every ``OPTIONS`` at its
+edge and leaves out ``Access-Control-Allow-Credentials``, which a browser
+requires before it will send a credentialed request. The real request was then
+**never sent at all**: the browser reported only "Failed to fetch", the reader
+was told their plan could not be processed, and nothing appeared in any log
+because nothing ever arrived. A query parameter keeps every request "simple" in
+the browser's sense, so there is no preflight for anything to get wrong.
 
-The cookie is still set and still accepted. It costs nothing, and it is what
-makes the local development setup work with no configuration at all.
+An ``X-Session-Id`` header is still accepted, because it costs nothing and any
+other client may prefer it. The cookie is still set and still accepted too, and
+it is what makes the local development setup work with no configuration at all.
 
 None of this is a secret in the cryptographic sense: it is an anonymous
 identifier that separates one reader's upload from another's on a tool that
