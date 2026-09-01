@@ -778,7 +778,7 @@ def compute_metrics(pages: list, cross_check: dict, opening_reconciliation=None)
     room_total = dimension_total = schedule_row_total = legend_entry_total = 0
     wall_total = wall_nominal = 0
     opening_total = opening_in_schedule = opening_on_wall = 0
-    opening_on_a_plan = opening_position_measured = 0
+    opening_on_a_plan = opening_position_measured = unmarked_openings = 0
     distinct_openings: set = set()
     scale_confirmed = scale_contradicted = scale_unchecked = 0
     chain_checked = chain_passed = 0
@@ -848,6 +848,8 @@ def compute_metrics(pages: list, cross_check: dict, opening_reconciliation=None)
             # marks is reported beside it as the evidence behind them.
             if opening["mark"]:
                 distinct_openings.add(opening["mark"].upper())
+            else:
+                unmarked_openings += 1
             if opening["in_schedule"]:
                 opening_in_schedule += 1
             # An opening can only be placed on a wall of a sheet that has
@@ -939,7 +941,21 @@ def compute_metrics(pages: list, cross_check: dict, opening_reconciliation=None)
             "at_nominal_thickness_pct": percentage(wall_nominal, wall_total),
         },
         "openings": {
-            "distinct_openings": len(distinct_openings),
+            # **A plan set that labels nothing still has doors and windows.**
+            # Counting only distinct marks reported "0 doors and windows" on a
+            # set that prints none, beside "marked 10 times" — a headline
+            # contradicted by the line under it.
+            #
+            # Where the drawings do print marks, they are what identifies one
+            # opening across the sheets it appears on, and the unmarked ones
+            # are the same doors seen again on a reflected-ceiling or
+            # electrical plan — counting those too would double them. Where
+            # the drawings print no marks at all, what was measured is all
+            # there is, and that is the count.
+            "distinct_openings": (
+                len(distinct_openings) if distinct_openings else unmarked_openings
+            ),
+            "openings_with_no_mark": unmarked_openings,
             "marks_on_drawings": opening_total,
             "matched_to_a_schedule": opening_in_schedule,
             "matched_to_a_schedule_pct": percentage(opening_in_schedule, opening_total),

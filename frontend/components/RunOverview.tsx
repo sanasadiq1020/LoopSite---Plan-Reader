@@ -69,9 +69,17 @@ export function RunOverview({
           label="Doors & windows"
           value={metrics.openings ? metrics.openings.distinct_openings : 0}
           hint={
-            metrics.openings && metrics.openings.marks_on_drawings
-              ? `marked ${metrics.openings.marks_on_drawings} times across the sheets`
-              : "None marked on this plan"
+            // A plan set that prints no marks still has doors and windows, and
+            // saying they were "marked 10 times" when nothing is marked is the
+            // line contradicting the figure above it.
+            !metrics.openings
+              ? "None found on this plan"
+              : metrics.openings.openings_with_no_mark &&
+                  !metrics.openings.matched_to_a_schedule
+                ? "measured from the breaks in the walls; this plan prints no marks"
+                : metrics.openings.marks_on_drawings
+                  ? `marked ${metrics.openings.marks_on_drawings} times across the sheets`
+                  : "None marked on this plan"
           }
         />
         <Stat

@@ -497,11 +497,15 @@ export interface ReadingMetrics {
   };
   openings: {
     distinct_openings: number;
+    openings_with_no_mark: number;
     marks_on_drawings: number;
     matched_to_a_schedule: number;
     matched_to_a_schedule_pct: number | null;
+    on_a_sheet_that_draws_a_plan: number;
     placed_on_a_wall: number;
     placed_on_a_wall_pct: number | null;
+    position_measured_from_the_drawing: number;
+    position_measured_pct: number | null;
     scheduled_marks_not_drawn: number;
   };
   dimension_chain_check: {

@@ -1295,3 +1295,66 @@ def test_a_word_too_far_from_the_opening_does_not_name_it(config):
         [300.0, 195.0, 340.0, 205.0], lines, 10.0, config["openings"]
     )
     assert kind is None
+
+
+def test_a_plan_that_labels_nothing_still_reports_its_doors_and_windows():
+    """Counting only distinct marks reported "0 doors and windows" on a plan
+    set that prints none — a headline contradicted by the line under it, which
+    said the same openings were "marked 10 times"."""
+    page = {
+        "page_number": 1,
+        "sheet_id": "P01",
+        "title_block": {k: {"value": None, "confidence": 0, "extraction_method": "none"}
+                        for k in ("sheet_number", "sheet_title", "discipline", "revision",
+                                  "scale", "sheet_position", "project_number")},
+        "page_type": {"value": "floor_plan", "draws_a_plan": True},
+        "rooms": [], "dimensions": [], "dimension_chains": [], "schedules": [],
+        "legends": [], "opening_marks": [], "walls": [], "unresolved_items": [],
+        "scale_calibration": {"result": "confirmed"},
+        "openings": [
+            {"opening_id": f"P01-OPG{n:03d}", "mark": "", "element_type": None,
+             "wall_id": None, "in_schedule": False, "found_by": "gap_in_the_wall",
+             "source_bbox": [0, 0, 1, 1], "confidence": 0.6,
+             "confidence_band": "review", "position_on_wall": None}
+            for n in range(1, 11)
+        ],
+    }
+    openings = reading.compute_metrics([page], {})["openings"]
+    assert openings["distinct_openings"] == 10, "the plan's ten openings were reported as none"
+    assert openings["openings_with_no_mark"] == 10
+
+
+def test_marks_still_decide_the_count_where_a_plan_prints_them():
+    """Where marks are printed they identify one opening across the sheets it
+    appears on. The unmarked ones are then the same doors seen again on a
+    reflected-ceiling or electrical plan, and counting those too doubles them."""
+    def sheet(sheet_id, openings):
+        return {
+            "page_number": 1, "sheet_id": sheet_id,
+            "title_block": {k: {"value": None, "confidence": 0, "extraction_method": "none"}
+                            for k in ("sheet_number", "sheet_title", "discipline",
+                                      "revision", "scale", "sheet_position",
+                                      "project_number")},
+            "page_type": {"value": "floor_plan", "draws_a_plan": True},
+            "rooms": [], "dimensions": [], "dimension_chains": [], "schedules": [],
+            "legends": [], "opening_marks": [], "walls": [], "unresolved_items": [],
+            "scale_calibration": {"result": "confirmed"}, "openings": openings,
+        }
+
+    marked = [
+        {"opening_id": f"A02-OP{n:03d}", "mark": m, "element_type": "door",
+         "wall_id": None, "in_schedule": True, "found_by": "mark_on_the_drawing",
+         "source_bbox": [0, 0, 1, 1], "confidence": 0.9, "confidence_band": "high",
+         "position_on_wall": None}
+        for n, m in enumerate(["D1", "D2", "D1"], start=1)  # D1 marked twice
+    ]
+    unmarked = [
+        {"opening_id": "A05-OPG001", "mark": "", "element_type": None,
+         "wall_id": None, "in_schedule": False, "found_by": "gap_in_the_wall",
+         "source_bbox": [0, 0, 1, 1], "confidence": 0.6, "confidence_band": "review",
+         "position_on_wall": None}
+    ]
+    openings = reading.compute_metrics(
+        [sheet("A02", marked), sheet("A05", unmarked)], {}
+    )["openings"]
+    assert openings["distinct_openings"] == 2, "D1 and D2 — the unmarked one is D1 again"
