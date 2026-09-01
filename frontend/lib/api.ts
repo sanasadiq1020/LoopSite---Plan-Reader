@@ -732,7 +732,7 @@ export async function discardRun(runId: string): Promise<void> {
  * file. So the send itself is done the one way a browser will describe as it
  * happens, and those bytes are the first thing the bar shows.
  */
-function sendTheFile(
+function watchTheSend(
   url: string,
   formData: FormData,
   onSent: (fractionSent: number) => void
@@ -740,20 +740,48 @@ function sendTheFile(
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
     request.open("POST", url, true);
-    // No custom header, so this stays a request a browser sends without asking
-    // permission first — see `sessionUrl`.
-    request.withCredentials = true;
+    // **Deliberately without credentials.** Watching an upload means putting a
+    // listener on it, and a browser will not send a cross-origin request with
+    // one attached until it has asked permission first. That permission is
+    // answered by whatever sits in front of the API — and one hosting
+    // platform's proxy answers it without saying credentials are allowed, so a
+    // request that carries them is refused before it is ever sent. The session
+    // is in the URL, not in a cookie, so nothing here needs them.
+    request.withCredentials = false;
     request.upload.onprogress = (event) => {
       if (event.lengthComputable && event.total > 0) {
         onSent(event.loaded / event.total);
       }
     };
     request.onload = () => resolve({ status: request.status, body: request.responseText });
-    request.onerror = () =>
-      reject(new ApiError("The plan could not be sent to the server.", 0));
-    request.onabort = () => reject(new ApiError("The upload was stopped.", 0));
+    request.onerror = () => reject(new Error("the send could not be watched"));
+    request.onabort = () => reject(new Error("the send was stopped"));
     request.send(formData);
   });
+}
+
+/**
+ * Sends the file, saying how far it has got where the platform allows it.
+ *
+ * **Watching costs permission, and permission is not always given.** The plain
+ * send always works, because it asks for nothing; the watched one may be
+ * refused before a single byte leaves. So the watched one is tried first and
+ * the plain one is there behind it — a reader never loses an upload because
+ * the bar could not be drawn.
+ */
+async function sendTheFile(
+  url: string,
+  formData: FormData,
+  onSent: (fractionSent: number) => void
+): Promise<{ status: number; body: string }> {
+  try {
+    return await watchTheSend(url, formData, onSent);
+  } catch {
+    onSent(0);
+    const res = await fetch(url, { method: "POST", body: formData, credentials: "include" });
+    onSent(1);
+    return { status: res.status, body: await res.text() };
+  }
 }
 
 export async function uploadPlan(

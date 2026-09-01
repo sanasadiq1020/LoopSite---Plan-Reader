@@ -62,6 +62,41 @@ def _overlaps(one, other) -> bool:
     )
 
 
+# How tall a drawn name is, and roughly how wide one character is, at the size
+# the labels are drawn. Used only to keep names from landing on one another.
+_LABEL_HEIGHT = 11
+_LABEL_CHARACTER_WIDTH = 5.5
+
+
+def _room_for_a_label(text: str, box, already_drawn: list, image_size) -> tuple:
+    """Somewhere clear to put this name, as near its own mark as possible.
+
+    Tried in order: just above the mark, just below it, then to either side,
+    then stepped further above and below. The first place clear of every name
+    already drawn wins. If a drawing is so crowded that nothing is clear, the
+    name still goes just above its mark — a name in the wrong place is a
+    nuisance, a name missing altogether is a reader unable to find the row it
+    belongs to.
+    """
+    width = len(text) * _LABEL_CHARACTER_WIDTH + 4
+    page_width, page_height = image_size
+    left = min(max(0.0, box[0]), max(0.0, page_width - width))
+    above, below = box[1] - _LABEL_HEIGHT, box[3] + 1
+
+    places = [(left, above), (left, below), (box[2] + 3, above), (left - width - 3, above)]
+    for step in range(1, 7):
+        places.append((left, above - step * _LABEL_HEIGHT))
+        places.append((left, below + step * _LABEL_HEIGHT))
+
+    for x, y in places:
+        if x < 0 or y < 0 or x + width > page_width or y + _LABEL_HEIGHT > page_height:
+            continue
+        room = (x, y, x + width, y + _LABEL_HEIGHT)
+        if not any(_overlaps(room, taken) for taken in already_drawn):
+            return room
+    return (left, max(0.0, above), left + width, max(0.0, above) + _LABEL_HEIGHT)
+
+
 def _dashed_rectangle(draw, box, colour, width: int, dash: int = 6):
     x0, y0, x1, y1 = box
     for x in range(int(x0), int(x1), dash * 2):
@@ -249,18 +284,16 @@ def render_overlay(page, page_reading: dict, out_path, config: dict, page_pixmap
                 _dashed_rectangle(draw, box, colour, line_width)
             used_categories.setdefault(category, colour)
             if label:
-                # **A label that would land on one already drawn is left off.**
-                # Marks cluster where a drawing is busiest, and their names were
-                # printing on top of each other into an unreadable smear —
-                # which is worse than a name missing, because a smear cannot be
-                # read *and* hides the drawing under it.
-                text = str(label)
-                where = (box[0], max(0, box[1] - 11))
-                width = len(text) * 5.5 + 4
-                room = (where[0], where[1], where[0] + width, where[1] + 11)
-                if not any(_overlaps(room, taken) for taken in label_boxes):
-                    draw.text(where, text, fill=colour, font=label_font)
-                    label_boxes.append(room)
+                # **Every name is drawn. A name that would land on one already
+                # there is moved, not dropped.** Marks cluster where a drawing
+                # is busiest, and their names were printing on top of one
+                # another into a smear that could not be read and hid the
+                # drawing underneath. A place is looked for around the mark
+                # instead — above it, below it, then stepped further out — and
+                # only somewhere clear is used.
+                where = _room_for_a_label(str(label), box, label_boxes, image.size)
+                draw.text(where[:2], str(label), fill=colour, font=label_font)
+                label_boxes.append(where)
 
         # On-image legend, so the overlay explains itself when it is opened
         # outside the application.
