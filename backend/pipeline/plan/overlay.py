@@ -14,6 +14,18 @@ Two drawing rules carry meaning and are not decoration:
     review threshold, a cross-check disagreement, a chain that failed its
     arithmetic. A reviewer scanning the sheet can therefore find every
     uncertain item without reading a single number.
+
+**What is deliberately not drawn.** Flagged items are not marked on the sheet.
+Everything flagged goes to the downloadable issues log, with its sheet, area,
+category, severity, wording and position; drawing every one of them here as
+well covered most of the drawing in red boxes, and the marks saying what was
+actually *read* could barely be seen underneath. The sheet shows what was read;
+the log says what to check.
+
+**A name is left off rather than printed over another.** Marks cluster where a
+drawing is busiest, and their names were landing on top of one another into a
+smear — worse than a missing name, because a smear cannot be read *and* hides
+the drawing beneath it.
 """
 
 import io
@@ -42,6 +54,12 @@ def _load_font(size: int):
         except Exception:
             continue
     return ImageFont.load_default()
+
+
+def _overlaps(one, other) -> bool:
+    return not (
+        one[2] <= other[0] or other[2] <= one[0] or one[3] <= other[1] or other[3] <= one[1]
+    )
 
 
 def _dashed_rectangle(draw, box, colour, width: int, dash: int = 6):
@@ -157,10 +175,13 @@ def _collect_marks(page_reading: dict) -> list:
             marks.append(("drawing index", entry["source_bbox"], label, True))
         marks.append(("drawing index", index["header_bbox"], "index", True))
 
-    for item in page_reading.get("unresolved_items", []):
-        if item.get("bbox"):
-            marks.append(("unresolved", item["bbox"], item.get("item_id", ""), False))
-
+    # **Flagged items are deliberately not drawn here.** Everything flagged —
+    # the sheet, the area, the category, the severity, the wording and the
+    # position — goes to the downloadable issues log, which is where a reader
+    # is meant to look for what to check. Drawing every one of them on the
+    # sheet as well put a red box over most of the drawing, so the marks that
+    # say what *was* read could barely be seen underneath. The sheet shows what
+    # was read; the log says what to check.
     return marks
 
 
@@ -195,6 +216,7 @@ def render_overlay(page, page_reading: dict, out_path, config: dict, page_pixmap
         legend_font = _load_font(max(11, int(dpi / 12)))
 
         used_categories: dict = {}
+        label_boxes: list = []
         for mark in _collect_marks(page_reading):
             category, bbox, label, confirmed = mark[:4]
             shape = mark[4] if len(mark) > 4 else "box"
@@ -227,7 +249,18 @@ def render_overlay(page, page_reading: dict, out_path, config: dict, page_pixmap
                 _dashed_rectangle(draw, box, colour, line_width)
             used_categories.setdefault(category, colour)
             if label:
-                draw.text((box[0], max(0, box[1] - 11)), str(label), fill=colour, font=label_font)
+                # **A label that would land on one already drawn is left off.**
+                # Marks cluster where a drawing is busiest, and their names were
+                # printing on top of each other into an unreadable smear —
+                # which is worse than a name missing, because a smear cannot be
+                # read *and* hides the drawing under it.
+                text = str(label)
+                where = (box[0], max(0, box[1] - 11))
+                width = len(text) * 5.5 + 4
+                room = (where[0], where[1], where[0] + width, where[1] + 11)
+                if not any(_overlaps(room, taken) for taken in label_boxes):
+                    draw.text(where, text, fill=colour, font=label_font)
+                    label_boxes.append(room)
 
         # On-image legend, so the overlay explains itself when it is opened
         # outside the application.

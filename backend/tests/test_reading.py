@@ -1410,3 +1410,43 @@ def test_a_wall_that_meets_nothing_is_kept_out_of_the_model(config):
     ]}
     kept = [w["wall_id"] for w in buildable_walls(page, 300.0)]
     assert kept == ["A-W1"]
+
+
+def test_one_long_face_can_pair_along_several_stretches(config):
+    """A long external wall is one continuous face on the outside and several
+    shorter ones on the inside, because the rooms behind it break the inner
+    face up. Marking the whole outer face as used at the first pairing left
+    every later stretch with nothing to pair against - which is why a wall was
+    marked up for only half its length, with the rest of it bare."""
+    from pipeline.plan.walls import _pair_faces
+
+    # (position across, start along, end along, breaks). 10 mm per point.
+    faces = [
+        (0.0, 0.0, 1000.0, []),      # the outside of the wall, all of it
+        (9.0, 0.0, 400.0, []),       # the inside behind the first room
+        (9.0, 600.0, 1000.0, []),    # and behind the second
+    ]
+    pairs = _pair_faces(faces, 10.0, config, config["walls"]["nominal_thickness_mm"])
+
+    assert len(pairs) == 2, "the outer face was used up by the first room"
+    covered = sorted((round(p["start"]), round(p["end"])) for p in pairs)
+    assert covered == [(0, 400), (600, 1000)]
+    assert all(round(p["thickness_mm"]) == 90 for p in pairs)
+
+
+def test_a_stretch_is_never_given_to_two_walls(config):
+    """Each pairing takes only what is still free, so the same run of wall is
+    never reported twice."""
+    from pipeline.plan.walls import _pair_faces
+
+    faces = [
+        (0.0, 0.0, 1000.0, []),
+        (9.0, 0.0, 1000.0, []),
+        (9.4, 0.0, 1000.0, []),   # a third line along the same wall
+    ]
+    pairs = _pair_faces(faces, 10.0, config, config["walls"]["nominal_thickness_mm"])
+    spans = [(p["start"], p["end"]) for p in pairs]
+    for i, (a_start, a_end) in enumerate(spans):
+        for b_start, b_end in spans[i + 1 :]:
+            overlap = min(a_end, b_end) - max(a_start, b_start)
+            assert overlap <= 0, "two walls were reported over the same stretch"

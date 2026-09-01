@@ -101,17 +101,35 @@ def _pair_faces(faces: list, mm_per_point: float, config: dict, standards: list)
             score = overlap * (1.15 if nominal_match else 1.0)
             candidates.append((score, overlap, thickness, index, other_index))
 
+    # **A face is used stretch by stretch, not all at once.** A long external
+    # wall is one continuous face on the outside and several shorter ones on
+    # the inside, because the rooms behind it break the inner face up. Marking
+    # the whole outer face as used the moment it met the first inner one left
+    # every later stretch of that wall with nothing to pair against — which is
+    # why a wall could be marked up for only half its length, with the rest of
+    # it bare. Each pairing now takes only the stretch it covers, and the face
+    # stays available everywhere else.
     candidates.sort(key=lambda item: -item[0])
-    used: set = set()
+    taken: dict = {}
     pairs = []
-    for _score, overlap, thickness, index, other_index in candidates:
-        if index in used or other_index in used:
-            continue
-        used.add(index)
-        used.add(other_index)
+    for _score, _overlap, thickness, index, other_index in candidates:
         position, start, end, gaps = usable[index]
         other_position, other_start, other_end, other_gaps = usable[other_index]
-        run_start, run_end = max(start, other_start), min(end, other_end)
+        together = (max(start, other_start), min(end, other_end))
+
+        free = _longest_free_stretch(
+            _still_free(taken.get(index, []), together),
+            _still_free(taken.get(other_index, []), together),
+        )
+        if free is None:
+            continue
+        run_start, run_end = free
+        length_mm = (run_end - run_start) * mm_per_point
+        if length_mm < min_length_mm:
+            continue
+
+        taken.setdefault(index, []).append(free)
+        taken.setdefault(other_index, []).append(free)
         pairs.append(
             {
                 "centre_position": (position + other_position) / 2.0,
@@ -119,13 +137,43 @@ def _pair_faces(faces: list, mm_per_point: float, config: dict, standards: list)
                 "start": run_start,
                 "end": run_end,
                 "thickness_mm": round(thickness, 1),
-                "length_mm": round(overlap, 1),
+                "length_mm": round(length_mm, 1),
                 "gaps": _shared_gaps(
                     gaps, other_gaps, run_start, run_end, min_flank / mm_per_point
                 ),
             }
         )
     return pairs
+
+
+def _still_free(claimed: list, within: tuple) -> list:
+    """The parts of ``within`` on one face that no wall has taken yet."""
+    free = [within]
+    for low, high in claimed:
+        remaining = []
+        for start, end in free:
+            if high <= start or low >= end:
+                remaining.append((start, end))
+                continue
+            if low > start:
+                remaining.append((start, low))
+            if high < end:
+                remaining.append((high, end))
+        free = remaining
+    return free
+
+
+def _longest_free_stretch(one: list, other: list):
+    """The longest stretch free on both faces at once, or None."""
+    best = None
+    for a_start, a_end in one:
+        for b_start, b_end in other:
+            start, end = max(a_start, b_start), min(a_end, b_end)
+            if end <= start:
+                continue
+            if best is None or (end - start) > (best[1] - best[0]):
+                best = (start, end)
+    return best
 
 
 def _shared_gaps(
