@@ -224,25 +224,56 @@ def test_the_landing_page_never_stands_in_front_of_the_api():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    with TestClient(module._with_a_landing_page(module.api)) as client:
+    with TestClient(module.api) as client:
         answer = client.get("/api/plan/health")
-        assert answer.status_code == 200, "the landing page answered for the API"
+        assert answer.status_code == 200
         assert answer.json()["status"] == "ok"
 
-        page = client.get("/")
-        assert page.status_code == 200
-        assert "text/html" in page.headers["content-type"]
 
-
-def test_the_landing_page_never_takes_a_port_of_its_own():
-    """Mounted with its defaults, the Space's toolkit starts a Node rendering
-    server on the very port the API is served on, and the API can then never
-    bind it. It worked on a laptop, where Node is not installed, and failed on
-    the Space, where it is."""
+def test_the_toolkit_never_takes_a_port_of_its_own():
+    """Left alone, the Space's toolkit starts a Node rendering server on the
+    very port the API is served on, and the API can then never bind it. It
+    worked on a laptop, where Node is not installed, and failed on the Space,
+    where the image installs it."""
     root = Path(__file__).resolve().parents[2]
     source = (root / "space_app.py").read_text(encoding="utf-8")
-    assert "mount_gradio_app" in source
     assert "ssr_mode=False" in source, "the rendering server would take the API's port"
+
+
+def test_the_space_serves_the_api_through_the_toolkit_with_its_origin_rules():
+    """A Space refuses to start an application presenting no GPU function, and
+    only counts the ones its toolkit's own launch collects — so on a Space the
+    toolkit owns the server and the API is added to the application it builds.
+
+    Two things have to travel with it, and each cost a deployment: the routes,
+    and the browser-origin rules, which can only be given to an application as
+    it is built and never added afterwards.
+    """
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "space_app.py").read_text(encoding="utf-8")
+    assert "add_the_api_to(page.app)" in source, "the API would not be on the served app"
+    assert "cross_origin_settings()" in source, "every request would be refused by the browser"
+    assert "app_kwargs" in source, "middleware cannot be added after the app has started"
+    assert "spaces.GPU" in source, "the Space would refuse to start"
+
+
+def test_the_api_is_described_in_one_place():
+    """What "the API" consists of is stated once, so an application a host
+    creates for itself gets exactly what the ordinary one does."""
+    from app.main import add_the_api_to, cross_origin_settings
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    somebody_elses_app = FastAPI()
+    add_the_api_to(somebody_elses_app)
+    with TestClient(somebody_elses_app) as client:
+        assert client.get("/api/plan/health").status_code == 200
+        assert client.get("/api/health").json() == {"status": "ok"}
+
+    rules = cross_origin_settings()
+    assert rules["allow_credentials"] is True
+    assert "*" not in rules["allow_origins"], "a cookie may never go to a wildcard origin"
+    assert "X-Session-Id" in rules["expose_headers"]
 
 
 def test_there_is_exactly_one_list_of_packages():

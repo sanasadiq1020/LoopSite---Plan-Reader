@@ -2,48 +2,46 @@
 
 **Why this file exists.** A Space runs one Python file. Everywhere else — a
 laptop, a container platform — the API is started by pointing a server at
-``app.main:app`` directly, and that is still what happens; this file only puts
-the backend on the import path and starts the same server on the port a Space
-expects to find it on. There is no second copy of the application here, and
-nothing in the application knows it is running on a Space.
+``app.main:app``, and that is still what happens here on any ordinary host.
+There is no second copy of the application: the routes come from
+``app.main.add_the_api_to`` and the browser-origin rules from
+``app.main.cross_origin_settings``, which are the same two things the ordinary
+way uses.
 
-**The page at ``/`` is the Space's own toolkit, with its rendering server
-turned off.** Two failures taught this, and both are worth keeping:
+**On a Space, the toolkit owns the server.** That is the part worth explaining,
+because four deployments failed before it was understood.
 
-*   Mounted with its defaults, that toolkit starts a second, Node-based
-    rendering server on **the very port the API is served on**, so the API
-    could never bind it::
+A Space of this kind allocates a GPU only to functions decorated for it, and
+**refuses to start an application that presents none**::
 
-        ERROR: [Errno 98] error while attempting to bind on address
-               ('0.0.0.0', 7860): address already in use
+    stage:   RUNTIME_ERROR
+    message: No @spaces.GPU function detected during startup
 
-    It worked on a laptop, where Node is not installed and the rendering
-    server never starts, and failed on the Space, where the image installs
-    Node. A check that passes only because the machine lacks something proves
-    nothing about the machine it has to run on.
+Declaring one is not enough — that was tried, logged, and still reported as
+none. What the platform looks for is the **toolkit's own launch** collecting
+them, and an API served by its own server never calls that. So on a Space the
+toolkit launches the server, and the API's routes are added to the application
+it creates. Everything is on one port: the toolkit's page at ``/``, and every
+API route beside it.
 
-*   Serving the API alone, behind a page of plain HTML, bound the port
-    perfectly and was stopped from outside moments later.
+Two details that are easy to get wrong and cost a deployment each:
 
-So the toolkit is used, and ``ssr_mode=False`` keeps it from taking a port.
-Whatever happens to it, the API is unaffected: the mount is attempted inside a
-``try`` that says out loud when it fails, and the routes it sits beside are the
-API's own, each of which still checks the session before returning anybody's
-plan.
+*   **Middleware cannot be added to an application after it has started**, so
+    the browser-origin rules are handed to the toolkit as it builds the
+    application, through ``app_kwargs``. Without them every request from the
+    interface is refused by the browser and the screen simply never loads.
+*   **``ssr_mode=False``.** Left alone, the toolkit starts a second, Node-based
+    rendering server on the very port the API is served on, and the API can
+    then never bind it. It worked on a laptop, where Node is not installed, and
+    failed on the Space, whose image installs it.
 
-**This will not run on GPU-allocating hardware, and that is not a bug to fix
-here.** Such hardware hands a GPU only to functions registered through the
-toolkit's own launch path, and refuses to start an application that presents
-none::
-
-    No @spaces.GPU function detected during startup
-
-Declaring one was tried and changed nothing: the declaration was made, logged,
-and the platform still reported none, because what it looks for is the
-toolkit's launch collecting them — and a REST API served by its own server
-never calls that. The code for it was removed rather than left in looking like
-it helped. This service wants processors and memory, not a GPU; run it on a
-CPU tier.
+**What the GPU is asked for.** Character recognition — reading the lettering
+off a drawing stored as a picture — is the only work here a GPU could speed up;
+a dense scanned sheet takes minutes on a processor. Everything else is reading
+PDFs, measuring line work and writing files. So that is what the Space's own
+page offers, and it is the same recognition the reader runs on a sheet that
+carries no text of its own. Whether a GPU is actually used depends on which
+build of the recognition library is installed; the work is real either way.
 """
 
 import os
@@ -61,38 +59,15 @@ if str(BACKEND) not in sys.path:
 os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "False")
 
 from app.logging_setup import get_logger  # noqa: E402
-from app.main import app as api  # noqa: E402
+from app.main import add_the_api_to, app as api, cross_origin_settings  # noqa: E402
 
 logger = get_logger()
 
-
-def _with_a_landing_page(application):
-    """The API, plus a page at ``/`` saying what this address is.
-
-    ``ssr_mode=False`` is the whole point of this function's care: with it left
-    alone, the toolkit starts a rendering server on the port the API needs.
-
-    Returns the application unchanged if anything goes wrong. A page is a
-    courtesy; it may never stop the API starting.
-    """
-    try:
-        import gradio as gr
-
-        try:
-            version = application.version
-        except Exception:
-            version = "unknown"
-
-        with gr.Blocks(title="LoopSite Plan Reader API") as page:
-            gr.Markdown(
-                f"""
+_INTRO = """
 # LoopSite Plan Reader — API
 
 This address is the **service behind the interface**, not the interface itself.
-There is nothing to use on this page: open the site you were given a link to,
-and it will call this.
-
-**Release {version}**
+Open the site you were given a link to, and it will call this.
 
 * `/api/plan/health` — whether the service is up, and how many plans it is
   reading right now
@@ -100,28 +75,102 @@ and it will call this.
 
 Every route that returns a plan checks the session that uploaded it, so nothing
 here lets one visitor read another's drawings.
-"""
-            )
 
-        return gr.mount_gradio_app(application, page, path="/", ssr_mode=False)
+---
+
+### Read the lettering off a drawing
+
+The one piece of work here that a GPU can speed up, offered on its own. This is
+the same character recognition the reader uses on a sheet carrying no text of
+its own — a scan, or a drawing exported as a picture.
+"""
+
+
+def read_the_lettering(image_path) -> str:
+    """The text recognised on one drawing image, one line per piece of text.
+
+    A real piece of this application rather than a demonstration: it is the
+    recognition step, called exactly as the plan reader calls it.
+    """
+    if not image_path:
+        return "Choose a drawing image first."
+    try:
+        from pipeline.plan.ocr import run_ocr_on_page
+
+        result = run_ocr_on_page(Path(image_path))
+        if result["status"] != "ok":
+            return result.get("error") or "Nothing could be read from that image."
+        lines = [block["text"] for block in result["blocks"] if block.get("text")]
+        if not lines:
+            return "No lettering was found in that image."
+        return "\n".join(lines)
     except Exception as e:
-        # Said out loud rather than swallowed. A page that quietly failed to
-        # mount looked identical, from the outside, to one that mounted fine —
-        # and the difference was the whole of one wasted deployment.
-        logger.warning(f"the landing page could not be mounted, so it is not shown: {e}")
-        return application
+        logger.exception(f"reading the lettering failed: {e}")
+        return f"That image could not be read: {e}"
+
+
+def _asking_for_a_gpu(work):
+    """The same function, marked as wanting a GPU where the platform offers one.
+
+    Returned untouched anywhere else, so nothing about running this on an
+    ordinary machine changes.
+    """
+    try:
+        import spaces
+    except Exception:
+        return work
+    try:
+        return spaces.GPU(duration=120)(work)
+    except Exception as e:
+        logger.warning(f"the GPU declaration could not be made: {e}")
+        return work
+
+
+def build_the_page():
+    """The Space's own page: what this address is, and the recognition step."""
+    import gradio as gr
+
+    with gr.Blocks(title="LoopSite Plan Reader API") as page:
+        gr.Markdown(_INTRO)
+        drawing = gr.Image(type="filepath", label="A drawing stored as a picture")
+        found = gr.Textbox(label="What was read", lines=12, max_lines=30)
+        gr.Button("Read the lettering", variant="primary").click(
+            _asking_for_a_gpu(read_the_lettering), inputs=drawing, outputs=found
+        )
+    return page
+
+
+def serve_through_the_toolkit(port: int) -> None:
+    """Lets the toolkit start the server, and puts the API on it."""
+    from fastapi.middleware.cors import CORSMiddleware
+    from starlette.middleware import Middleware
+
+    page = build_the_page()
+    page.launch(
+        server_name="0.0.0.0",
+        server_port=port,
+        # Otherwise a second, Node-based rendering server takes this very port.
+        ssr_mode=False,
+        prevent_thread_lock=True,
+        # Middleware can only be given to an application as it is built.
+        app_kwargs={
+            "middleware": [Middleware(CORSMiddleware, **cross_origin_settings())]
+        },
+    )
+    add_the_api_to(page.app)
+    logger.info(f"the API is being served by the toolkit on port {port}")
+    page.block_thread()
 
 
 if __name__ == "__main__":
-    import uvicorn
+    port = int(os.environ.get("PORT", 7860))
 
-    # One worker on purpose: a run's files are written to this container's own
-    # disk and read back by the same process, so a second worker would answer
-    # for uploads it cannot see.
-    uvicorn.run(
-        _with_a_landing_page(api),
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", 7860)),
-        workers=1,
-        timeout_keep_alive=120,
-    )
+    if os.environ.get("SPACE_ID"):
+        serve_through_the_toolkit(port)
+    else:
+        import uvicorn
+
+        # One worker on purpose: a run's files are written to this container's
+        # own disk and read back by the same process, so a second worker would
+        # answer for uploads it cannot see.
+        uvicorn.run(api, host="0.0.0.0", port=port, workers=1, timeout_keep_alive=120)
