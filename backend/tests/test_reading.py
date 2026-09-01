@@ -1139,9 +1139,12 @@ def _candidate(wall_id, axis, line, start, end, thickness, breaks=None, nominal=
     half = thickness / 10.0 / 2.0  # the tests below run at 10 mm per point
     if axis == "x":
         start_point, end_point = [start, line], [end, line]
+        bbox = [start, line - half, end, line + half]
     else:
         start_point, end_point = [line, start], [line, end]
+        bbox = [line - half, start, line + half, end]
     return {
+        "bbox": bbox,
         "wall_id": wall_id,
         "runs_along": axis,
         "length_mm": (end - start) * 10.0,
@@ -1152,6 +1155,8 @@ def _candidate(wall_id, axis, line, start, end, thickness, breaks=None, nominal=
         "face_positions_pt": [line - half, line + half],
         "gaps_pt": list(breaks or []),
         "longer_than_sheet_measures": False,
+        "confidence": 0.8,
+        "confidence_band": "high",
         "linked_opening_marks": [],
     }
 
@@ -1358,3 +1363,50 @@ def test_marks_still_decide_the_count_where_a_plan_prints_them():
         [sheet("A02", marked), sheet("A05", unmarked)], {}
     )["openings"]
     assert openings["distinct_openings"] == 2, "D1 and D2 — the unmarked one is D1 again"
+
+
+def test_a_pair_of_lines_meeting_nothing_is_not_a_wall_of_this_building(config):
+    """A building's walls form one connected outline - they meet at corners
+    and junctions. A pair of parallel lines touching nothing else is an eave, a
+    roof extent, a fence or a bench, and drawing it on the marked-up sheet puts
+    a wall where the drawing has none."""
+    from pipeline.plan.walls import mark_walls_that_stand_alone
+
+    walls = [
+        _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0),
+        _candidate("W2", "y", 100.0, 200.0, 700.0, 90.0),   # meets W1 at a corner
+        _candidate("W3", "x", 700.0, 100.0, 600.0, 90.0),   # meets W2 at the far end
+        _candidate("W4", "y", 600.0, 200.0, 700.0, 90.0),   # closes the outline
+        _candidate("W5", "x", 2000.0, 2000.0, 2600.0, 90.0),  # away on its own
+    ]
+    alone = mark_walls_that_stand_alone(walls, 10.0, config)
+    assert alone == 1
+    assert walls[-1]["meets_another_wall"] is False
+    assert all(w["meets_another_wall"] for w in walls[:4])
+
+
+def test_a_drawing_with_too_few_candidates_is_not_judged_that_way(config):
+    """With two or three candidates there is no network to be part of, and
+    calling them all strays would report a small extension as having no walls."""
+    from pipeline.plan.walls import mark_walls_that_stand_alone
+
+    walls = [
+        _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0),
+        _candidate("W2", "x", 900.0, 100.0, 600.0, 90.0),
+    ]
+    assert mark_walls_that_stand_alone(walls, 10.0, config) == 0
+    assert all(w["meets_another_wall"] for w in walls)
+
+
+def test_a_wall_that_meets_nothing_is_kept_out_of_the_model(config):
+    """Extruded into a model it becomes a wall standing on its own in mid-air,
+    and every quantity taken from the model counts it."""
+    from pipeline.model.canonical import buildable_walls
+
+    page = {"walls": [
+        {"wall_id": "A-W1", "length_mm": 5000.0, "meets_another_wall": True},
+        {"wall_id": "A-W2", "length_mm": 5000.0, "meets_another_wall": False},
+        {"wall_id": "A-W3", "length_mm": 100.0, "meets_another_wall": True},
+    ]}
+    kept = [w["wall_id"] for w in buildable_walls(page, 300.0)]
+    assert kept == ["A-W1"]

@@ -95,16 +95,24 @@ def _collect_marks(page_reading: dict) -> list:
     # opening without reading a single number.
     walls_by_id = {w["wall_id"]: w for w in page_reading.get("walls", [])}
     for wall in page_reading.get("walls", []):
+        # A candidate that meets no other wall is an eave, a roof extent, a
+        # fence or a bench — not a wall of this building. It stays in the
+        # sheet's table with the reason, but drawing it here would put a wall
+        # on the sheet where the drawing has none, which is the one thing a
+        # marked-up sheet must never do.
+        if not wall.get("meets_another_wall", True):
+            continue
         confirmed = wall["confidence_band"] == "high" and wall["matches_nominal_thickness"]
-        # Only long walls are labelled. A floor plan carries dozens of short
-        # internal walls and labelling every one buries the drawing underneath
-        # the overlay.
-        label = ""
+        # **Every wall is named.** Its short number is what lets a reader take
+        # a row of the walls table — its length, its thickness, where it was
+        # measured from — and find that exact wall on the drawing. Without it
+        # the table and the sheet cannot be put side by side at all.
+        label = wall["wall_id"].rsplit("-", 1)[-1]
+        # Only the long ones carry their size as well; a floor plan has dozens
+        # of short internal walls and putting a measurement on every one buries
+        # the drawing under the overlay.
         if wall["length_mm"] >= 3000:
-            label = f"{wall['length_mm']:.0f}×{wall['thickness_mm']:.0f}"
-            openings_on_wall = wall.get("linked_opening_marks") or []
-            if openings_on_wall:
-                label = f"{label}  {'/'.join(openings_on_wall)}"
+            label = f"{label} {wall['length_mm']:.0f}×{wall['thickness_mm']:.0f}"
         marks.append(("wall", wall["bbox"], label, confirmed, "line"))
 
     for opening in page_reading.get("openings", []):

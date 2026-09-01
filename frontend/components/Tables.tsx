@@ -635,6 +635,14 @@ export function WallsTable({ walls, showSheet }: { walls: WallRow[]; showSheet?:
               longer than this sheet measures
             </span>
           )}
+          {row.meets_another_wall === false && (
+            <span
+              className="mt-0.5 block text-xs text-amber-700"
+              title="A building's walls form one connected outline — they meet at corners and junctions. This pair of lines meets none of the others, so it is more likely an eave, a roof extent, a fence or a bench. It is listed here, but it is left off the marked-up sheet and out of the 3D model."
+            >
+              meets no other wall — not used
+            </span>
+          )}
         </div>
       ),
       sortValue: (row) => row.length_mm,

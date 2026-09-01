@@ -285,6 +285,15 @@ def detect_walls(
             f"{before - len(walls)} were copies of a wall already reported"
         )
 
+    # A building's walls meet each other. A pair of parallel lines touching
+    # nothing else is an eave, a roof extent, a fence or a bench.
+    alone = mark_walls_that_stand_alone(walls, mm_per_point, config)
+    if alone:
+        logger.info(
+            f"{sheet_id}: {alone} candidate(s) meet no other wall, so they are "
+            "marked for review and left out of the model"
+        )
+
     walls.sort(key=lambda w: (-w["length_mm"], w["runs_along"]))
     for position, wall in enumerate(walls, start=1):
         wall["wall_id"] = f"{sheet_id}-W{position:03d}"
@@ -351,6 +360,7 @@ def _walls_from(
                     "confidence_band": "high" if confidence >= 0.75 else "review",
                     "review_status": "needs_review",
                     "merged_from": 1,
+                    "meets_another_wall": True,
                     "linked_opening_marks": [],
                     "gaps_pt": [
                         [round(low, 2), round(high, 2)] for low, high in pair["gaps"]
@@ -540,3 +550,61 @@ def _combine_breaks(breaks: list) -> list:
         else:
             combined.append([start, end])
     return [[round(s, 2), round(e, 2)] for s, e in combined]
+
+
+# --- a building's walls hold each other up -------------------------------
+
+
+def _touching(first: dict, second: dict, slack: float) -> bool:
+    """Whether these two walls meet, within a tolerance in points."""
+    a, b = first["bbox"], second["bbox"]
+    return not (
+        a[2] + slack < b[0]
+        or b[2] + slack < a[0]
+        or a[3] + slack < b[1]
+        or b[3] + slack < a[1]
+    )
+
+
+def mark_walls_that_stand_alone(walls: list, mm_per_point: float, config: dict) -> int:
+    """Flags every candidate that meets no other candidate.
+
+    **A building's walls form one connected outline.** They meet at corners and
+    at junctions; that is what makes them a building rather than a collection
+    of lines. A pair of parallel lines touching nothing else is something else
+    on the drawing — an eave, a roof extent, a fence, a bench, a leader line.
+
+    This is a fact about buildings rather than a threshold to tune, and it is
+    what separates the walls of the plan from the lines drawn around them. It
+    is recorded on the candidate rather than used to delete it: the reader sees
+    it in the table with the reason, and it is left out of the marked-up sheet
+    and the model, where a line that is not a wall does real harm.
+
+    Returns how many were flagged.
+    """
+    settings = config.get("walls", {})
+    if not settings.get("require_walls_to_meet", True):
+        return 0
+    # Two walls that meet may still be drawn a wall's thickness apart at the
+    # corner, so the reach is the thickest wall this office builds.
+    standards = settings.get("nominal_thickness_mm", []) or [300]
+    slack = float(settings.get("meeting_slack_mm", max(float(s) for s in standards))) / mm_per_point
+
+    # A drawing with almost nothing on it cannot be judged this way: with two
+    # or three candidates there is no network to be part of.
+    if len(walls) < int(settings.get("min_walls_to_judge_meeting", 4)):
+        for wall in walls:
+            wall["meets_another_wall"] = True
+        return 0
+
+    alone = 0
+    for wall in walls:
+        meets = any(
+            other is not wall and _touching(wall, other, slack) for other in walls
+        )
+        wall["meets_another_wall"] = meets
+        if not meets:
+            alone += 1
+            wall["confidence"] = round(min(wall["confidence"], 0.4), 3)
+            wall["confidence_band"] = "review"
+    return alone

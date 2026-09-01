@@ -965,8 +965,48 @@
     "_linking_note": "A mark is printed beside the opening it labels, not on top of it, so it is allowed to sit this far across from a wall and this far past its ends. The strongest placement is a break in a wall that measures what the schedule says the opening is: allow the larger of the two width tolerances below, and look for it within this share of the wall's length from where the mark points. Where there is no such break, the mark is placed on the nearest wall and the position along it comes from the mark. Where two walls are equally close and neither has a break where the mark points nor a thickness the office builds, nothing is chosen - a hole in the wrong wall is worse than one waiting to be placed by hand.",
     "type_word_max_distance_mm": 1500,
     "type_words": {
-      "door": ["DOOR", "DOORS", "DOORWAY", "SLIDING DOOR", "STACKER", "STACKER DOOR", "CAVITY SLIDER", "BIFOLD", "BI FOLD", "BIFOLD DOOR", "FRENCH DOORS", "GARAGE DOOR", "ROLLER DOOR", "PANEL LIFT", "ENTRY DOOR", "SLIDER", "SD"],
-      "window": ["WINDOW", "WINDOWS", "GLAZING", "GLAZED", "DOUBLE GLAZED", "AWNING", "AW", "DOUBLE HUNG", "DH", "CASEMENT", "CW", "FIXED GLASS", "FIXED", "SASHLESS", "LOUVRE", "LOUVER", "OBSCURE", "FROSTED", "SKYLIGHT", "HIGHLIGHT", "SILL"]
+      "door": [
+        "DOOR",
+        "DOORS",
+        "DOORWAY",
+        "SLIDING DOOR",
+        "STACKER",
+        "STACKER DOOR",
+        "CAVITY SLIDER",
+        "BIFOLD",
+        "BI FOLD",
+        "BIFOLD DOOR",
+        "FRENCH DOORS",
+        "GARAGE DOOR",
+        "ROLLER DOOR",
+        "PANEL LIFT",
+        "ENTRY DOOR",
+        "SLIDER",
+        "SD"
+      ],
+      "window": [
+        "WINDOW",
+        "WINDOWS",
+        "GLAZING",
+        "GLAZED",
+        "DOUBLE GLAZED",
+        "AWNING",
+        "AW",
+        "DOUBLE HUNG",
+        "DH",
+        "CASEMENT",
+        "CW",
+        "FIXED GLASS",
+        "FIXED",
+        "SASHLESS",
+        "LOUVRE",
+        "LOUVER",
+        "OBSCURE",
+        "FROSTED",
+        "SKYLIGHT",
+        "HIGHLIGHT",
+        "SILL"
+      ]
     },
     "_type_words_note": "A plan set that prints no door and window marks still describes its openings in words on the drawing. The nearest of these words to an opening names its kind, which is what makes a height possible at all - a plan is a horizontal cut and shows no height, so a door reaching the floor and a window sitting above a sill can only be told apart by what the sheet says. Add an office's own wording here rather than in code. Where a door word and a window word are equally close, the drawing has not settled it and neither does the reader.",
     "default_door_height_mm": 2040,
@@ -1175,6 +1215,9 @@
     "_length_allowance_comment": "A wall may run a little past the point a dimension string measures to, so a candidate is kept up to this multiple of the longest distance the sheet itself measures. Anything longer is not a wall of this building - it is the block boundary or an eave line - and is set aside as an item to check.",
     "merge_overlapping_candidates": true,
     "merge_min_run_overlap_mm": 300,
+    "require_walls_to_meet": true,
+    "min_walls_to_judge_meeting": 4,
+    "_meeting_note": "A building's walls form one connected outline - they meet at corners and junctions. A pair of parallel lines touching nothing else is an eave, a roof extent, a fence, a bench or a leader line. Such a candidate is still listed, with the reason, but is kept out of the marked-up sheet and the model where a line that is not a wall does real harm. A drawing with fewer candidates than the count below has no network to judge against, so none are flagged.",
     "merge_centre_share_of_thickness": 0.5,
     "merge_thickness_tolerance_mm": 40,
     "_merge_overlapping_note": "Two solids cannot occupy the same space. A wall is drawn with more lines than its own two faces - a lining, a hatch boundary, a cavity - so the pairing above can produce several overlapping candidates for the one wall. Candidates whose thickness bands intersect and which run together for at least the distance below are one wall, reported once, keeping every break any of them recorded. Turn this off only to see the raw pairs.",
@@ -1204,7 +1247,8 @@
   "raster_lines": {
     "_comment": "Not every plan set is vector. One supplied set places its drawing on the page as embedded images with only text as real geometry, so its wall lines cannot be read from the PDF's own paths. A sheet whose own geometry yields no walls has its lines recovered from the rendered page instead, and every wall records which source it came from.",
     "render_dpi": 200,
-    "min_line_length_mm": 600
+    "min_line_length_mm": 300,
+    "_min_line_note": "The shortest run of dark pixels worth calling a piece of a wall face. It is a floor on the tracing, not on a wall: collinear pieces are joined into one face afterwards, so setting this too high starves that step of the pieces it joins. Measured on a plan drawn as pictures, lowering it from 600 to 300 took the walls found from 74 to 119 and raised the share at a thickness the office builds from 82% to 88% - the extra ones are walls, not noise. Below this, at drawing scale, a run is a jamb or a hatch stroke."
   },
   "model": {
     "_comment": "Settings for turning read plan data into the canonical building model. A floor plan cannot show height, so the drawing set is asked for it two ways - the figure the sections dimension, and the distance between the printed levels - and the two are compared. Only when neither answers is the default below used, and the model then says on its face that every height in it is an assumption.",

@@ -312,6 +312,7 @@ export interface WallCandidate {
   bbox: number[];
   line_source: string;
   longer_than_sheet_measures: boolean;
+  meets_another_wall: boolean;
   confidence: number;
   confidence_band: ConfidenceBand;
   review_status: ReviewStatus;
@@ -648,6 +649,21 @@ function withSession(url: string): string {
 export function fileUrl(path: string): string {
   if (!path) return "";
   return withSession(`${API_BASE_URL}${path}`);
+}
+
+/**
+ * The same file, asked for as a download rather than to look at.
+ *
+ * **The two questions have to be joined in one query string.** Written as
+ * `` `${fileUrl(path)}?download=true` `` they are not: `fileUrl` has already
+ * put the session in the query, so a second `?` makes `download=true` part of
+ * the session's value instead of a question of its own. The server then never
+ * sees it, sends the picture to be looked at, and the browser leaves the app
+ * to show it — with the results gone and no way back.
+ */
+export function downloadUrl(path: string): string {
+  if (!path) return "";
+  return withSession(`${API_BASE_URL}${path}?download=true`);
 }
 
 /** What an upload is doing right now, while it is still being read. */

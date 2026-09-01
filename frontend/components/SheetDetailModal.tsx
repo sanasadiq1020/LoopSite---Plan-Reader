@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { fileUrl, pageTypeLabel, type PageReading, type SheetEntry } from "@/lib/api";
+import { downloadUrl, fileUrl, pageTypeLabel, type PageReading, type SheetEntry } from "@/lib/api";
 import { Card, PageTypeBadge, Tabs } from "@/components/Ui";
 import {
   DimensionsTable,
@@ -175,7 +175,12 @@ export function SheetDetailModal({
               {reading.overlay_url && !markUpFailed ? (
                 <>
                   <a
-                    href={`${fileUrl(reading.overlay_url)}?download=true`}
+                    href={downloadUrl(reading.overlay_url)}
+                    // A download must never navigate away from the results. If
+                    // a browser ever declines to download it, it opens beside
+                    // the app rather than on top of it.
+                    target="_blank"
+                    rel="noopener"
                     download={`marked-up-sheet-${sheetLabel.replace(/[^\w.-]+/g, "-")}.png`}
                     className="inline-flex w-fit items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50"
                   >

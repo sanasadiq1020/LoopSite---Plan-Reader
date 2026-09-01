@@ -41,6 +41,31 @@ logger = get_logger()
 MODEL_FORMAT = 1
 
 
+def buildable_walls(page: dict, minimum_length: float) -> list:
+    """The candidates on this sheet that a building can be made from.
+
+    Two are left out, and both would do real harm in a model rather than
+    merely being untidy:
+
+    *   **Anything too short to build with** — at drawing scale that is a jamb,
+        a step in a wall face or a fragment.
+    *   **Anything that meets no other wall.** A building's walls form one
+        connected outline; a pair of parallel lines touching nothing else is an
+        eave, a roof extent, a fence or a bench. Extruded into a model it
+        becomes a wall standing on its own in mid-air, and every quantity taken
+        from the model counts it.
+
+    Both are still listed in the sheet's own table with the reason. Leaving
+    them out here is not hiding them; it is not building with them.
+    """
+    return [
+        wall
+        for wall in page.get("walls", [])
+        if wall.get("length_mm", 0) >= minimum_length
+        and wall.get("meets_another_wall", True)
+    ]
+
+
 def modellable_sheets(pages: list, config: dict) -> list:
     """Every sheet, and whether a model can be built from it.
 
@@ -51,9 +76,7 @@ def modellable_sheets(pages: list, config: dict) -> list:
     out = []
     for page in pages:
         calibration = page.get("scale_calibration") or {}
-        walls = [
-            w for w in page.get("walls", []) if w.get("length_mm", 0) >= minimum_length
-        ]
+        walls = buildable_walls(page, minimum_length)
         if not page.get("page_type", {}).get("draws_a_plan"):
             reason = "This sheet does not draw the building in plan."
         elif not calibration.get("usable_for_measurement"):
@@ -124,9 +147,7 @@ def build_model(
     if not mm_per_point:
         raise ValueError("This sheet has no usable scale, so nothing can be measured.")
 
-    walls_in = [
-        w for w in page.get("walls", []) if w.get("length_mm", 0) >= minimum_length
-    ]
+    walls_in = buildable_walls(page, minimum_length)
     if not walls_in:
         raise ValueError("This sheet has no wall lines long enough to build with.")
 
