@@ -149,6 +149,20 @@ is being read.
     container tier is enough for everything except scanned sheets, and those
     say so on screen rather than coming back empty.
 
+> **Choose the hardware when the Space is created, not afterwards.** A Space
+> that has been on paid or GPU hardware cannot be moved back down to the free
+> tier without a paid account:
+>
+> ```
+> Without a PRO subscription, you can't downgrade this Space to cpu-basic.
+> Pause it instead to stop hardware charges.
+> ```
+>
+> There is no way around that from the code. **Pause the Space** to stop it
+> costing anything, then create a new one on the free CPU tier and push to
+> that. Nothing is lost: the Space holds no data of its own — the whole of it
+> is this repository, and a plan lives only as long as somebody is reading it.
+
 ---
 
 1. Create an account at **huggingface.co**.
@@ -161,7 +175,7 @@ is being read.
    | **License** | your choice |
    | **Space SDK** | **Gradio** |
    | **Template** | **Blank** |
-   | **Hardware** | a **CPU** option — not a GPU one, see above |
+   | **Hardware** | leave it at the **default free CPU** — do not pick a GPU one, see above |
    | **Visibility** | **Public** |
 
    > **Blank, not one of the example templates.** A template writes its own

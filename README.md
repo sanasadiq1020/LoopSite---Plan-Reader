@@ -7,6 +7,7 @@ sdk: gradio
 sdk_version: 6.26.0
 app_file: space_app.py
 python_version: "3.10"
+suggested_hardware: cpu-basic
 pinned: false
 short_description: Reads an Australian residential plan set into a 3D model
 ---
