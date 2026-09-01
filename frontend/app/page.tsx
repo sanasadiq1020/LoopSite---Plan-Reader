@@ -56,11 +56,18 @@ function sheetLabelFor(page: PageReading): string {
 const RUN_KEY = "loopsite.run_id";
 const NAME_KEY = "loopsite.filename";
 
+// How the bar is divided. Sending the file is real work the reader waits
+// through — on a plan set of a few megabytes it is the first several seconds —
+// so it gets its own stretch at the front instead of leaving the bar empty.
+const SENDING_SHARE = 10;
+const READING_SHARE = 0.9;
+
 export default function Home() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [progress, setProgress] = useState<UploadProgress | null>(null);
   const [timeLeft, setTimeLeft] = useState<string | null>(null);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
   const [showAbout, setShowAbout] = useState(false);
 
   // Only ever true on a deployed site: served from anywhere but localhost, with
@@ -305,8 +312,19 @@ export default function Home() {
     setTab("sheets");
     setProgress({ known: true, stage: "Sending the plan", percent: 0 });
     setTimeLeft(null);
-    await ensureSession();
     const startedAt = Date.now();
+    setStartedAt(startedAt);
+    await ensureSession();
+
+    // **The bar never goes backwards.** The server reports the reading as
+    // 0-100 of its own work, and the send before it is its own stretch; shown
+    // raw, the bar reached 100 and then dropped to 96 as the results were laid
+    // out. A bar that goes back tells the reader the tool lost its place.
+    let highest = 0;
+    const show = (update: UploadProgress) => {
+      highest = Math.max(highest, update.percent ?? 0);
+      setProgress({ ...update, percent: highest });
+    };
 
     // The upload's own token, so the browser can ask how far it has got while
     // the upload request is still in flight.
@@ -318,11 +336,12 @@ export default function Home() {
     let polling = true;
     const askHowFar = async () => {
       while (polling) {
-        await new Promise((resolve) => setTimeout(resolve, 700));
+        await new Promise((resolve) => setTimeout(resolve, 500));
         if (!polling) break;
         const update = await readUploadProgress(token);
         if (!update.known || !polling) continue;
-        setProgress(update);
+        // The send is the first tenth of the bar; the reading is the rest.
+        show({ ...update, percent: SENDING_SHARE + (update.percent ?? 0) * READING_SHARE });
 
         // Measured, not guessed: how long the sheets already read took says
         // how long the rest will take. Shown only once two have gone through.
@@ -345,10 +364,19 @@ export default function Home() {
     void askHowFar();
 
     try {
-      const response = await uploadPlan(file, token);
+      const response = await uploadPlan(file, token, (fractionSent) =>
+        show({
+          known: true,
+          stage:
+            fractionSent >= 1
+              ? "Sent — the server is opening it"
+              : `Sending the plan — ${Math.round(fractionSent * 100)}%`,
+          percent: fractionSent * SENDING_SHARE,
+        })
+      );
       setResult(response);
       setDisplayName(response.original_filename);
-      setProgress({ known: true, stage: "Laying out the results", percent: 96 });
+      show({ known: true, stage: "Laying out the results", percent: 99 });
       await loadPlanReading(response.run_id);
     } catch (err) {
       setError(
@@ -359,6 +387,7 @@ export default function Home() {
       setIsProcessing(false);
       setProgress(null);
       setTimeLeft(null);
+      setStartedAt(null);
     }
   }
 
@@ -496,6 +525,7 @@ export default function Home() {
             fileName={displayName ?? ""}
             progress={progress}
             timeLeft={timeLeft}
+            startedAt={startedAt}
           />
         )}
 

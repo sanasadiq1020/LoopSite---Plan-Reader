@@ -723,27 +723,63 @@ export async function discardRun(runId: string): Promise<void> {
  * So this follows the same progress the interface was already showing, and
  * collects the result when it says the reading has finished.
  */
-export async function uploadPlan(file: File, token = ""): Promise<UploadResponse> {
+/**
+ * Sends the file, reporting how much of it has actually gone.
+ *
+ * **`fetch` cannot say how far an upload has got**, and on a plan set of a few
+ * megabytes that silence is the first several seconds a reader sits in front
+ * of — the server has nothing to report yet, because it has not been given the
+ * file. So the send itself is done the one way a browser will describe as it
+ * happens, and those bytes are the first thing the bar shows.
+ */
+function sendTheFile(
+  url: string,
+  formData: FormData,
+  onSent: (fractionSent: number) => void
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", url, true);
+    // No custom header, so this stays a request a browser sends without asking
+    // permission first — see `sessionUrl`.
+    request.withCredentials = true;
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) {
+        onSent(event.loaded / event.total);
+      }
+    };
+    request.onload = () => resolve({ status: request.status, body: request.responseText });
+    request.onerror = () =>
+      reject(new ApiError("The plan could not be sent to the server.", 0));
+    request.onabort = () => reject(new ApiError("The upload was stopped.", 0));
+    request.send(formData);
+  });
+}
+
+export async function uploadPlan(
+  file: File,
+  token = "",
+  onSent: (fractionSent: number) => void = () => {}
+): Promise<UploadResponse> {
   const formData = new FormData();
   formData.append("file", file);
 
   const query = token ? `?token=${encodeURIComponent(token)}` : "";
-  const res = await fetch(sessionUrl(`${API_BASE_URL}/api/plan/upload${query}`), {
-    method: "POST",
-    body: formData,
-    credentials: "include",
-  });
-  noteSession(res);
+  const sent = await sendTheFile(
+    sessionUrl(`${API_BASE_URL}/api/plan/upload${query}`),
+    formData,
+    onSent
+  );
 
-  if (!res.ok) {
-    let detail = `Upload failed (HTTP ${res.status}).`;
+  if (sent.status < 200 || sent.status >= 300) {
+    let detail = `Upload failed (HTTP ${sent.status}).`;
     try {
-      const body = await res.json();
+      const body = JSON.parse(sent.body);
       if (body?.detail) detail = body.detail;
     } catch {
       // response wasn't JSON — keep the generic message
     }
-    throw new ApiError(detail, res.status);
+    throw new ApiError(detail, sent.status);
   }
 
   return waitForReading(token);

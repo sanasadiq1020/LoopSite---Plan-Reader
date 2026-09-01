@@ -1,28 +1,50 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import type { UploadProgress } from "@/lib/api";
 
 /**
  * What the reader sees while a plan is being read.
  *
- * A spinner says only "something is happening". On a twenty-three sheet plan
- * that runs for half a minute, and the reader cannot tell whether it is
- * working or stuck. So the sheets are counted off as they are read, and the
- * bar shows how much of the work is behind it.
+ * A spinner says only "something is happening". A twenty-three sheet plan runs
+ * for the better part of a minute, and the reader cannot tell working from
+ * stuck. So the sheets are counted off as they are read, the bar shows how
+ * much of the work is behind it, and the clock shows how long it has taken.
  *
- * The time left is worked out where the sheets are counted, from how long the
- * ones already read actually took, and only once enough have gone through to
- * mean anything. A confident wrong number is worse than none.
+ * **The bar slides between reports.** The server is asked every half second,
+ * so left alone the bar would jump, wait, jump again. The sliding is done by
+ * the browser's own transition rather than by a script: an animation driven by
+ * `requestAnimationFrame` stops dead in a tab that is not being looked at, so
+ * a reader who switched away and came back would find the bar frozen at
+ * whatever it showed when they left. A transition keeps its promise whether
+ * anyone is watching or not.
+ *
+ * The time left is measured, not guessed: how long the sheets already read
+ * actually took says how long the rest will take, and it is shown only once
+ * enough have gone through to mean anything. A confident wrong number is worse
+ * than none.
  */
 export function ReadingProgress({
   fileName,
   progress,
   timeLeft,
+  startedAt,
 }: {
   fileName: string;
   progress: UploadProgress | null;
   timeLeft?: string | null;
+  startedAt?: number | null;
 }) {
+  // Counted here, once a second, rather than whenever the server happens to
+  // answer — a clock that only moves when something else does looks stopped.
+  const [elapsedSeconds, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!startedAt) return;
+    const tick = () => setElapsed(Math.round((Date.now() - startedAt) / 1000));
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => window.clearInterval(timer);
+  }, [startedAt]);
   const percent = Math.max(0, Math.min(100, progress?.percent ?? 0));
   const done = progress?.pages_done ?? 0;
   const total = progress?.pages_total ?? 0;
@@ -44,7 +66,9 @@ export function ReadingProgress({
           </div>
         </div>
         <div className="text-right">
-          <p className="text-2xl font-bold tabular-nums text-blue-700">{percent}%</p>
+          <p className="text-2xl font-bold tabular-nums text-blue-700">
+            {Math.round(percent)}%
+          </p>
           {total > 0 && (
             <p className="text-xs tabular-nums text-slate-500">
               {done} of {total} sheets
@@ -55,14 +79,24 @@ export function ReadingProgress({
 
       <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-blue-100">
         <div
-          className="h-full rounded-full bg-blue-600 transition-[width] duration-500 ease-out"
+          className="h-full rounded-full bg-blue-600 transition-[width] duration-700 ease-linear"
           style={{ width: `${percent}%` }}
         />
       </div>
 
-      <p className="mt-2 text-xs text-slate-500">
-        {timeLeft ?? "Every sheet is read, measured and marked up before anything is shown."}
-      </p>
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs text-slate-500">
+        <span>
+          {timeLeft ?? "Every sheet is read, measured and checked before anything is shown."}
+        </span>
+        <span className="tabular-nums">{formatElapsed(elapsedSeconds)}</span>
+      </div>
     </section>
   );
+}
+
+function formatElapsed(seconds: number): string {
+  if (seconds <= 0) return "";
+  if (seconds < 60) return `${seconds}s elapsed`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s elapsed`;
 }

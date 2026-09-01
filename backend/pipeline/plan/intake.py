@@ -710,6 +710,7 @@ def process_upload(
 
     # Door and window schedules are printed on their own sheets, so marks can
     # only be matched to them once every page has been read.
+    progress.set_stage(progress_token, "Matching the doors and windows to their schedules", 87)
     try:
         opening_reconciliation = reconcile_openings_with_schedules(plan_reading_pages)
     except Exception as e:
@@ -725,6 +726,7 @@ def process_upload(
     except Exception as e:
         logger.exception(f"run={run_id} opening placement failed: {e}")
 
+    progress.set_stage(progress_token, "Checking each sheet against the drawing index", 90)
     try:
         cross_check = cross_check_pages(plan_reading_pages, sheet_index, config)
     except Exception as e:
@@ -738,7 +740,7 @@ def process_upload(
     # reader opens two or three. The address is fixed by the page number, so
     # it is given out now and the image is drawn the first time it is asked
     # for, which takes about a second.
-    progress.set_stage(progress_token, "Writing the tables", 88)
+    progress.set_stage(progress_token, "Working out what was found", 92)
     (run_dir / "overlays").mkdir(parents=True, exist_ok=True)
     for reading in plan_reading_pages:
         if reading.get("error"):
@@ -845,6 +847,7 @@ def process_upload(
     (run_dir / "sheet_register.json").write_text(
         json.dumps(sheet_register, indent=2), encoding="utf-8"
     )
+    progress.set_stage(progress_token, "Writing the tables and the issues log", 96)
     _write_sheet_register_csv(run_dir / "sheet_register.csv", sheets)
     (run_dir / "raw_text.json").write_text(
         json.dumps({"run_id": run_id, "pages": raw_text_pages}, indent=2),
