@@ -1010,6 +1010,10 @@ def merge_opening_evidence(page: dict, config: dict) -> dict:
     for opening in loose:
         _settle_confidence(opening)
     kept.extend(loose)
+    # Working state, not a result: it is the stretch of wall each reading
+    # claimed, used to decide which readings are the same opening.
+    for opening in kept:
+        opening.pop("placed_bbox", None)
     kept.sort(key=lambda o: (o["source_bbox"][1], o["source_bbox"][0]))
 
     # Every opening carries an identifier, whether the drawing labelled it or

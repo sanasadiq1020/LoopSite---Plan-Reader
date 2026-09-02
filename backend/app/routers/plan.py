@@ -18,6 +18,7 @@ from pipeline.model.build import (
 from app.session import get_session_id
 from pipeline.plan.intake import (
     build_overlays_zip,
+    draw_overlays_ahead,
     load_config,
     load_manifest,
     load_plan_reading,
@@ -95,7 +96,20 @@ async def upload_plan(
 
             with workload.a_turn_to_read(on_wait=still_waiting):
                 progress.set_stage(token, "Opening the file", 4)
-                process_upload(file_bytes, filename, session_id, token)
+                run = process_upload(file_bytes, filename, session_id, token)
+
+            # The reading is finished and the browser has what it needs, so the
+            # queue place is given up first. The marked-up sheets are drawn
+            # after that, on a thread of their own: the upload stays as fast as
+            # it was, and by the time a reader clicks a sheet its mark-up is
+            # usually already there rather than taking a second and a half.
+            if run and run.get("run_id"):
+                threading.Thread(
+                    target=_draw_the_sheets_ahead,
+                    args=(run["run_id"],),
+                    name=f"sheets:{token[:8]}",
+                    daemon=True,
+                ).start()
         except workload.TooBusy as e:
             progress.fail(token, str(e))
         except ValueError as e:
@@ -130,6 +144,16 @@ async def upload_plan(
 
     threading.Thread(target=read_the_plan, name=f"read:{token[:8]}", daemon=True).start()
     return {"accepted": True, "token": token}
+
+
+def _draw_the_sheets_ahead(run_id: str) -> None:
+    """Marks up every sheet of a finished run, quietly and in the background."""
+    try:
+        draw_overlays_ahead(run_id)
+    except Exception as e:
+        logger.exception(f"could not draw the marked-up sheets for {run_id}: {e}")
+    finally:
+        gc.collect()
 
 
 @router.get("/{run_id}/reading", response_model=PlanReadingResponse)

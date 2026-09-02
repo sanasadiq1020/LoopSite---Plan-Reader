@@ -315,7 +315,9 @@ export interface WallCandidate {
   wall_type: "outer" | "inner" | "unknown";
   orientation: "horizontal" | "vertical" | null;
   connects_to: string[];
-  junctions: WallJunction[];
+  /** A tally of the meeting shapes: {"L": 2, "T": 3}. The record of every
+   *  meeting is in wall_graph.json, which is a download. */
+  junction_shapes: Record<string, number>;
   runs_along: "x" | "y";
   length_mm: number;
   thickness_mm: number;

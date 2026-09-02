@@ -1404,31 +1404,9 @@ def describe_walls(
     medium = float(thresholds.get("low", 0.5))
 
     for wall in walls:
-        run_start, run_end = _run(wall)
-        first_face, second_face = sorted(wall["face_positions_pt"])
         horizontal = wall["runs_along"] == "x"
 
-        def line(across_first, across_second=None):
-            across_second = across_first if across_second is None else across_second
-            if horizontal:
-                return {
-                    "x0": round(run_start, 2),
-                    "y0": round(across_first, 2),
-                    "x1": round(run_end, 2),
-                    "y1": round(across_second, 2),
-                }
-            return {
-                "x0": round(across_first, 2),
-                "y0": round(run_start, 2),
-                "x1": round(across_second, 2),
-                "y1": round(run_end, 2),
-            }
-
-        centre = (first_face + second_face) / 2.0
         wall["orientation"] = "horizontal" if horizontal else "vertical"
-        wall["face1"] = line(first_face)
-        wall["face2"] = line(second_face)
-        wall["centerline"] = line(centre)
         wall["gaps"] = [
             {
                 "start": round(low, 2),
@@ -1438,6 +1416,13 @@ def describe_walls(
             for low, high_pt in wall.get("gaps_pt", [])
         ]
         wall["junction_count"] = len(wall.get("connects_to", []))
+        # The shapes as a tally rather than a list of every meeting. The
+        # detail is in wall_graph.json, which is a download; a list of it on
+        # every wall is 60 KB the browser must load before it can show a table.
+        shapes: dict = {}
+        for junction in wall.get("junctions", []):
+            shapes[junction["shape"]] = shapes.get(junction["shape"], 0) + 1
+        wall["junction_shapes"] = shapes
         wall["source_sheet"] = sheet_id
         wall["source_page"] = page_number
         confidence = wall.get("confidence", 0.0)
@@ -1482,6 +1467,16 @@ def describe_walls(
         )
 
 
+def _line_on(wall: dict, across: float) -> dict:
+    """One line running the length of this wall, at ``across`` on the sheet."""
+    run_start, run_end = _run(wall)
+    if wall["runs_along"] == "x":
+        return {"x0": round(run_start, 2), "y0": round(across, 2),
+                "x1": round(run_end, 2), "y1": round(across, 2)}
+    return {"x0": round(across, 2), "y0": round(run_start, 2),
+            "x1": round(across, 2), "y1": round(run_end, 2)}
+
+
 def walls_as_records(walls: list) -> list:
     """The walls of one sheet in the shape ``walls.json`` is written in.
 
@@ -1493,9 +1488,14 @@ def walls_as_records(walls: list) -> list:
             "wall_id": wall["wall_id"],
             "wall_type": wall.get("wall_type", "unknown"),
             "orientation": wall.get("orientation"),
-            "face1": wall.get("face1"),
-            "face2": wall.get("face2"),
-            "centerline": wall.get("centerline"),
+            # Derived here rather than stored on every wall: they are the
+            # face positions and the run the record already carries, written a
+            # second way, and carrying both made the reading a third larger.
+            "face1": _line_on(wall, min(wall["face_positions_pt"])),
+            "face2": _line_on(wall, max(wall["face_positions_pt"])),
+            "centerline": _line_on(
+                wall, sum(wall["face_positions_pt"]) / 2.0
+            ),
             "gaps": wall.get("gaps", []),
             "length_mm": wall["length_mm"],
             "thickness_mm": wall["thickness_mm"],

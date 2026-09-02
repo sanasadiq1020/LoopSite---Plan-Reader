@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.compression import CompressWhatIsWorthCompressing
 from app.logging_setup import get_logger
 from app.paths import ensure_core_dirs
 from app.routers import plan
@@ -61,6 +62,9 @@ def add_the_api_to(application) -> None:
         return {"status": "ok"}
 
 
+# The reading is compressed on the way to the browser; the images are not.
+# See app/compression.py for what is decided and what it measured.
+app.add_middleware(CompressWhatIsWorthCompressing)
 app.add_middleware(CORSMiddleware, **cross_origin_settings())
 
 logger.info(f"starting with {describe()}")

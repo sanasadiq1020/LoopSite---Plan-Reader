@@ -321,7 +321,10 @@ class WallCandidate(BaseModel):
     # T where a partition lands on it, + where two cross, collinear where the
     # wall carries on past a doorway.
     connects_to: list[str] = []
-    junctions: list[dict] = []
+    # A tally of the shapes — {"L": 2, "T": 3} — rather than a record of every
+    # meeting. The detail is in wall_graph.json, which is a download; a list of
+    # it on every wall made the reading the browser must fetch a third larger.
+    junction_shapes: dict[str, int] = {}
     runs_along: Literal["x", "y"]
     length_mm: float
     thickness_mm: float

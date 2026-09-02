@@ -729,8 +729,9 @@ export function WallsTable({ walls, showSheet }: { walls: WallRow[]; showSheet?:
         row.connects_to?.length ? (
           <span
             className="text-xs text-slate-600"
-            title={row.junctions
-              ?.map((j) => `${j.with_wall_id} (${junctionShapeLabel(j.shape)})`)
+            title={Object.entries(row.junction_shapes ?? {})
+              .filter(([, count]) => count > 0)
+              .map(([shape, count]) => `${count} × ${junctionShapeLabel(shape)}`)
               .join(", ")}
           >
             {row.connects_to.length} wall{row.connects_to.length === 1 ? "" : "s"}

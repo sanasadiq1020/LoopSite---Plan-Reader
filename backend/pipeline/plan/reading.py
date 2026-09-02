@@ -163,7 +163,6 @@ def _empty_page(page_number: int, reason: str) -> dict:
         "schedules": [],
         "legends": [],
         "opening_marks": [],
-        "wall_graph": None,
         "scale_calibration": {
             "printed_scale": None,
             "scale_denominator": None,
@@ -860,7 +859,6 @@ def analyze_page(
             "scale_calibration": calibration,
             "walls": detected_walls,
             "walls_note": walls_note,
-            "wall_graph": wall_graph_for(detected_walls, sheet_id, page_number),
             "openings": detected_openings,
             "sheet_index": page_sheet_index,
             "unresolved_items": [],
@@ -1383,8 +1381,12 @@ def write_walls_json(run_dir: Path, run_id: str, pages: list) -> None:
     for page in pages:
         page_walls = page.get("walls", [])
         walls.extend(walls_as_records(page_walls))
-        graph = page.get("wall_graph")
-        if graph and graph.get("nodes"):
+        # **The graph is built here rather than carried on every page.** It is
+        # the same junctions the walls already hold, written a second way, and
+        # keeping both put 84 KB of duplicate into the reading the browser has
+        # to download before it can show anything.
+        graph = wall_graph_for(page_walls, page["sheet_id"], page["page_number"])
+        if graph.get("nodes"):
             graphs.append(graph)
 
     payload = {

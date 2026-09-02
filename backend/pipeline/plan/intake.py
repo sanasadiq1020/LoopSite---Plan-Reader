@@ -869,6 +869,23 @@ def process_upload(
     )
 
     plan_reading_generated_at = datetime.now(timezone.utc).isoformat()
+
+    # **The tables are written before the reading is saved, because writing
+    # them is what lets the reading be smaller.** Every junction a wall meets
+    # is recorded twice — once on the wall and once in the graph — and the
+    # graph is a download while the reading is what the browser must fetch
+    # before it can show anything. So the graph is written to its own file
+    # here, and the detail comes off the record: what stays is the list of
+    # walls each one meets and a tally of the shapes, which is what the table
+    # on screen actually uses.
+    try:
+        write_plan_reading_csvs(run_dir, run_id, plan_reading_pages)
+    except Exception as e:
+        logger.exception(f"run={run_id} could not write the plan-reading tables: {e}")
+    for page_reading in plan_reading_pages:
+        for wall in page_reading.get("walls", []):
+            wall.pop("junctions", None)
+
     try:
         (run_dir / "plan_reading.json").write_text(
             json.dumps(
@@ -892,7 +909,6 @@ def process_upload(
         write_unresolved_items_csv(
             issues_dir / "unresolved_items.csv", run_id, plan_reading_pages
         )
-        write_plan_reading_csvs(run_dir, run_id, plan_reading_pages)
     except Exception as e:
         # plan_reading.json is additive on top of the Day 1/2 outputs above —
         # a failure here must not lose the sheet register/raw text already
@@ -1137,6 +1153,42 @@ def resolve_export_path(run_id: str, filename: str) -> Path | None:
     if not path.is_file():
         return None
     return path
+
+
+def draw_overlays_ahead(run_id: str) -> int:
+    """Draws every marked-up sheet once the reading has been sent back.
+
+    **Neither during the upload nor at the moment a sheet is opened.** Drawing
+    them during the upload was the single most expensive thing an upload did
+    (see the note above), so they were moved to the moment a reader asks for
+    one — and that made opening a sheet take a second and a half, one sheet at
+    a time, which is exactly the wait it was supposed to remove.
+
+    So they are drawn here instead: after the reading has gone back to the
+    browser, on a thread of its own, outside the queue that limits how many
+    plans are read at once. The upload is as fast as it was, and by the time a
+    reader has looked at the results and clicked a sheet, its mark-up is
+    already on disk. A sheet opened before its turn comes round is still drawn
+    on demand, exactly as before — this only means it usually will not have to
+    be.
+    """
+    drawn = 0
+    reading = load_plan_reading(run_id)
+    if reading is None:
+        return 0
+    for page_reading in reading.get("pages", []):
+        page_number = page_reading.get("page_number")
+        if not page_number or page_reading.get("error"):
+            continue
+        try:
+            if resolve_overlay_image_path(run_id, f"overlay_{page_number:03d}.png"):
+                drawn += 1
+        except Exception as e:
+            # A sheet that cannot be marked up must not stop the rest, and it
+            # is still drawn on demand later (Critical Rule 6).
+            logger.exception(f"run={run_id} could not draw sheet {page_number} ahead: {e}")
+    logger.info(f"run={run_id}: {drawn} marked-up sheets drawn ahead of being asked for")
+    return drawn
 
 
 def build_overlays_zip(run_id: str) -> Path | None:

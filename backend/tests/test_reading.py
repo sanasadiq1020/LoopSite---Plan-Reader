@@ -1692,14 +1692,18 @@ def test_every_wall_record_says_what_where_how_and_how_certain(config):
 def test_a_wall_reports_the_two_faces_it_was_measured_from(config):
     """The evidence, kept beside the answer: a reviewer checks a thickness by
     looking at the two lines it was taken between."""
-    from pipeline.plan.walls import describe_walls
+    from pipeline.plan.walls import describe_walls, walls_as_records
 
     walls = [_candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)]
-    describe_walls(walls, 10.0, walls and config, "A02", 1)
+    describe_walls(walls, 10.0, config, "A02", 1)
+    # Derived where the record is written rather than stored on every wall:
+    # they are the face positions and the run written a second way, and
+    # carrying both made the reading the browser waits for a third larger.
+    record = walls_as_records(walls)[0]
 
-    assert walls[0]["face1"]["y0"] != walls[0]["face2"]["y0"]
-    assert walls[0]["centerline"]["y0"] == 200.0
-    assert walls[0]["centerline"]["x0"] == 100.0
+    assert record["face1"]["y0"] != record["face2"]["y0"]
+    assert record["centerline"]["y0"] == 200.0
+    assert record["centerline"]["x0"] == 100.0
 
 
 # --- what the settings must not be allowed to do --------------------------
