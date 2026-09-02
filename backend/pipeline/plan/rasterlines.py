@@ -69,7 +69,10 @@ def extract_rulings_from_image(page, config: dict, mm_per_point: float) -> dict:
     """Axis-aligned segments read from the rendered page, in PDF points.
 
     Returns the same shape as ``layout.extract_rulings`` so the two are
-    interchangeable: {"h": [(y, x0, x1), ...], "v": [(x, y0, y1), ...]}.
+    interchangeable: {"h": [(y, x0, x1), ...], "v": [(x, y0, y1), ...]}, with
+    ``h_widths``/``v_widths`` beside them. A picture states no stroke width, so
+    the width here is the run's own measured thickness in points - which is the
+    same thing the PDF would have been stating.
     """
     settings = config.get("raster_lines", {})
     dpi = int(settings.get("render_dpi", _DEFAULT_DPI))
@@ -79,34 +82,43 @@ def extract_rulings_from_image(page, config: dict, mm_per_point: float) -> dict:
         import cv2  # noqa: F401
     except ImportError:
         logger.warning("OpenCV is not installed, so image-drawn sheets cannot be measured")
-        return {"h": [], "v": []}
+        return {"h": [], "v": [], "h_widths": [], "v_widths": []}
 
     try:
         mask, scale = _binary_image(page, dpi)
     except Exception as e:
         logger.exception(f"could not render the page for line detection: {e}")
-        return {"h": [], "v": []}
+        return {"h": [], "v": [], "h_widths": [], "v_widths": []}
 
     # A wall face has to be at least this long to be worth looking at, in the
     # pixels of this render.
     minimum_pixels = max(int(minimum_length_mm / mm_per_point * scale), 8)
 
     horizontals = []
+    horizontal_widths = []
     for x, y, width, height in _runs_along(mask, "h", minimum_pixels):
         if height > minimum_pixels:
             continue  # a block of fill, not a line
         centre_y = (y + height / 2.0) / scale
         horizontals.append((centre_y, x / scale, (x + width) / scale))
+        horizontal_widths.append(height / scale)
 
     verticals = []
+    vertical_widths = []
     for x, y, width, height in _runs_along(mask, "v", minimum_pixels):
         if width > minimum_pixels:
             continue
         centre_x = (x + width / 2.0) / scale
         verticals.append((centre_x, y / scale, (y + height) / scale))
+        vertical_widths.append(width / scale)
 
     logger.info(
         f"line detection on the rendered page found {len(horizontals)} horizontal and "
         f"{len(verticals)} vertical runs at {dpi} DPI"
     )
-    return {"h": horizontals, "v": verticals}
+    return {
+        "h": horizontals,
+        "v": verticals,
+        "h_widths": horizontal_widths,
+        "v_widths": vertical_widths,
+    }

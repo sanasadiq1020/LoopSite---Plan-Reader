@@ -298,8 +298,24 @@ export interface ScaleCalibration {
   note: string | null;
 }
 
+/** Where and how two walls meet on the drawing. */
+export interface WallJunction {
+  with_wall_id: string;
+  /** L at a corner, T where a wall lands partway along another, + where two
+   *  cross, collinear where one wall carries on past a doorway. */
+  shape: "L" | "T" | "+" | "collinear";
+  at_pt: number[];
+}
+
 export interface WallCandidate {
   wall_id: string;
+  /** Read from the drawing's own geometry: a wall with nothing but open paper
+   *  on one side of it is an outer wall. "unknown" where the wall meets no
+   *  other wall, so it has not been established as part of the building. */
+  wall_type: "outer" | "inner" | "unknown";
+  orientation: "horizontal" | "vertical" | null;
+  connects_to: string[];
+  junctions: WallJunction[];
   runs_along: "x" | "y";
   length_mm: number;
   thickness_mm: number;
@@ -315,6 +331,8 @@ export interface WallCandidate {
   meets_another_wall: boolean;
   confidence: number;
   confidence_band: ConfidenceBand;
+  confidence_label: "high" | "medium" | "low" | null;
+  review_needed: boolean;
   review_status: ReviewStatus;
   linked_opening_marks: string[];
 }
@@ -895,6 +913,13 @@ export function exportCsvUrl(
   return fileUrl(`/api/plan/${runId}/export/${name}.csv`);
 }
 
+/** The walls and their junctions as data rather than as a table: the two faces
+ *  each wall was measured from, the breaks in it, and which walls it is built
+ *  into. A spreadsheet row cannot carry any of that. */
+export function exportJsonUrl(runId: string, name: "walls" | "wall-graph"): string {
+  return fileUrl(`/api/plan/${runId}/export/${name}.json`);
+}
+
 /** The full issues log: every value that needs checking, with the sheet and
  *  position it came from. Offered as a download rather than shown on screen. */
 /** Every marked-up sheet for this plan, as one download. */
@@ -953,6 +978,22 @@ export function unitSourceLabel(source: string): string {
  *  would describe it rather than by axis letter. */
 export function wallDirectionLabel(runsAlong: string): string {
   return runsAlong === "x" ? "Across the sheet" : "Up the sheet";
+}
+
+/** How two walls meet, in the words a person reading a plan would use. */
+export function junctionShapeLabel(shape: string): string {
+  switch (shape) {
+    case "L":
+      return "a corner";
+    case "T":
+      return "runs into it";
+    case "+":
+      return "crosses it";
+    case "collinear":
+      return "carries on past a doorway";
+    default:
+      return shape;
+  }
 }
 
 const AXIS_LABELS: Record<string, string> = {

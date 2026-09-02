@@ -311,6 +311,17 @@ class WallCandidate(BaseModel):
     """
 
     wall_id: str
+    # What the wall is: on the outside of the building, inside it, or not
+    # established either way. Read from the geometry — a ray cast out from a
+    # face that leaves the drawing without crossing another wall is an outside
+    # face — never from where the wall happens to sit in a bounding rectangle.
+    wall_type: Literal["outer", "inner", "unknown"] = "unknown"
+    orientation: Optional[Literal["horizontal", "vertical"]] = None
+    # The walls this one meets, and how each meeting is drawn: L at a corner,
+    # T where a partition lands on it, + where two cross, collinear where the
+    # wall carries on past a doorway.
+    connects_to: list[str] = []
+    junctions: list[dict] = []
     runs_along: Literal["x", "y"]
     length_mm: float
     thickness_mm: float
@@ -323,8 +334,18 @@ class WallCandidate(BaseModel):
     line_source: str  # "vector" or "rendered_page" — see CLAUDE.md 4D
     longer_than_sheet_measures: bool = False
     bbox: list[float]
+    # The two drawn faces this wall was measured from, and the line down the
+    # middle of it — the evidence, kept beside the answer.
+    face1: Optional[dict] = None
+    face2: Optional[dict] = None
+    centerline: Optional[dict] = None
+    # Where both faces stop and start again together: a door or a window.
+    gaps: list[dict] = []
+    meets_another_wall: bool = True
     confidence: float
     confidence_band: ConfidenceBand
+    confidence_label: Optional[Literal["high", "medium", "low"]] = None
+    review_needed: bool = True
     review_status: ReviewStatus = "needs_review"
     linked_opening_marks: list[str] = []
 

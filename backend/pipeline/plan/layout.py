@@ -125,39 +125,65 @@ def extract_rulings(page) -> dict:
 
     Each entry is (position, span_start, span_end): a horizontal is
     (y, x_from, x_to) and a vertical is (x, y_from, y_to).
+
+    Two parallel lists, ``h_widths`` and ``v_widths``, carry the stroke width
+    the PDF states for each of those segments, in points, index for index.
+    They are kept beside the segments rather than inside them because every
+    other reader of this function unpacks a three-tuple, and a wall reader
+    that needs the width should not force a table reader to know about it.
+
+    **Why the width is worth carrying.** A dimension line, a leader and a
+    hatch stroke are all drawn far thinner than the edge of a wall - that is a
+    drafting convention, and it is the cheapest way to tell them apart before
+    anything is paired. ``0.0`` means the PDF states no width for that
+    segment, which is common on filled shapes, and a segment saying that is
+    judged on everything else instead of being thrown away.
     """
     horizontals: list = []
     verticals: list = []
+    horizontal_widths: list = []
+    vertical_widths: list = []
     try:
         drawings = page_drawings(page)
     except Exception as e:
         logger.exception(f"extract_rulings: get_drawings() failed: {e}")
-        return {"h": [], "v": []}
+        return {"h": [], "v": [], "h_widths": [], "v_widths": []}
 
-    def add_segment(x0, y0, x1, y1):
+    def add_segment(x0, y0, x1, y1, width):
         if abs(y0 - y1) <= _STRAIGHTNESS_TOLERANCE_PT and abs(x0 - x1) >= _MIN_RULING_LENGTH_PT:
             horizontals.append(((y0 + y1) / 2.0, min(x0, x1), max(x0, x1)))
+            horizontal_widths.append(width)
         elif abs(x0 - x1) <= _STRAIGHTNESS_TOLERANCE_PT and abs(y0 - y1) >= _MIN_RULING_LENGTH_PT:
             verticals.append(((x0 + x1) / 2.0, min(y0, y1), max(y0, y1)))
+            vertical_widths.append(width)
 
     for path in drawings:
+        try:
+            width = float(path.get("width") or 0.0)
+        except (TypeError, ValueError):
+            width = 0.0
         for item in path.get("items", []):
             try:
                 kind = item[0]
                 if kind == "l":
                     a, b = item[1], item[2]
-                    add_segment(a.x, a.y, b.x, b.y)
+                    add_segment(a.x, a.y, b.x, b.y, width)
                 elif kind == "re":
                     r = item[1]
-                    add_segment(r.x0, r.y0, r.x1, r.y0)
-                    add_segment(r.x0, r.y1, r.x1, r.y1)
-                    add_segment(r.x0, r.y0, r.x0, r.y1)
-                    add_segment(r.x1, r.y0, r.x1, r.y1)
+                    add_segment(r.x0, r.y0, r.x1, r.y0, width)
+                    add_segment(r.x0, r.y1, r.x1, r.y1, width)
+                    add_segment(r.x0, r.y0, r.x0, r.y1, width)
+                    add_segment(r.x1, r.y0, r.x1, r.y1, width)
             except Exception:
                 # A malformed path item must never take the page down.
                 continue
 
-    return {"h": horizontals, "v": verticals}
+    return {
+        "h": horizontals,
+        "v": verticals,
+        "h_widths": horizontal_widths,
+        "v_widths": vertical_widths,
+    }
 
 
 def enclosing_cell(x: float, y: float, rulings: dict, page_width: float, page_height: float):

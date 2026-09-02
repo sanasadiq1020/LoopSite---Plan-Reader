@@ -39,7 +39,7 @@ from pipeline.plan.layout import extract_rulings
 from pipeline.plan.openings import openings_from_wall_gaps, place_openings_on_walls
 from pipeline.plan.pagetype import detect_page_type
 from pipeline.plan.scale import calibrate_page
-from pipeline.plan.walls import detect_walls
+from pipeline.plan.walls import detect_walls, wall_graph_for, walls_as_records
 from pipeline.plan.sheetindex import parse_sheet_index
 from pipeline.plan.textmodel import bbox_center
 from pipeline.plan.titleblock import (
@@ -58,6 +58,14 @@ logger = get_logger()
 LDQ, RDQ, DASH = "\u201c", "\u201d", "\u2014"
 
 CONFIG_PATH = CONFIG_DIR / "plan_reading.json"
+
+# The wall reader's own settings live in their own file, because they are the
+# ones an office is most likely to change: the thicknesses it builds, how short
+# a stretch is still a wall, how far apart two lines may be and still be one
+# face. Merged over the "walls" section of the file above, so a setting given
+# there wins and anything left out keeps the value it already had. A missing
+# file is not an error - it means the office has not overridden anything.
+WALL_CONFIG_PATH = CONFIG_DIR / "wall_config.json"
 
 # Used only if config/plan_reading.json is missing or unreadable, so a missing
 # config degrades to a logged warning and a reduced run rather than a crash
@@ -88,7 +96,29 @@ def load_config() -> dict:
     except Exception as e:
         logger.exception(f"Could not read {CONFIG_PATH}, running reduced: {e}")
         _config_cache = _MINIMAL_CONFIG
+    _config_cache["walls"] = _merged_wall_settings(_config_cache.get("walls", {}))
     return _config_cache
+
+
+def _merged_wall_settings(existing: dict) -> dict:
+    """The wall settings, with ``config/wall_config.json`` laid over them.
+
+    Kept separate from the file itself so that an unreadable override degrades
+    to the settings already in hand rather than taking the run down
+    (Critical Rule 6), and so a reader can see in the log which file a wall
+    setting came from.
+    """
+    merged = dict(existing)
+    try:
+        override = json.loads(WALL_CONFIG_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return merged
+    except Exception as e:
+        logger.exception(f"Could not read {WALL_CONFIG_PATH}, using the settings already loaded: {e}")
+        return merged
+    merged.update(override)
+    logger.info(f"wall settings: {len(override)} entries read from {WALL_CONFIG_PATH.name}")
+    return merged
 
 
 def _empty_title_block() -> dict:
@@ -120,6 +150,7 @@ def _empty_page(page_number: int, reason: str) -> dict:
         "schedules": [],
         "legends": [],
         "opening_marks": [],
+        "wall_graph": None,
         "scale_calibration": {
             "printed_scale": None,
             "scale_denominator": None,
@@ -680,6 +711,7 @@ def analyze_page(
                 exclude_region=_title_block_band(region, page_width, page_height),
                 page=page,
                 sheet_span_mm=sheet_span_mm,
+                page_number=page_number,
             )
             if trace_walls_here
             else []
@@ -738,6 +770,7 @@ def analyze_page(
             "scale_calibration": calibration,
             "walls": detected_walls,
             "walls_note": walls_note,
+            "wall_graph": wall_graph_for(detected_walls, sheet_id, page_number),
             "openings": detected_openings,
             "sheet_index": page_sheet_index,
             "unresolved_items": [],
@@ -1135,10 +1168,12 @@ def write_plan_reading_csvs(run_dir: Path, run_id: str, pages: list) -> None:
         writer = csv.writer(handle)
         writer.writerow(
             [
-                "run_id", "page_number", "sheet_id", "wall_id", "runs_along", "length_mm",
+                "run_id", "page_number", "sheet_id", "wall_id", "wall_type", "orientation",
+                "runs_along", "length_mm",
                 "thickness_mm", "nominal_thickness_mm", "matches_nominal_thickness",
-                "openings_on_this_wall", "measured_from", "longer_than_sheet_measures",
-                "confidence", "confidence_band", "bbox",
+                "connects_to", "junction_count", "openings_on_this_wall",
+                "breaks_in_the_wall_mm", "measured_from", "longer_than_sheet_measures",
+                "confidence", "confidence_band", "review_needed", "bbox",
             ]
         )
         for page in pages:
@@ -1146,13 +1181,27 @@ def write_plan_reading_csvs(run_dir: Path, run_id: str, pages: list) -> None:
                 writer.writerow(
                     [
                         run_id, page["page_number"], page["sheet_id"], wall["wall_id"],
+                        wall.get("wall_type", "unknown"), wall.get("orientation", ""),
                         wall["runs_along"], wall["length_mm"], wall["thickness_mm"],
                         wall["nominal_thickness_mm"] or "", wall["matches_nominal_thickness"],
-                        "; ".join(wall["linked_opening_marks"]), wall["line_source"],
+                        "; ".join(wall.get("connects_to", [])),
+                        len(wall.get("connects_to", [])),
+                        "; ".join(wall["linked_opening_marks"]),
+                        "; ".join(str(gap["gap_mm"]) for gap in wall.get("gaps", [])),
+                        wall["line_source"],
                         wall.get("longer_than_sheet_measures", False),
-                        wall["confidence"], wall["confidence_band"], json.dumps(wall["bbox"]),
+                        wall["confidence"], wall["confidence_band"],
+                        wall.get("review_needed", True),
+                        json.dumps(wall["bbox"]),
                     ]
                 )
+
+    # **The walls and their junctions, as data rather than as a table.** A
+    # spreadsheet row can carry a wall; it cannot carry the two faces the wall
+    # was measured from, the breaks in it and the graph it sits in. Those go to
+    # JSON, which is what every later stage reads (Critical Rule 2) and what a
+    # reviewer opens to check one wall against the sheet it came from.
+    write_walls_json(run_dir, run_id, pages)
 
     openings_path = run_dir / "openings.csv"
     with openings_path.open("w", newline="", encoding="utf-8") as handle:
@@ -1215,6 +1264,58 @@ def write_plan_reading_csvs(run_dir: Path, run_id: str, pages: list) -> None:
                         ]
                         + [row["values"].get(column, "") for column in columns]
                     )
+
+
+def write_walls_json(run_dir: Path, run_id: str, pages: list) -> None:
+    """``walls.json`` and ``wall_graph.json`` for this run.
+
+    Both are written for every run, even when no sheet in the document draws a
+    plan: a file that says plainly that no walls were found is a result, and a
+    missing file is a reader wondering whether the run finished.
+    """
+    walls = []
+    graphs = []
+    for page in pages:
+        page_walls = page.get("walls", [])
+        walls.extend(walls_as_records(page_walls))
+        graph = page.get("wall_graph")
+        if graph and graph.get("nodes"):
+            graphs.append(graph)
+
+    payload = {
+        "run_id": run_id,
+        "units": "millimetres for lengths, PDF points for positions on the sheet",
+        "wall_count": len(walls),
+        "outer_wall_count": sum(1 for w in walls if w["wall_type"] == "outer"),
+        "inner_wall_count": sum(1 for w in walls if w["wall_type"] == "inner"),
+        "unknown_wall_count": sum(1 for w in walls if w["wall_type"] == "unknown"),
+        "walls": walls,
+    }
+    try:
+        (run_dir / "walls.json").write_text(
+            json.dumps(payload, indent=2), encoding="utf-8"
+        )
+    except Exception as e:
+        logger.exception(f"could not write walls.json for run={run_id}: {e}")
+
+    graph_payload = {
+        "run_id": run_id,
+        "note": (
+            "Walls are the nodes and the places they meet are the edges. Each edge "
+            "says which shape the meeting makes on the drawing - L at a corner, T "
+            "where a wall lands partway along another, + where two cross, collinear "
+            "where one wall carries on past a doorway - and where on the sheet it "
+            "happens, in PDF points."
+        ),
+        "sheets": graphs,
+        "junction_count": sum(graph["junction_count"] for graph in graphs),
+    }
+    try:
+        (run_dir / "wall_graph.json").write_text(
+            json.dumps(graph_payload, indent=2), encoding="utf-8"
+        )
+    except Exception as e:
+        logger.exception(f"could not write wall_graph.json for run={run_id}: {e}")
 
 
 def _plain_position_source(opening: dict) -> str:

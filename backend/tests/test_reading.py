@@ -10,6 +10,8 @@ Fixtures are built as text lines in PDF points, the same shape
 their real interfaces rather than through mocks.
 """
 
+import json
+
 import pytest
 
 from pipeline.plan import accuracy
@@ -1450,3 +1452,307 @@ def test_a_stretch_is_never_given_to_two_walls(config):
         for b_start, b_end in spans[i + 1 :]:
             overlap = min(a_end, b_end) - max(a_start, b_start)
             assert overlap <= 0, "two walls were reported over the same stretch"
+
+
+# --- where the walls meet each other --------------------------------------
+#
+# Every test below names the mistake it prevents. All of them run at 10 mm per
+# point, which is the scale ``_candidate`` above is written for.
+
+
+def _junction_shapes(walls, config):
+    from pipeline.plan.walls import detect_junctions
+
+    detect_junctions(walls, config)
+    return {
+        (junction["with_wall_id"], junction["shape"])
+        for wall in walls
+        for junction in wall["junctions"]
+    }
+
+
+def test_a_partition_landing_on_a_wall_is_a_t_junction(config):
+    """The whole point of reading junctions: an inner wall is drawn running up
+    to an outer wall and stopping. Without this the two are separate lines on a
+    page and the building has no shape."""
+    from pipeline.plan.walls import detect_junctions
+
+    outer = _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)
+    partition = _candidate("W2", "y", 350.0, 200.0, 400.0, 90.0)
+    detect_junctions([outer, partition], config)
+
+    assert outer["connects_to"] == ["W2"]
+    assert partition["connects_to"] == ["W1"]
+    assert partition["junctions"][0]["shape"] == "T"
+
+
+def test_two_walls_meeting_at_a_corner_are_an_l_junction(config):
+    from pipeline.plan.walls import detect_junctions
+
+    across = _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)
+    down = _candidate("W2", "y", 600.0, 200.0, 500.0, 90.0)
+    detect_junctions([across, down], config)
+
+    assert across["junctions"][0]["shape"] == "L"
+
+
+def test_two_walls_crossing_are_a_plus_junction(config):
+    from pipeline.plan.walls import detect_junctions
+
+    across = _candidate("W1", "x", 300.0, 100.0, 600.0, 90.0)
+    down = _candidate("W2", "y", 350.0, 100.0, 500.0, 90.0)
+    detect_junctions([across, down], config)
+
+    assert across["junctions"][0]["shape"] == "+"
+
+
+def test_a_wall_carrying_on_past_a_doorway_stays_one_building(config):
+    """A run of wall broken by two doors is drawn as three pieces. Read as three
+    unconnected walls it is three buildings, and every partition hanging off the
+    middle piece loses its way back to the outside."""
+    from pipeline.plan.walls import detect_junctions
+
+    left = _candidate("W1", "x", 200.0, 100.0, 300.0, 90.0)
+    right = _candidate("W2", "x", 200.0, 308.0, 600.0, 90.0)
+    detect_junctions([left, right], config)
+
+    assert left["junctions"][0]["shape"] == "collinear"
+
+
+def test_two_walls_nowhere_near_each_other_do_not_meet(config):
+    from pipeline.plan.walls import detect_junctions
+
+    one = _candidate("W1", "x", 200.0, 100.0, 300.0, 90.0)
+    other = _candidate("W2", "y", 900.0, 700.0, 800.0, 90.0)
+    assert detect_junctions([one, other], config) == 0
+    assert one["connects_to"] == []
+
+
+def test_a_junction_says_where_on_the_sheet_it_happens(config):
+    """Critical Rule 4: nothing this reader produces may be anonymous. A
+    junction a reviewer cannot find on the drawing cannot be checked."""
+    from pipeline.plan.walls import detect_junctions
+
+    across = _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)
+    down = _candidate("W2", "y", 350.0, 200.0, 400.0, 90.0)
+    detect_junctions([across, down], config)
+
+    x, y = across["junctions"][0]["at_pt"]
+    assert abs(x - 350.0) < 10.0 and abs(y - 200.0) < 10.0
+
+
+# --- a short stretch is judged on what it is joined to ---------------------
+
+
+def test_a_short_wall_joined_to_the_building_is_kept(config):
+    """A pier, a return and the nib beside a doorway are all real walls and all
+    short. A plain length floor loses every one of them."""
+    from pipeline.plan.walls import _drop_short_walls_that_meet_nothing
+
+    outer = _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)
+    nib = _candidate("W2", "y", 300.0, 200.0, 230.0, 90.0)
+    kept = _drop_short_walls_that_meet_nothing([outer, nib], config)
+
+    assert {wall["wall_id"] for wall in kept} == {"W1", "W2"}
+
+
+def test_a_short_stretch_joined_to_nothing_is_not_a_wall(config):
+    """A bench top, a wardrobe and a step draw as two parallel lines a plausible
+    thickness apart, and are joined to nothing."""
+    from pipeline.plan.walls import _drop_short_walls_that_meet_nothing
+
+    outer = _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)
+    joinery = _candidate("W2", "y", 900.0, 700.0, 730.0, 90.0)
+    kept = _drop_short_walls_that_meet_nothing([outer, joinery], config)
+
+    assert [wall["wall_id"] for wall in kept] == ["W1"]
+
+
+# --- outside and inside ----------------------------------------------------
+
+
+def _closed_room():
+    """Four walls round a room, as the pairing step would report them."""
+    return [
+        _candidate("N", "x", 100.0, 100.0, 600.0, 90.0),
+        _candidate("S", "x", 500.0, 100.0, 600.0, 90.0),
+        _candidate("W", "y", 100.0, 100.0, 500.0, 90.0),
+        _candidate("E", "y", 600.0, 100.0, 500.0, 90.0),
+    ]
+
+
+def test_the_walls_round_the_outside_are_outer_walls(config):
+    from pipeline.plan.walls import classify_outer_inner, detect_junctions
+
+    walls = _closed_room()
+    detect_junctions(walls, config)
+    classify_outer_inner(walls, config)
+
+    assert {wall["wall_type"] for wall in walls} == {"outer"}
+
+
+def test_a_wall_with_building_on_both_sides_is_an_inner_wall(config):
+    from pipeline.plan.walls import classify_outer_inner, detect_junctions
+
+    walls = _closed_room()
+    walls.append(_candidate("P", "y", 350.0, 100.0, 500.0, 90.0))
+    detect_junctions(walls, config)
+    classify_outer_inner(walls, config)
+
+    assert {wall["wall_id"] for wall in walls if wall["wall_type"] == "inner"} == {"P"}
+
+
+def test_an_outer_wall_in_the_notch_of_an_l_shaped_plan_is_still_outer(config):
+    """**Why this is a ray and not a rectangle.** Most detached houses are an L
+    or a U once the garage and the alfresco are on. The walls in the notch are
+    external and nowhere near the corners of a bounding rectangle, so any test
+    that asks 'is this wall on the edge of the extent' calls them internal —
+    and then every quantity that depends on which walls face the weather is
+    wrong."""
+    from pipeline.plan.walls import classify_outer_inner, detect_junctions
+
+    # An L: the big rectangle with its top-right quarter cut away. The two
+    # walls of the notch sit in the middle of the extent.
+    walls = [
+        _candidate("S", "x", 500.0, 100.0, 600.0, 90.0),
+        _candidate("W", "y", 100.0, 100.0, 500.0, 90.0),
+        _candidate("N_left", "x", 100.0, 100.0, 350.0, 90.0),
+        _candidate("notch_down", "y", 350.0, 100.0, 300.0, 90.0),
+        _candidate("notch_across", "x", 300.0, 350.0, 600.0, 90.0),
+        _candidate("E", "y", 600.0, 300.0, 500.0, 90.0),
+    ]
+    detect_junctions(walls, config)
+    classify_outer_inner(walls, config)
+
+    notch = {w["wall_id"]: w["wall_type"] for w in walls if w["wall_id"].startswith("notch")}
+    assert notch == {"notch_down": "outer", "notch_across": "outer"}
+
+
+def test_a_wall_that_meets_nothing_is_not_guessed_at(config):
+    """Critical Rule 5. A pair of lines joined to nothing has not been
+    established as part of this building, so which side of it is outside is not
+    something the drawing has said."""
+    from pipeline.plan.walls import classify_outer_inner, detect_junctions
+
+    walls = _closed_room()
+    walls.append(_candidate("alone", "x", 2000.0, 2000.0, 2400.0, 90.0))
+    detect_junctions(walls, config)
+    classify_outer_inner(walls, config)
+
+    assert walls[-1]["wall_type"] == "unknown"
+
+
+# --- the graph and the record ---------------------------------------------
+
+
+def test_a_junction_is_one_edge_in_the_graph_not_two(config):
+    """It is recorded on both walls, because either one is where a reader may
+    start. It is one place on the drawing."""
+    from pipeline.plan.walls import detect_junctions, wall_graph_for
+
+    walls = _closed_room()
+    detect_junctions(walls, config)
+    graph = wall_graph_for(walls, "A02", 1)
+
+    assert graph["junction_count"] == 4
+    assert len(graph["nodes"]) == 4
+    assert all(edge["from_wall_id"] < edge["to_wall_id"] for edge in graph["edges"])
+
+
+def test_every_wall_record_says_what_where_how_and_how_certain(config):
+    """The fields a later stage and a reviewer both read. A record missing any
+    of them is a measurement nobody can check."""
+    from pipeline.plan.walls import (
+        classify_outer_inner,
+        describe_walls,
+        detect_junctions,
+        walls_as_records,
+    )
+
+    walls = _closed_room()
+    walls[0]["gaps_pt"] = [[200.0, 282.0]]
+    detect_junctions(walls, config)
+    classify_outer_inner(walls, config)
+    describe_walls(walls, 10.0, config, "A02", 1)
+    record = walls_as_records(walls)[0]
+
+    for field in (
+        "wall_id", "wall_type", "orientation", "face1", "face2", "centerline",
+        "gaps", "length_mm", "thickness_mm", "connects_to", "source_sheet",
+        "source_page", "confidence", "review_needed",
+    ):
+        assert field in record, f"{field} is missing from the wall record"
+    assert record["orientation"] == "horizontal"
+    assert record["confidence"] in ("high", "medium", "low")
+    assert record["gaps"][0]["gap_mm"] == 820.0
+    assert record["source_sheet"] == "A02" and record["source_page"] == 1
+
+
+def test_a_wall_reports_the_two_faces_it_was_measured_from(config):
+    """The evidence, kept beside the answer: a reviewer checks a thickness by
+    looking at the two lines it was taken between."""
+    from pipeline.plan.walls import describe_walls
+
+    walls = [_candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)]
+    describe_walls(walls, 10.0, walls and config, "A02", 1)
+
+    assert walls[0]["face1"]["y0"] != walls[0]["face2"]["y0"]
+    assert walls[0]["centerline"]["y0"] == 200.0
+    assert walls[0]["centerline"]["x0"] == 100.0
+
+
+# --- what the settings must not be allowed to do --------------------------
+
+
+def test_a_fragment_never_replaces_the_wall_it_is_part_of(config):
+    """Once a stretch as short as a nib could be a candidate, a cluster could
+    hold an 8 m wall and a 0.3 m piece of the same wall — and the ranking, which
+    prefers a thickness the office builds over length, kept the piece. On two
+    floor plans that cost about 30 m of traced wall each while the wall count
+    went up, which is the worst shape a change can take: it looks like more and
+    is less."""
+    from pipeline.plan.walls import merge_overlapping_walls
+
+    wall = _candidate("W1", "x", 200.0, 100.0, 900.0, 95.0, nominal=False)
+    fragment = _candidate("W2", "x", 200.4, 400.0, 430.0, 90.0, nominal=True)
+    merged = merge_overlapping_walls([wall, fragment], 10.0, config)
+
+    assert len(merged) == 1
+    assert merged[0]["length_mm"] == 8000.0
+
+
+def test_the_collinear_tolerance_stays_under_the_thinnest_wall(config):
+    """A wall **is** two lines a thickness apart. A tolerance for 'the same
+    line' that is wider than the thinnest wall the office builds merges a
+    wall's own two faces into one, and the wall disappears — measured, going
+    from 0.6 to 3 points took the walls at a buildable thickness on one floor
+    plan from 38 of 40 down to 21 of 27."""
+    settings = config["walls"]
+    tolerance_mm = float(settings["collinear_tolerance_points"]) * 35.28  # 1:100
+    assert tolerance_mm < min(float(t) for t in settings["nominal_thickness_mm"])
+
+
+def test_a_line_with_no_stated_width_is_never_dropped_as_too_thin(config):
+    """A filled shape states no stroke width, and neither does a line recovered
+    from a page read as a picture. Reading zero as thin threw away every wall
+    on an image-drawn sheet."""
+    from pipeline.plan.walls import _drop_lines_that_are_not_wall_faces
+
+    segments = [(200.0, 100.0, 600.0), (210.0, 100.0, 600.0)]
+    kept = _drop_lines_that_are_not_wall_faces(
+        segments, [0.0, 0.2], {"reject_lines_thinner_than_pt": 0.5}
+    )
+    assert kept == [segments[0]]
+
+
+def test_the_office_wall_settings_are_read_from_their_own_file():
+    """``config/wall_config.json`` is where an office changes what a wall is.
+    A setting given there has to win, or the file is decoration."""
+    from app.paths import CONFIG_DIR
+
+    assert (CONFIG_DIR / "wall_config.json").exists()
+    settings = reading.load_config()["walls"]
+    override = json.loads((CONFIG_DIR / "wall_config.json").read_text(encoding="utf-8"))
+    for name, value in override.items():
+        if not name.startswith("_"):
+            assert settings[name] == value

@@ -234,6 +234,36 @@ async def get_export_csv(
     return FileResponse(path, media_type="text/csv", filename=f"{name}_{run_id}.csv")
 
 
+# A spreadsheet row can carry a wall; it cannot carry the two faces the wall was
+# measured from, the breaks in it, or the graph of which walls it is built into.
+# Those go out as JSON — the same files every later stage reads, so what a
+# reviewer downloads is what the model was built from (Critical Rule 2).
+_JSON_EXPORTS = {
+    "walls": "walls.json",
+    "wall-graph": "wall_graph.json",
+}
+
+
+@router.get("/{run_id}/export/{name}.json")
+async def get_export_json(
+    run_id: str, name: str, session_id: str = Depends(get_session_id)
+):
+    if not run_belongs_to_session(run_id, session_id):
+        raise HTTPException(status_code=404, detail="Not found.")
+
+    filename = _JSON_EXPORTS.get(name)
+    if filename is None:
+        raise HTTPException(status_code=404, detail="Unknown export.")
+
+    path = resolve_export_path(run_id, filename)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Not found.")
+
+    return FileResponse(
+        path, media_type="application/json", filename=f"{name}_{run_id}.json"
+    )
+
+
 @router.get("/{run_id}/accuracy-report.csv")
 async def get_accuracy_report_csv(run_id: str, session_id: str = Depends(get_session_id)):
     """The row-by-row comparison of this run against the manually checked

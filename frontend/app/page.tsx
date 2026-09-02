@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiError,
   exportCsvUrl,
+  exportJsonUrl,
   getPlanReading,
   issuesCsvUrl,
   markedUpSheetsUrl,
@@ -604,6 +605,18 @@ export default function Home() {
                     label: "Walls",
                     description: "Wall lines with their length, thickness and where measured from.",
                     href: exportCsvUrl(result.run_id, "walls"),
+                  },
+                  {
+                    label: "Walls, in full",
+                    description:
+                      "The same walls with the two lines each was measured from, the breaks in them, and which walls each one meets.",
+                    href: exportJsonUrl(result.run_id, "walls"),
+                  },
+                  {
+                    label: "How the walls join up",
+                    description:
+                      "Every place two walls meet - at a corner, where one runs into another, or where two cross.",
+                    href: exportJsonUrl(result.run_id, "wall-graph"),
                   },
                   {
                     label: "Doors & windows",

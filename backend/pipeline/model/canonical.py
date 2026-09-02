@@ -38,7 +38,7 @@ logger = get_logger()
 # The shape of project_model.json. An older model read by newer code would be
 # silently wrong rather than obviously broken, so it is versioned like the
 # plan reading is.
-MODEL_FORMAT = 1
+MODEL_FORMAT = 2
 
 
 def buildable_walls(page: dict, minimum_length: float) -> list:
@@ -224,6 +224,7 @@ def build_model(
                     "end_mm": to_mm(wall["end_point_pt"]),
                     "base_elevation_mm": 0.0,
                     "runs_along": wall["runs_along"],
+                    "orientation": wall.get("orientation"),
                 },
                 "dimensions": {
                     "length_mm": round(wall["length_mm"], 1),
@@ -232,6 +233,14 @@ def build_model(
                     "thickness_is_measured": thickness_is_measured,
                     "nominal_thickness_mm": wall.get("nominal_thickness_mm"),
                 },
+                # Outside or inside, read from the drawing's own geometry — a
+                # wall with nothing but open paper on one side of it is an
+                # external wall. Carried on the model because it is what
+                # separates the walls that face the weather from the ones that
+                # do not, and every stage after this one needs that difference:
+                # a cladding quantity, an insulation rate and a bracing
+                # requirement all follow from it.
+                "wall_type": wall.get("wall_type", "unknown"),
                 "material": None,  # not stated on a plan; Week 3 reads it from the take-off
                 "source_sheet": page["sheet_id"],
                 "source_bbox": wall.get("bbox"),
@@ -244,10 +253,28 @@ def build_model(
                 "review_status": wall.get("review_status", "needs_review"),
                 "linked_issue_ids": [],
                 "linked_opening_ids": [],
+                # The walls this one is built into. Kept as the plan's own wall
+                # ids and rewritten to element ids below, once every wall in
+                # the model has one.
+                "connects_to": list(wall.get("connects_to", [])),
                 "assumptions": assumptions,
                 "from_wall_id": wall["wall_id"],
             }
         )
+
+    # A junction was read between two walls on the sheet; in the model it is a
+    # relation between two elements. Rewriting it here rather than leaving the
+    # sheet's ids in means nothing downstream has to hold both vocabularies —
+    # and a wall left out of the model (too short to build with, or meeting
+    # nothing) drops out of its neighbours' lists rather than pointing at a
+    # wall that is not there.
+    element_for_wall = {e["from_wall_id"]: e["element_id"] for e in elements}
+    for element in elements:
+        element["connects_to"] = [
+            element_for_wall[wall_id]
+            for wall_id in element["connects_to"]
+            if wall_id in element_for_wall
+        ]
 
     # --- openings are cut, where the drawing establishes one ------------
     # A hole needs four things: which wall, where along it, how wide and how

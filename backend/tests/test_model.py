@@ -436,3 +436,55 @@ def test_the_glb_still_parses_once_a_wall_has_a_hole_in_it(tmp_path, config):
     # Three boxes, one wall: still one node, so a click still names one wall.
     assert len(gltf["nodes"]) == 1
     assert gltf["accessors"][0]["count"] == 24
+
+
+# --- outside, inside, and what is built into what -------------------------
+
+
+def test_the_model_says_which_walls_face_the_weather(config):
+    """Which side of the building a wall is on decides its cladding, its
+    insulation and its bracing. Read once from the drawing's geometry, it has
+    to reach the model — recomputing it later from the model's own boxes would
+    be a second source of truth for the same fact (Critical Rule 2)."""
+    page = _page()
+    page["walls"][0]["wall_type"] = "outer"
+    model = build_model(page, _HEIGHT, config, "run", "plan.pdf", 800.0)
+
+    assert model["walls"][0]["wall_type"] == "outer"
+
+
+def test_a_junction_reaches_the_model_as_element_ids(config):
+    """The plan calls a wall A02-W001 and the model calls it A02-M-W001.
+    Leaving the sheet's own ids in the model would make every stage after this
+    one hold both vocabularies and join them by guesswork."""
+    page = _page()
+    base = page["walls"][0]
+    page["walls"] = [
+        dict(base, wall_id="A02-W001", connects_to=["A02-W002"]),
+        dict(
+            base,
+            wall_id="A02-W002",
+            runs_along="y",
+            start_point_pt=[600.0, 200.0],
+            end_point_pt=[600.0, 500.0],
+            length_mm=3000.0,
+            connects_to=["A02-W001"],
+        ),
+    ]
+    model = build_model(page, _HEIGHT, config, "run", "plan.pdf", 800.0)
+    by_id = {wall["element_id"]: wall for wall in model["walls"]}
+
+    for wall in model["walls"]:
+        assert wall["connects_to"], "a junction read on the plan was dropped"
+        for other in wall["connects_to"]:
+            assert other in by_id, "a wall points at an element that is not in the model"
+
+
+def test_a_junction_with_a_wall_left_out_of_the_model_is_dropped(config):
+    """A wall too short to build with, or one meeting nothing, is not modelled.
+    Its neighbours must not be left pointing at a wall that is not there."""
+    page = _page()
+    page["walls"][0]["connects_to"] = ["A02-W099"]
+    model = build_model(page, _HEIGHT, config, "run", "plan.pdf", 800.0)
+
+    assert model["walls"][0]["connects_to"] == []

@@ -27,12 +27,62 @@ Three things make the result usable rather than noise:
 *   **Everything is measured in millimetres, through the calibrated scale.**
     A wall is only reported when the sheet's scale has been confirmed
     (see `scale.py`), because a length in points means nothing on its own.
+
+**A building's walls hold on to each other, and that is now read as well.**
+Two parallel faces are only half of what a floor plan draws. The other half is
+where those pairs *meet*: an external wall runs round the outside, and every
+partition inside it runs up to that wall and stops, making an L at a corner, a
+T where a partition lands on a wall, and a + where two partitions cross. Those
+meeting points are as much a fact about the drawing as the parallel lines are,
+and reading them changes what can be said about a wall:
+
+*   **A short stretch that meets the building is a wall; a short stretch that
+    meets nothing is furniture.** A pier, a return, a nib beside a doorway and
+    a partition between a WC and a hall are all real and all short, so a plain
+    length floor either loses them or lets in every bench top on the sheet. The
+    junction tells the two apart, which is why the length floor could be
+    dropped from 900 mm to 200 mm without the sheet filling up with joinery.
+*   **A wall knows which walls it is joined to** (``connects_to``), and the
+    junctions together are a graph - walls the nodes, junctions the edges -
+    written out as ``wall_graph.json``. Closing that graph into rooms is a
+    later stage; what is built here is the graph it will read.
+*   **Outside and inside are told apart by geometry, not by a rectangle.** A
+    wall with nothing but open paper on one side of it is an external wall. A
+    ray is cast out from each side of every wall, and a side that reaches the
+    edge of the building without crossing another wall is an outside face. On
+    an L-shaped or a U-shaped plan a bounding rectangle gets that wrong; a ray
+    does not. A wall the rays cannot decide is reported as ``unknown`` rather
+    than guessed (Critical Rule 5).
+
+Three kinds of line are dropped before any of that, because each of them draws
+as two parallel lines and none of them is a wall: **dimension lines**, which
+are drawn far thinner than a wall face and carry arrowheads; **hatching**,
+which is many parallel strokes closer together than a wall is ever built; and
+anything **shorter than the length floor**, which is a fragment.
+
+Every threshold above lives in ``config/wall_config.json`` and every length is
+in millimetres through the sheet's own calibrated scale. Nothing here holds a
+coordinate, a room name or a count from any particular drawing (Critical Rule 1).
 """
 
 from app.logging_setup import get_logger
 from pipeline.plan.rasterlines import extract_rulings_from_image
 
 logger = get_logger()
+
+
+def _setting(settings: dict, *names, default=None):
+    """The first of these settings that is present.
+
+    The wall settings are read from two files - ``plan_reading.json`` and the
+    office's own ``wall_config.json`` - and the two name some of the same
+    quantities differently. Rather than rename anything and break an office's
+    existing file, both names are accepted and the first one found wins.
+    """
+    for name in names:
+        if name in settings and settings[name] is not None:
+            return settings[name]
+    return default
 
 
 def _merge_faces(segments: list, position_tolerance: float, join_gap: float) -> list:
@@ -77,11 +127,24 @@ def _pair_faces(faces: list, mm_per_point: float, config: dict, standards: list)
     is used once, so one wall produces one record.
     """
     settings = config.get("walls", {})
-    min_length_mm = float(settings.get("min_wall_length_mm", 900))
-    min_thickness = float(settings.get("min_thickness_mm", 70))
-    max_thickness = float(settings.get("max_thickness_mm", 320))
+    min_length_mm = float(_setting(settings, "min_wall_length_mm", default=900))
+    min_thickness = float(
+        _setting(settings, "min_wall_thickness_mm", "min_thickness_mm", default=70)
+    )
+    max_thickness = float(
+        _setting(settings, "max_wall_thickness_mm", "max_thickness_mm", default=320)
+    )
     thickness_tolerance = float(settings.get("nominal_thickness_tolerance_mm", 12))
     min_flank = float(settings.get("opening_min_wall_each_side_mm", 300))
+    # **How far two faces run together, as a share of the shorter of them.**
+    # A share rather than a length, because that is what makes two lines one
+    # wall whatever their size: a face that shares a tenth of its length with
+    # another is passing it, not facing it. The *shorter* face is the
+    # denominator on purpose - one external face 20 m long faces a dozen
+    # internal faces 3 m each, and every one of those is a real wall.
+    min_overlap_share = float(_setting(
+        settings, "min_parallel_overlap_percent", default=0.0
+    )) / 100.0
 
     usable = [f for f in faces if (f[2] - f[1]) * mm_per_point >= min_length_mm]
 
@@ -94,6 +157,9 @@ def _pair_faces(faces: list, mm_per_point: float, config: dict, standards: list)
                 continue
             overlap = (min(end, other_end) - max(start, other_start)) * mm_per_point
             if overlap < min_length_mm:
+                continue
+            shorter = min(end - start, other_end - other_start) * mm_per_point
+            if shorter > 0 and (overlap / shorter) < min_overlap_share:
                 continue
             nominal_match = standards and min(
                 abs(float(n) - thickness) for n in standards
@@ -227,6 +293,7 @@ def detect_walls(
     exclude_region=None,
     page=None,
     sheet_span_mm=None,
+    page_number=None,
 ) -> list:
     """Candidate walls for one sheet, in millimetres.
 
@@ -247,7 +314,9 @@ def detect_walls(
         return []
 
     settings = config.get("walls", {})
-    position_tolerance = float(settings.get("face_position_tolerance_pt", 0.6))
+    position_tolerance = float(
+        _setting(settings, "collinear_tolerance_points", "face_position_tolerance_pt", default=0.6)
+    )
     standards = settings.get("nominal_thickness_mm", [])
     thickness_tolerance = float(settings.get("nominal_thickness_tolerance_mm", 12))
     # A door or window breaks its wall's face into pieces; collinear pieces
@@ -264,8 +333,25 @@ def detect_walls(
         along_low, along_high, across = start, end, position
         return not (y0 <= along_low and along_high <= y1 and x0 <= across <= x1)
 
+    # A wall cannot be longer than the longest distance this sheet measures.
+    # The drawing states its own overall size in its dimension strings, so the
+    # limit comes from the drawing rather than from a setting: on a 20.9 m
+    # house the site boundary and the eave line were being paired into 23.9 m
+    # "walls", which is the drawing's block edge, not the building.
+    limit = sheet_span_mm * float(settings.get("length_allowance", 1.05)) if sheet_span_mm else None
+
     def build(source_rulings: dict) -> list:
-        return _walls_from(
+        """Every step that decides *whether* something is a wall, in order.
+
+        All of it lives here, and not spread out after the choice of line
+        source, because the choice of line source is made by comparing what
+        two readings of the same sheet produced — and a count taken before the
+        copies and the joinery have been removed is not a count of walls. On
+        one sheet the raw vector reading returned six candidates, every one of
+        them a fragment that this function goes on to reject, and comparing
+        that six against the picture meant the picture was never read at all.
+        """
+        found = _walls_from(
             source_rulings,
             mm_per_point,
             config,
@@ -276,62 +362,79 @@ def detect_walls(
             outside_excluded,
         )
 
+        # A candidate longer than anything this sheet measures is marked for
+        # review rather than removed. On one floor plan that is exactly right —
+        # the 23.9 m pair is the block boundary, not a wall of a 21 m house.
+        # But a sheet may also dimension only one wing of what it draws, and
+        # discarding a real wall because the drawing did not measure it would
+        # be hiding a finding rather than reporting it (Critical Rule 5).
+        over_length = 0
+        for wall in found:
+            if limit and wall["length_mm"] > limit:
+                over_length += 1
+                wall["longer_than_sheet_measures"] = True
+                wall["confidence"] = round(min(wall["confidence"], 0.5), 3)
+                wall["confidence_band"] = "review"
+            else:
+                wall["longer_than_sheet_measures"] = False
+        if over_length:
+            logger.info(
+                f"{sheet_id}: {over_length} candidates run longer than the "
+                f"{limit / 1000:.1f} m this sheet measures and are marked for review"
+            )
+
+        # An external wall is drawn with more lines than its own two faces, so
+        # the pairing above produces several overlapping candidates for one
+        # wall. Two solids cannot occupy the same space, so those are one wall
+        # and are reported once, keeping every break any of them recorded.
+        before = len(found)
+        found = merge_overlapping_walls(found, mm_per_point, config)
+        if before != len(found):
+            logger.info(
+                f"{sheet_id}: {before} candidates occupy {len(found)} places, so "
+                f"{before - len(found)} were copies of a wall already reported"
+            )
+
+        # **A short stretch is judged on what it is joined to, not on its
+        # length.** A pier, a return, a nib and the partition between a WC and
+        # a hall are all real walls and all short; a bench top, a wardrobe and
+        # a step are short too and are joined to nothing. The junctions tell
+        # the two apart, which is what lets the length floor come down at all.
+        before = len(found)
+        found = _drop_short_walls_that_meet_nothing(found, config)
+        if before != len(found):
+            logger.info(
+                f"{sheet_id}: {before - len(found)} short candidate(s) meet no other "
+                "wall, so they are joinery or furniture rather than walls"
+            )
+        return found
+
     # The sheet's own geometry is always tried first — it is the drawing's
     # exact line work, and nothing recovered from pixels can be more accurate
-    # than that. Only when it yields no walls at all is the page rendered and
-    # measured as an image, because that outcome means the lines are not in the
-    # PDF as lines: one supplied set places its whole plan as embedded images
-    # and produced 400 drawing items against 16,117 on the vector set. Deciding
-    # on the outcome rather than on a line count means the fallback cannot
-    # displace good vector geometry on a sheet that simply has few lines.
-    # A wall cannot be longer than the longest distance this sheet measures.
-    # The drawing states its own overall size in its dimension strings, so the
-    # limit comes from the drawing rather than from a setting: on a 20.9 m
-    # house the site boundary and the eave line were being paired into 23.9 m
-    # "walls", which is the drawing's block edge, not the building.
-    limit = sheet_span_mm * float(settings.get("length_allowance", 1.05)) if sheet_span_mm else None
+    # than that. The page is only read as a picture when that geometry did not
+    # trace a building, because that outcome means the lines are not in the PDF
+    # as lines: one supplied set places its whole plan as embedded images and
+    # produced 400 drawing items against 16,117 on the vector set.
+    #
+    # **A building is a closed shape, so it takes at least four walls.** The
+    # test used to be "no walls at all", which held only while the length floor
+    # was high enough that a stray pair could never qualify. Once a short
+    # stretch could be a wall, one pair of lines on a sheet drawn entirely as a
+    # picture was enough to call the vector reading a success, and a whole
+    # floor plan came back as a single 0.7 m wall. The fuller of the two
+    # readings wins, so exact line work is never displaced by pixels that found
+    # less.
+    enough_to_be_a_building = int(settings.get("min_walls_for_an_unnamed_plan", 4))
 
     line_source = "vector"
     walls = build(rulings)
-    if not walls and page is not None:
+    if len(walls) < enough_to_be_a_building and page is not None:
         recovered = extract_rulings_from_image(page, config, mm_per_point)
         if recovered["h"] or recovered["v"]:
-            walls = build(recovered)
-            if walls:
+            from_picture = build(recovered)
+            if len(from_picture) > len(walls):
+                walls = from_picture
                 line_source = "rendered_page"
-
-    # A candidate longer than anything this sheet measures is marked for
-    # review rather than removed. On one floor plan that is exactly right —
-    # the 23.9 m pair is the block boundary, not a wall of a 21 m house. But a
-    # sheet may also dimension only one wing of what it draws, and discarding a
-    # real wall because the drawing did not measure it would be hiding a
-    # finding rather than reporting it (Critical Rule 5).
-    over_length = 0
-    for wall in walls:
-        if limit and wall["length_mm"] > limit:
-            over_length += 1
-            wall["longer_than_sheet_measures"] = True
-            wall["confidence"] = round(min(wall["confidence"], 0.5), 3)
-            wall["confidence_band"] = "review"
-        else:
-            wall["longer_than_sheet_measures"] = False
-    if over_length:
-        logger.info(
-            f"{sheet_id}: {over_length} candidates run longer than the "
-            f"{limit / 1000:.1f} m this sheet measures and are marked for review"
-        )
-
-    # An external wall is drawn with more lines than its own two faces, so the
-    # pairing above produces several overlapping candidates for one wall. Two
-    # solids cannot occupy the same space, so those are one wall and are
-    # reported once, keeping every break any of them recorded.
-    before = len(walls)
-    walls = merge_overlapping_walls(walls, mm_per_point, config)
-    if before != len(walls):
-        logger.info(
-            f"{sheet_id}: {before} candidates occupy {len(walls)} places, so "
-            f"{before - len(walls)} were copies of a wall already reported"
-        )
 
     # A building's walls meet each other. A pair of parallel lines touching
     # nothing else is an eave, a roof extent, a fence or a bench.
@@ -347,10 +450,19 @@ def detect_walls(
         wall["wall_id"] = f"{sheet_id}-W{position:03d}"
         wall["line_source"] = line_source
 
+    # The junctions are read once the walls have their identifiers, because a
+    # junction is a statement about two named walls. Outside and inside then
+    # follow from the geometry, and the plain-words half of each record last.
+    junctions = detect_junctions(walls, config)
+    classify_outer_inner(walls, config)
+    describe_walls(walls, mm_per_point, config, sheet_id, page_number)
 
+    outer = sum(1 for w in walls if w["wall_type"] == "outer")
+    inner = sum(1 for w in walls if w["wall_type"] == "inner")
     logger.info(
         f"{sheet_id}: {len(walls)} candidate walls from {line_source} lines "
-        f"({sum(1 for w in walls if w['matches_nominal_thickness'])} at a nominal thickness)"
+        f"({sum(1 for w in walls if w['matches_nominal_thickness'])} at a nominal "
+        f"thickness), {junctions} junctions, {outer} outer and {inner} inner"
     )
     return walls
 
@@ -366,9 +478,17 @@ def _walls_from(
     outside_excluded,
 ) -> list:
     """Wall records from one set of drawn faces, whatever produced them."""
+    settings = config.get("walls", {})
     walls = []
-    for axis, segments in (("x", rulings.get("h", [])), ("y", rulings.get("v", []))):
+    for axis, segments, widths in (
+        ("x", rulings.get("h", []), rulings.get("h_widths", [])),
+        ("y", rulings.get("v", []), rulings.get("v_widths", [])),
+    ):
+        # Dimension lines, leaders and hatch strokes are dropped before
+        # anything is paired, so they cannot become half of a false wall.
+        segments = _drop_lines_that_are_not_wall_faces(segments, widths, settings)
         faces = _merge_faces(segments, position_tolerance, join_gap)
+        faces = _drop_hatching(faces, mm_per_point, settings)
         faces = [f for f in faces if outside_excluded(f[0], f[1], f[2], axis)]
         for pair in _pair_faces(faces, mm_per_point, config, standards):
             nominal, difference = _nearest_standard(pair["thickness_mm"], standards)
@@ -539,6 +659,13 @@ def _same_wall(first: dict, second: dict, mm_per_point: float, settings: dict) -
     return abs(first["thickness_mm"] - second["thickness_mm"]) <= tolerance
 
 
+# How much of a cluster's own run a candidate must cover to count as a reading
+# of that wall rather than a fragment of it. Not a setting: it is the line
+# between "these two are the same wall" and "this one is a piece of that one",
+# and no office draws that differently.
+_COVERS_THE_CLUSTER = 0.75
+
+
 def _best_candidate(members: list) -> dict:
     """The one of several overlapping candidates that most looks like a wall.
 
@@ -553,6 +680,27 @@ def _best_candidate(members: list) -> dict:
     every_break = [
         (start, end) for member in members for start, end in member.get("gaps_pt", [])
     ]
+
+    # **A fragment of a wall is not a reading of that wall.** Once a stretch as
+    # short as a nib could be a candidate, a cluster could hold an 8 m wall and
+    # a 0.3 m piece of the same wall - and the ranking below, which prefers a
+    # thickness the office builds over length, would keep the 0.3 m piece and
+    # throw the wall away. On two floor plans that cost about 30 m of traced
+    # wall each while the wall count went up, which is the worst shape a change
+    # can take: it looks like more and is less.
+    #
+    # So the choice is made among the candidates that actually cover this
+    # cluster. Everything the ranking already knew - the sheet's own length
+    # limit, a thickness the office builds, the breaks that are its doors -
+    # still decides between them.
+    runs = [_run(member) for member in members]
+    span = max(high for _low, high in runs) - min(low for low, _high in runs)
+    covering = [
+        member
+        for member, (low, high) in zip(members, runs)
+        if span <= 0 or (high - low) >= span * _COVERS_THE_CLUSTER
+    ]
+    members = covering or members
 
     def rank(wall: dict):
         low, high = _run(wall)
@@ -656,3 +804,469 @@ def mark_walls_that_stand_alone(walls: list, mm_per_point: float, config: dict) 
             wall["confidence"] = round(min(wall["confidence"], 0.4), 3)
             wall["confidence_band"] = "review"
     return alone
+
+
+# --- Step 6, before pairing: lines that are not wall faces ----------------
+
+
+def _drop_lines_that_are_not_wall_faces(
+    segments: list, widths: list, settings: dict
+) -> list:
+    """Drops the drawn lines that can never be the edge of a wall.
+
+    **A dimension line is drawn thin.** So is a leader, a hatch stroke and a
+    centre line. That is a drafting convention rather than an opinion about a
+    particular office, and where the PDF states a stroke width it is the
+    cheapest and most reliable way to tell those apart from the edge of a
+    wall — before any pairing, so they cannot become half of a false wall.
+
+    A stroke width of zero is not thin, it is **unstated**: a filled shape
+    carries none, and so does a line recovered from a page read as a picture.
+    Those are kept and judged on everything else. Refusing them would throw
+    away every wall on a sheet whose drawing is stored as an image.
+    """
+    thinner_than = float(_setting(settings, "reject_lines_thinner_than_pt", default=0.0))
+    if thinner_than <= 0 or not widths or len(widths) != len(segments):
+        return segments
+    return [
+        segment
+        for segment, width in zip(segments, widths)
+        if not (0.0 < width < thinner_than)
+    ]
+
+
+def _drop_hatching(faces: list, mm_per_point: float, settings: dict) -> list:
+    """Drops runs of faces packed closer together than a wall is ever built.
+
+    **Hatching is many parallel strokes a short distance apart.** So is the
+    brick coursing on a section, the boarding on a soffit and the tiling on a
+    wet-area plan. Two of those strokes are two parallel lines a plausible
+    distance apart as readily as a wall's own two faces are, and one sheet can
+    carry hundreds of them.
+
+    What separates hatching from a wall is not any one pair — it is that there
+    are *many* of them in one band, each closer to the next than the thinnest
+    wall the office builds. So a run of faces whose neighbours are all closer
+    together than that, and which is longer than a wall's two faces plus its
+    linings, is hatching, and every face in it is dropped.
+    """
+    min_separation = float(_setting(settings, "min_face_separation_mm", default=0.0))
+    most_faces = int(_setting(settings, "max_faces_in_a_hatch_band", default=0))
+    if min_separation <= 0 or most_faces <= 0 or len(faces) <= most_faces:
+        return faces
+
+    separation_pt = min_separation / mm_per_point
+    ordered = sorted(range(len(faces)), key=lambda i: faces[i][0])
+
+    dropped: set = set()
+    band = [ordered[0]]
+    for index in ordered[1:]:
+        previous, current = faces[band[-1]], faces[index]
+        overlaps = min(previous[2], current[2]) > max(previous[1], current[1])
+        if overlaps and (current[0] - previous[0]) < separation_pt:
+            band.append(index)
+            continue
+        if len(band) > most_faces:
+            dropped.update(band)
+        band = [index]
+    if len(band) > most_faces:
+        dropped.update(band)
+
+    if not dropped:
+        return faces
+    return [face for index, face in enumerate(faces) if index not in dropped]
+
+
+# --- Step 4: where the walls meet each other -----------------------------
+
+
+def _junction_between(first: dict, second: dict, tolerance: float):
+    """Where and how these two walls meet, or None.
+
+    A wall occupies a rectangle: its run along its own axis, and its thickness
+    band across it. Two walls at right angles meet when **each one's thickness
+    band reaches the other's run**. That is one test covering all three shapes
+    an office draws — a corner (L), a partition landing on a wall (T) and two
+    partitions crossing (+) — and which of the three it is follows from whether
+    the meeting lands at the end of each wall or partway along it, so the shape
+    is read off the drawing rather than assumed.
+
+    Two walls on the same axis meet when they sit on the same line and their
+    ends come within the tolerance of each other. That is one wall continuing
+    past a doorway, and the graph needs it: without it a run of wall broken by
+    two doors arrives as three separate buildings.
+    """
+    first_run, second_run = _run(first), _run(second)
+    first_band, second_band = _band(first), _band(second)
+
+    if first["runs_along"] != second["runs_along"]:
+        horizontal, vertical = (
+            (first, second) if first["runs_along"] == "x" else (second, first)
+        )
+        h_run, h_band = _run(horizontal), _band(horizontal)
+        v_run, v_band = _run(vertical), _band(vertical)
+
+        along_x = _overlap_span(h_run, v_band, tolerance)
+        along_y = _overlap_span(v_run, h_band, tolerance)
+        if along_x is None or along_y is None:
+            return None
+
+        ends = int(_lands_at_an_end(h_run, along_x, tolerance)) + int(
+            _lands_at_an_end(v_run, along_y, tolerance)
+        )
+        shape = "L" if ends == 2 else ("T" if ends == 1 else "+")
+        point = [
+            round((along_x[0] + along_x[1]) / 2.0, 2),
+            round((along_y[0] + along_y[1]) / 2.0, 2),
+        ]
+        return shape, point
+
+    if _overlap(first_band, second_band) <= 0:
+        return None
+    gap = max(first_run[0], second_run[0]) - min(first_run[1], second_run[1])
+    if gap > tolerance:
+        return None
+    meeting = (min(first_run[1], second_run[1]) + max(first_run[0], second_run[0])) / 2.0
+    across = (max(first_band[0], second_band[0]) + min(first_band[1], second_band[1])) / 2.0
+    point = (
+        [round(meeting, 2), round(across, 2)]
+        if first["runs_along"] == "x"
+        else [round(across, 2), round(meeting, 2)]
+    )
+    return "collinear", point
+
+
+def _overlap_span(run, band, tolerance: float):
+    """The stretch of ``run`` that ``band`` reaches, allowing the tolerance."""
+    low = max(run[0] - tolerance, band[0])
+    high = min(run[1] + tolerance, band[1])
+    if high < low:
+        return None
+    return (low, high)
+
+
+def _lands_at_an_end(run, where, tolerance: float) -> bool:
+    """Whether a meeting lands at an end of a wall rather than partway along."""
+    return (where[1] - run[0]) <= tolerance or (run[1] - where[0]) <= tolerance
+
+
+def _junction_pairs(walls: list, tolerance: float) -> dict:
+    """Every pair of walls that meet, keyed by index, with shape and point."""
+    found: dict = {}
+    for index in range(len(walls)):
+        for other in range(index + 1, len(walls)):
+            meeting = _junction_between(walls[index], walls[other], tolerance)
+            if meeting:
+                found[(index, other)] = meeting
+    return found
+
+
+def _junction_tolerance(config: dict) -> float:
+    """How far apart two walls may be drawn and still be meeting, in points.
+
+    In points rather than millimetres because it is a tolerance on the paper:
+    an office draws a junction closed, and what is being allowed for is line
+    weight, tracing and the odd unclosed corner — none of which change with the
+    scale the sheet happens to be plotted at.
+    """
+    return float(
+        _setting(config.get("walls", {}), "junction_tolerance_points", default=10.0)
+    )
+
+
+def detect_junctions(walls: list, config: dict) -> int:
+    """Records, on every wall, which walls it meets and how.
+
+    Returns how many distinct junctions were found. Each wall gains
+    ``connects_to`` — the wall ids it meets — and ``junctions``, the same list
+    with the shape of each meeting and the point on the sheet it happens at,
+    so no junction is anonymous (Critical Rule 4).
+    """
+    for wall in walls:
+        wall["connects_to"] = []
+        wall["junctions"] = []
+    if not config.get("walls", {}).get("detect_junctions", True):
+        return 0
+
+    pairs = _junction_pairs(walls, _junction_tolerance(config))
+    for (index, other), (shape, point) in pairs.items():
+        first, second = walls[index], walls[other]
+        first["connects_to"].append(second["wall_id"])
+        second["connects_to"].append(first["wall_id"])
+        first["junctions"].append(
+            {"with_wall_id": second["wall_id"], "shape": shape, "at_pt": point}
+        )
+        second["junctions"].append(
+            {"with_wall_id": first["wall_id"], "shape": shape, "at_pt": point}
+        )
+    return len(pairs)
+
+
+def _drop_short_walls_that_meet_nothing(walls: list, config: dict) -> list:
+    """Short stretches joined to the building are walls; the rest are furniture.
+
+    **This is what lets the length floor come down.** A pier, a return, a nib
+    beside a doorway and the partition between a WC and a hall are all real
+    walls and all short, so a plain length floor either loses them — which is
+    what was happening — or lets in every bench top, wardrobe and step on the
+    sheet. A junction tells the two apart: a short stretch running into the
+    building is part of it, and a short stretch touching nothing is not.
+    """
+    connected_floor = float(
+        _setting(
+            config.get("walls", {}), "min_unconnected_wall_length_mm", default=0.0
+        )
+    )
+    if connected_floor <= 0 or len(walls) < 2:
+        return walls
+
+    meets: set = set()
+    for index, other in _junction_pairs(walls, _junction_tolerance(config)):
+        meets.add(index)
+        meets.add(other)
+
+    return [
+        wall
+        for index, wall in enumerate(walls)
+        if wall["length_mm"] >= connected_floor or index in meets
+    ]
+
+
+# --- Step 5: the wall graph ----------------------------------------------
+
+
+def wall_graph_for(walls: list, sheet_id: str, page_number) -> dict:
+    """The walls of one sheet as a graph: walls the nodes, junctions the edges.
+
+    Written out rather than acted on here. Closing this graph into rooms, and
+    telling a room from the space outside the building, is what it exists for;
+    what is built at this stage is the graph itself, with every edge carrying
+    the shape of the meeting and the point on the sheet it happens at.
+    """
+    edges = []
+    seen: set = set()
+    for wall in walls:
+        for junction in wall.get("junctions", []):
+            pair = tuple(sorted((wall["wall_id"], junction["with_wall_id"])))
+            if pair in seen:
+                continue
+            seen.add(pair)
+            edges.append(
+                {
+                    "from_wall_id": pair[0],
+                    "to_wall_id": pair[1],
+                    "shape": junction["shape"],
+                    "at_pt": junction["at_pt"],
+                }
+            )
+    edges.sort(key=lambda edge: (edge["from_wall_id"], edge["to_wall_id"]))
+
+    return {
+        "sheet_id": sheet_id,
+        "page_number": page_number,
+        "nodes": [
+            {
+                "wall_id": wall["wall_id"],
+                "wall_type": wall.get("wall_type", "unknown"),
+                "orientation": wall.get("orientation"),
+                "length_mm": wall["length_mm"],
+                "thickness_mm": wall["thickness_mm"],
+                "connects_to": wall.get("connects_to", []),
+            }
+            for wall in walls
+        ],
+        "edges": edges,
+        "junction_count": len(edges),
+        "shapes": {
+            shape: sum(1 for edge in edges if edge["shape"] == shape)
+            for shape in ("L", "T", "+", "collinear")
+        },
+    }
+
+
+# --- outside and inside --------------------------------------------------
+
+
+def classify_outer_inner(walls: list, config: dict) -> None:
+    """Marks every wall as an outer wall, an inner wall, or unknown.
+
+    **A wall with nothing but open paper on one side of it is an outer wall.**
+    That is the test, and it is geometry rather than a guess: a ray is cast out
+    from each face of the wall, and a face whose rays leave everything drawn
+    without crossing another wall is looking at the outside.
+
+    A rectangle round the building cannot do this. On an L-shaped or a U-shaped
+    plan — and most detached houses become one once the garage and the alfresco
+    are on — the walls in the notch are external and nowhere near the
+    rectangle's edge, while the walls that *are* on the edge include every
+    internal wall that happens to line up with it.
+
+    A wall that meets no other wall is left ``unknown`` rather than guessed: it
+    has not been established as part of this building at all, so saying which
+    side of it is outside would be inventing an answer (Critical Rule 5).
+    """
+    settings = config.get("walls", {})
+    for wall in walls:
+        wall["wall_type"] = "unknown"
+    if not settings.get("classify_outer_inner", True) or len(walls) < 2:
+        return
+
+    samples = max(int(_setting(settings, "outer_ray_samples", default=5)), 1)
+    clear_share = float(_setting(settings, "outer_ray_clear_share", default=0.6))
+
+    for wall in walls:
+        if not wall.get("connects_to"):
+            continue
+        wall["wall_type"] = (
+            "outer" if _has_an_open_side(wall, walls, samples, clear_share) else "inner"
+        )
+
+
+def _has_an_open_side(wall: dict, walls: list, samples: int, clear_share: float) -> bool:
+    """Whether rays cast from one face of this wall leave the drawing."""
+    run = _run(wall)
+    low, high = _band(wall)
+
+    points = [
+        run[0] + (run[1] - run[0]) * (position + 1) / (samples + 1)
+        for position in range(samples)
+    ]
+
+    for direction, face in ((-1, low), (1, high)):
+        clear = sum(
+            1 for along in points if _ray_is_clear(wall, walls, along, face, direction)
+        )
+        if clear / len(points) >= clear_share:
+            return True
+    return False
+
+
+def _ray_is_clear(wall: dict, walls: list, along: float, face: float, direction: int) -> bool:
+    """Whether a ray out from one face of this wall crosses no other wall."""
+    for other in walls:
+        if other is wall:
+            continue
+        other_run, other_band = _run(other), _band(other)
+        if other["runs_along"] == wall["runs_along"]:
+            # Parallel: it blocks the ray when it covers this point along the
+            # wall and lies beyond this face on the side the ray travels.
+            if not (other_run[0] <= along <= other_run[1]):
+                continue
+            across_low, across_high = other_band
+        else:
+            # At right angles: it blocks the ray when it crosses this point and
+            # its own run reaches past this face on the side of travel.
+            if not (other_band[0] <= along <= other_band[1]):
+                continue
+            across_low, across_high = other_run
+        if direction > 0 and across_high > face:
+            return False
+        if direction < 0 and across_low < face:
+            return False
+    return True
+
+
+# --- Step 7: what a wall record says -------------------------------------
+
+
+def describe_walls(
+    walls: list, mm_per_point: float, config: dict, sheet_id: str, page_number
+) -> None:
+    """Fills in the plain-words half of every wall record.
+
+    The geometry above is measured in PDF points, because that is what the
+    drawing is stored in. This turns each wall into the record every later
+    stage and every reader actually reads: the two faces it was measured from,
+    its centreline, the breaks in it in millimetres, which walls it meets,
+    which sheet and page it came from, and how far it should be trusted.
+    """
+    thresholds = config.get("confidence_thresholds", {})
+    high = float(thresholds.get("review", 0.75))
+    medium = float(thresholds.get("low", 0.5))
+
+    for wall in walls:
+        run_start, run_end = _run(wall)
+        first_face, second_face = sorted(wall["face_positions_pt"])
+        horizontal = wall["runs_along"] == "x"
+
+        def line(across_first, across_second=None):
+            across_second = across_first if across_second is None else across_second
+            if horizontal:
+                return {
+                    "x0": round(run_start, 2),
+                    "y0": round(across_first, 2),
+                    "x1": round(run_end, 2),
+                    "y1": round(across_second, 2),
+                }
+            return {
+                "x0": round(across_first, 2),
+                "y0": round(run_start, 2),
+                "x1": round(across_second, 2),
+                "y1": round(run_end, 2),
+            }
+
+        centre = (first_face + second_face) / 2.0
+        wall["orientation"] = "horizontal" if horizontal else "vertical"
+        wall["face1"] = line(first_face)
+        wall["face2"] = line(second_face)
+        wall["centerline"] = line(centre)
+        wall["gaps"] = [
+            {
+                "start": round(low, 2),
+                "end": round(high_pt, 2),
+                "gap_mm": round((high_pt - low) * mm_per_point, 1),
+            }
+            for low, high_pt in wall.get("gaps_pt", [])
+        ]
+        wall["junction_count"] = len(wall.get("connects_to", []))
+        wall["source_sheet"] = sheet_id
+        wall["source_page"] = page_number
+        confidence = wall.get("confidence", 0.0)
+        wall["confidence_label"] = (
+            "high" if confidence >= high else ("medium" if confidence >= medium else "low")
+        )
+        # A wall is put in front of a reviewer when anything about it is less
+        # than settled — not only a low score. A candidate longer than the
+        # sheet measures, one meeting no other wall, and one whose thickness is
+        # nothing the office builds are each a reason to look at the drawing.
+        wall["review_needed"] = bool(
+            wall["confidence_label"] != "high"
+            or wall.get("longer_than_sheet_measures")
+            or not wall.get("meets_another_wall", True)
+            or not wall.get("matches_nominal_thickness")
+        )
+
+
+def walls_as_records(walls: list) -> list:
+    """The walls of one sheet in the shape ``walls.json`` is written in.
+
+    A record that says what was found, where it was found and how far to trust
+    it — and nothing about how this module happens to store a face internally.
+    """
+    return [
+        {
+            "wall_id": wall["wall_id"],
+            "wall_type": wall.get("wall_type", "unknown"),
+            "orientation": wall.get("orientation"),
+            "face1": wall.get("face1"),
+            "face2": wall.get("face2"),
+            "centerline": wall.get("centerline"),
+            "gaps": wall.get("gaps", []),
+            "length_mm": wall["length_mm"],
+            "thickness_mm": wall["thickness_mm"],
+            "nominal_thickness_mm": wall.get("nominal_thickness_mm"),
+            "connects_to": wall.get("connects_to", []),
+            "junctions": wall.get("junctions", []),
+            "source_sheet": wall.get("source_sheet"),
+            "source_page": wall.get("source_page"),
+            "source_bbox": wall.get("bbox"),
+            "measured_from": wall.get("line_source"),
+            "longer_than_sheet_measures": wall.get("longer_than_sheet_measures", False),
+            "meets_another_wall": wall.get("meets_another_wall", True),
+            "confidence": wall.get("confidence_label", "low"),
+            "confidence_score": wall.get("confidence"),
+            "review_needed": wall.get("review_needed", True),
+            "review_status": wall.get("review_status", "needs_review"),
+        }
+        for wall in walls
+    ]

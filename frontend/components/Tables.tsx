@@ -8,6 +8,7 @@ import {
   pageTypeLabel,
   techniqueLabel,
   unitSourceLabel,
+  junctionShapeLabel,
   wallDirectionLabel,
   NOT_AVAILABLE,
   type DimensionItem,
@@ -670,11 +671,66 @@ export function WallsTable({ walls, showSheet }: { walls: WallRow[]; showSheet?:
       sortValue: (row) => row.thickness_mm,
     },
     {
+      // Which side of the building a wall is on is the first thing a reader
+      // wants from a wall list, and it is the difference between a wall that
+      // faces the weather and one that does not.
+      key: "type",
+      header: "Outside or inside",
+      width: "170px",
+      render: (row) => (
+        <span
+          className={
+            row.wall_type === "unknown" ? "text-xs text-slate-400" : "text-xs text-slate-700"
+          }
+          title={
+            row.wall_type === "outer"
+              ? "Nothing but open paper on one side of it, so it is on the outside of the building."
+              : row.wall_type === "inner"
+                ? "There is building on both sides of it, so it is a wall inside the plan."
+                : "This pair of lines meets no other wall, so it has not been established as part of this building and neither answer would be honest."
+          }
+        >
+          {row.wall_type === "outer"
+            ? "Outside wall"
+            : row.wall_type === "inner"
+              ? "Inside wall"
+              : "Not established"}
+        </span>
+      ),
+      sortValue: (row) => row.wall_type,
+    },
+    {
       key: "direction",
       header: "Runs",
       width: "150px",
       render: (row) => wallDirectionLabel(row.runs_along),
       sortValue: (row) => row.runs_along,
+    },
+    {
+      // A wall on its own is a pair of lines; a wall joined to other walls is
+      // part of a building. Showing what it meets is what lets a reviewer
+      // follow the plan round from one wall to the next.
+      key: "junctions",
+      header: "Meets",
+      width: "190px",
+      render: (row) =>
+        row.connects_to?.length ? (
+          <span
+            className="text-xs text-slate-600"
+            title={row.junctions
+              ?.map((j) => `${j.with_wall_id} (${junctionShapeLabel(j.shape)})`)
+              .join(", ")}
+          >
+            {row.connects_to.length} wall{row.connects_to.length === 1 ? "" : "s"}
+            <span className="ml-1 font-mono text-[11px] text-slate-400">
+              {row.connects_to.slice(0, 2).join(", ")}
+              {row.connects_to.length > 2 ? "…" : ""}
+            </span>
+          </span>
+        ) : (
+          <span className="text-xs text-slate-400">Meets no other wall</span>
+        ),
+      sortValue: (row) => row.connects_to?.length ?? 0,
     },
     {
       key: "source",
