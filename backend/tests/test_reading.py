@@ -1756,3 +1756,216 @@ def test_the_office_wall_settings_are_read_from_their_own_file():
     for name, value in override.items():
         if not name.startswith("_"):
             assert settings[name] == value
+
+
+# --- what is not a wall ----------------------------------------------------
+#
+# Every test below names a false wall that was appearing on the marked-up
+# sheet. They run at 10 mm per point, which is what ``_candidate`` is written
+# for; a text box here is a printed line of words, as `textmodel` reports one.
+
+
+def _room(x0, y0, x1, y1, name="ROOM"):
+    return {"room_id": name, "name": name, "bbox": [x0, y0, x1, y1]}
+
+
+def _chain(axis, x0, y0, x1, y1, members=4):
+    return {"chain_id": "CH", "axis": axis, "member_count": members,
+            "bbox": [x0, y0, x1, y1], "sum_mm": 10000.0}
+
+
+def test_a_printed_word_is_not_a_wall(config):
+    """**The largest source of false walls there was.** A sheet stored as a
+    picture has its lines recovered as continuous runs of dark pixels, and a
+    room name set in capitals is one — so the word became a line, its top and
+    bottom became two parallel lines a wall thickness apart, and every room
+    label on the plan was reported as a wall lying across its own room. On one
+    floor plan 32 of 157 walls were printed words."""
+    from pipeline.plan.walls import _drop_lettering
+
+    label = [200.0, 100.0, 260.0, 108.0]  # the word "KITCHEN"
+    segments = [(100.5, 200.0, 260.0), (107.5, 200.0, 260.0)]
+    assert _drop_lettering(segments, "x", [label], config["walls"]) == []
+
+
+def test_a_wall_running_under_a_room_label_is_kept(config):
+    """A plan prints its room names on top of its rooms, so every wall of that
+    room passes near one. The test is containment, not overlap: a real wall is
+    many times longer than the label and only a fraction of it is inside."""
+    from pipeline.plan.walls import _drop_lettering
+
+    label = [200.0, 100.0, 260.0, 108.0]
+    wall_face = [(104.0, 60.0, 700.0)]
+    assert _drop_lettering(wall_face, "x", [label], config["walls"]) == wall_face
+
+
+def test_a_short_line_inside_a_long_note_is_not_lettering(config):
+    """A slab setout plan prints its notes right across the slab. Treating any
+    line inside a printed line of text as lettering threw away 20 of that
+    sheet's 25 walls — the drawn line has to be about the size of the word."""
+    from pipeline.plan.walls import _drop_lettering
+
+    note = [100.0, 100.0, 500.0, 108.0]  # a sentence printed over the plan
+    short = [(104.0, 300.0, 322.0)]
+    assert _drop_lettering(short, "x", [note], config["walls"]) == short
+
+
+def test_a_square_is_not_a_wall(config):
+    """A dining chair is 440 mm across with its back drawn 76 mm behind it, and
+    that passed every thickness test there was. A wall is longer than it is
+    thick, at any scale and on any size of building."""
+    from pipeline.plan.walls import _pair_faces
+
+    # two faces 230 mm apart running together for 230 mm
+    faces = [(100.0, 500.0, 523.0, []), (123.0, 500.0, 523.0, [])]
+    settings = {**config["walls"], "min_wall_length_mm": 200, "min_length_to_thickness": 3.0}
+    assert _pair_faces(faces, 10.0, {"walls": settings}, []) == []
+
+
+# --- the plan is drawn between its dimension strings -----------------------
+
+
+def test_the_plan_is_bounded_by_the_strings_printed_outside_it(config):
+    """A dimension string is printed clear of the plan, and the witness line
+    running back from each figure lies on the same line as the wall face it
+    measures to — so the two merge into one candidate running out of the
+    building. On one floor plan that produced a 17.9 m wall on a house 11 m
+    deep."""
+    from pipeline.plan.walls import drawing_region
+
+    rooms = [_room(400.0, 300.0, 460.0, 310.0), _room(500.0, 400.0, 560.0, 410.0)]
+    chains = [_chain("x", 380.0, 200.0, 700.0, 210.0),   # printed above the plan
+              _chain("x", 380.0, 600.0, 700.0, 610.0)]   # and below it
+    x0, y0, x1, y1 = drawing_region(rooms, chains, 1000.0, 800.0)
+    assert (y0, y1) == (210.0, 600.0)
+
+
+def test_a_string_printed_over_the_plan_never_cuts_the_building_in_half(config):
+    """A plan may dimension itself internally. Using that string would put the
+    edge of the drawing through the middle of the building."""
+    from pipeline.plan.walls import drawing_region
+
+    rooms = [_room(400.0, 300.0, 460.0, 310.0), _room(500.0, 400.0, 560.0, 410.0)]
+    inside_string = [_chain("x", 380.0, 350.0, 700.0, 360.0)]
+    assert drawing_region(rooms, inside_string, 1000.0, 800.0) == (0.0, 0.0, 1000.0, 800.0)
+
+
+def test_where_there_is_nothing_to_work_from_the_whole_page_is_the_plan(config):
+    """A sheet with no room labels, or none of its strings outside them, must
+    lose nothing: the rule then removes nothing rather than guessing."""
+    from pipeline.plan.walls import drawing_region
+
+    assert drawing_region([], [], 1000.0, 800.0) == (0.0, 0.0, 1000.0, 800.0)
+
+
+def test_a_wall_running_out_of_the_plan_is_cut_back_not_thrown_away(config):
+    """Half of such a candidate is a real wall face. Rejecting it outright lost
+    4.2 m of genuine wall on each of five candidates on one floor plan."""
+    from pipeline.plan.walls import trim_walls_to_the_drawing
+
+    wall = _candidate("W1", "y", 300.0, 200.0, 600.0, 90.0)
+    trimmed, dropped = trim_walls_to_the_drawing(
+        [wall], (0.0, 0.0, 1000.0, 400.0), 10.0, config
+    )
+    assert (trimmed, dropped) == (1, 0)
+    assert wall["end_point_pt"][1] == 400.0
+    assert wall["length_mm"] == 2000.0
+
+
+def test_a_candidate_wholly_outside_the_plan_is_set_aside(config):
+    from pipeline.plan.walls import trim_walls_to_the_drawing
+
+    wall = _candidate("W1", "x", 900.0, 100.0, 600.0, 90.0)
+    trimmed, dropped = trim_walls_to_the_drawing(
+        [wall], (0.0, 0.0, 1000.0, 400.0), 10.0, config
+    )
+    assert (trimmed, dropped) == (0, 1)
+    assert wall["meets_another_wall"] is False
+
+
+# --- a wall does not end in the margin -------------------------------------
+
+
+def test_a_tail_running_past_the_building_into_the_margin_is_cut_off(config):
+    """A wall ends where it meets another wall, or at the outside of the
+    building. It never ends in the middle of empty paper outside the plan."""
+    from pipeline.plan.walls import detect_junctions, trim_free_tails
+
+    # The building's outside wall, and a line running from inside the plan,
+    # through it, and on out to where the dimension figures are printed.
+    across = _candidate("W1", "x", 600.0, 100.0, 800.0, 90.0)
+    witness = _candidate("W2", "y", 400.0, 250.0, 700.0, 90.0)
+    rooms = [_room(150.0, 150.0, 200.0, 160.0), _room(500.0, 250.0, 550.0, 260.0)]
+    detect_junctions([across, witness], config)
+
+    assert trim_free_tails([across, witness], rooms, 10.0, config) == 1
+    assert witness["end_point_pt"][1] == 600.0  # cut back to the wall it meets
+
+
+def test_a_wall_stopping_free_inside_the_building_is_left_alone(config):
+    """Inside the building a wall genuinely stops free — at a doorway, at the
+    end of a nib, at a return. That is the distinction that makes the rule
+    above safe, and without it every partition would be cut at its last
+    junction."""
+    from pipeline.plan.walls import detect_junctions, trim_free_tails
+
+    across = _candidate("W1", "x", 300.0, 100.0, 600.0, 90.0)
+    partition = _candidate("W2", "y", 400.0, 300.0, 500.0, 90.0)
+    rooms = [_room(150.0, 200.0, 200.0, 210.0), _room(500.0, 550.0, 550.0, 560.0)]
+    detect_junctions([across, partition], config)
+
+    assert trim_free_tails([across, partition], rooms, 10.0, config) == 0
+    assert partition["end_point_pt"][1] == 500.0
+
+
+# --- what a group of walls has to be ---------------------------------------
+
+
+def test_a_small_group_of_short_lines_is_not_part_of_the_building(config):
+    """Touching one other line is not being part of a building. The two lines
+    of a legend row touch each other, and so do the sides of a car drawn in a
+    garage — and every one of those was drawn on the marked-up sheet."""
+    from pipeline.plan.walls import mark_walls_that_stand_alone
+
+    walls = [
+        _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0),
+        _candidate("W2", "y", 100.0, 200.0, 700.0, 90.0),
+        _candidate("W3", "x", 700.0, 100.0, 600.0, 90.0),
+        _candidate("W4", "y", 600.0, 200.0, 700.0, 90.0),
+        # a legend row away on its own: two short lines meeting each other
+        _candidate("L1", "x", 2000.0, 2000.0, 2030.0, 90.0),
+        _candidate("L2", "y", 2000.0, 2000.0, 2030.0, 90.0),
+    ]
+    assert mark_walls_that_stand_alone(walls, 10.0, config) == 2
+    assert [w["wall_id"] for w in walls if not w["meets_another_wall"]] == ["L1", "L2"]
+
+
+def test_two_long_walls_meeting_each_other_are_a_building(config):
+    """On a sheet whose drawing is stored as a picture the tracing recovers the
+    walls in pieces rather than as one connected outline. Counting alone threw
+    away 32 m of real wall."""
+    from pipeline.plan.walls import mark_walls_that_stand_alone
+
+    walls = [
+        _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0),
+        _candidate("W2", "y", 100.0, 200.0, 700.0, 90.0),
+        _candidate("W3", "x", 700.0, 100.0, 600.0, 90.0),
+        _candidate("W4", "y", 600.0, 200.0, 700.0, 90.0),
+        _candidate("F1", "x", 2000.0, 2000.0, 2600.0, 90.0),
+        _candidate("F2", "y", 2000.0, 2000.0, 2600.0, 90.0),
+    ]
+    assert mark_walls_that_stand_alone(walls, 10.0, config) == 0
+
+
+def test_a_sheet_with_no_connected_building_is_not_judged_this_way(config):
+    """On a slab setout plan the walls are drawn sparsely and none reaches
+    another. The rule says "this group is too small to be part of the
+    building", which means nothing when no group on the sheet is a building —
+    and applying it anyway threw away all 19 of that sheet's walls."""
+    from pipeline.plan.walls import mark_walls_that_stand_alone
+
+    walls = [
+        _candidate(f"W{n}", "x", 200.0 * n, 100.0, 200.0, 90.0) for n in range(1, 6)
+    ]
+    assert mark_walls_that_stand_alone(walls, 10.0, config) == 0
+    assert all(wall["meets_another_wall"] for wall in walls)

@@ -342,6 +342,12 @@ class WallCandidate(BaseModel):
     # Where both faces stop and start again together: a door or a window.
     gaps: list[dict] = []
     meets_another_wall: bool = True
+    # Why a candidate was set aside, in a sentence for the person reading the
+    # plan. None when the wall is used.
+    not_used_because: Optional[str] = None
+    # Whether the candidate ran out of the part of the sheet the plan is drawn
+    # on and was cut back to it.
+    trimmed_to_the_drawing: bool = False
     confidence: float
     confidence_band: ConfidenceBand
     confidence_label: Optional[Literal["high", "medium", "low"]] = None

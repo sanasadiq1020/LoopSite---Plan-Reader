@@ -639,9 +639,20 @@ export function WallsTable({ walls, showSheet }: { walls: WallRow[]; showSheet?:
           {row.meets_another_wall === false && (
             <span
               className="mt-0.5 block text-xs text-amber-700"
-              title="A building's walls form one connected outline — they meet at corners and junctions. This pair of lines meets none of the others, so it is more likely an eave, a roof extent, a fence or a bench. It is listed here, but it is left off the marked-up sheet and out of the 3D model."
+              title={`${
+                row.not_used_because ??
+                "This pair of lines is not part of the building."
+              } It is listed here, but it is left off the marked-up sheet and out of the 3D model.`}
             >
-              meets no other wall — not used
+              not a wall of this building — not used
+            </span>
+          )}
+          {row.trimmed_to_the_drawing && (
+            <span
+              className="mt-0.5 block text-xs text-slate-500"
+              title="This pair of lines ran on past the building and out into the margin, where a dimension string's own witness lines are drawn. It has been cut back to the part of the sheet the plan is drawn on, and the length shown is the part that is inside."
+            >
+              cut back to the plan
             </span>
           )}
         </div>

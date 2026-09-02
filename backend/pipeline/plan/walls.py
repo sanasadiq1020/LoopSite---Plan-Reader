@@ -145,6 +145,7 @@ def _pair_faces(faces: list, mm_per_point: float, config: dict, standards: list)
     min_overlap_share = float(_setting(
         settings, "min_parallel_overlap_percent", default=0.0
     )) / 100.0
+    min_slenderness = float(_setting(settings, "min_length_to_thickness", default=0.0))
 
     usable = [f for f in faces if (f[2] - f[1]) * mm_per_point >= min_length_mm]
 
@@ -157,6 +158,15 @@ def _pair_faces(faces: list, mm_per_point: float, config: dict, standards: list)
                 continue
             overlap = (min(end, other_end) - max(start, other_start)) * mm_per_point
             if overlap < min_length_mm:
+                continue
+            # **A wall is longer than it is thick.** Two lines 230 mm apart that
+            # run together for 230 mm are a square, and a square is a column, a
+            # symbol, a hatch cell or a fragment - never a wall. This is a fact
+            # about walls and it holds at any scale, which is what makes it
+            # worth having: the length floor is a size and can be wrong for a
+            # small building, but nothing that is as wide as it is long is a
+            # wall of any building.
+            if overlap < thickness * min_slenderness:
                 continue
             shorter = min(end - start, other_end - other_start) * mm_per_point
             if shorter > 0 and (overlap / shorter) < min_overlap_share:
@@ -294,6 +304,8 @@ def detect_walls(
     page=None,
     sheet_span_mm=None,
     page_number=None,
+    text_boxes=None,
+    rooms=None,
 ) -> list:
     """Candidate walls for one sheet, in millimetres.
 
@@ -338,7 +350,21 @@ def detect_walls(
     # limit comes from the drawing rather than from a setting: on a 20.9 m
     # house the site boundary and the eave line were being paired into 23.9 m
     # "walls", which is the drawing's block edge, not the building.
-    limit = sheet_span_mm * float(settings.get("length_allowance", 1.05)) if sheet_span_mm else None
+    # **A wall running north cannot be longer than the building measures north.**
+    # The limit used to be the longest distance the sheet measures in any
+    # direction, which on a house 20 m wide and 11 m deep let a 17.9 m vertical
+    # "wall" through — and that was a dimension string's witness line, drawn
+    # from the building out to where the figures are printed, joined onto a
+    # real wall face lying on the same line. The sheet states its size in each
+    # direction separately, so the limit is taken separately too.
+    allowance = float(settings.get("length_allowance", 1.05))
+    limit_for = {
+        axis: (span * allowance if span else None)
+        for axis, span in (sheet_span_mm or {}).items()
+    } if isinstance(sheet_span_mm, dict) else {
+        "x": sheet_span_mm * allowance if sheet_span_mm else None,
+        "y": sheet_span_mm * allowance if sheet_span_mm else None,
+    }
 
     def build(source_rulings: dict) -> list:
         """Every step that decides *whether* something is a wall, in order.
@@ -360,6 +386,7 @@ def detect_walls(
             thickness_tolerance,
             join_gap,
             outside_excluded,
+            text_boxes,
         )
 
         # A candidate longer than anything this sheet measures is marked for
@@ -370,6 +397,7 @@ def detect_walls(
         # be hiding a finding rather than reporting it (Critical Rule 5).
         over_length = 0
         for wall in found:
+            limit = limit_for.get(wall["runs_along"])
             if limit and wall["length_mm"] > limit:
                 over_length += 1
                 wall["longer_than_sheet_measures"] = True
@@ -378,9 +406,14 @@ def detect_walls(
             else:
                 wall["longer_than_sheet_measures"] = False
         if over_length:
+            measured = ", ".join(
+                f"{axis}: {value / 1000:.1f} m"
+                for axis, value in sorted(limit_for.items())
+                if value
+            )
             logger.info(
-                f"{sheet_id}: {over_length} candidates run longer than the "
-                f"{limit / 1000:.1f} m this sheet measures and are marked for review"
+                f"{sheet_id}: {over_length} candidates run longer than this sheet "
+                f"measures in their own direction ({measured}) and are marked for review"
             )
 
         # An external wall is drawn with more lines than its own two faces, so
@@ -454,6 +487,16 @@ def detect_walls(
     # junction is a statement about two named walls. Outside and inside then
     # follow from the geometry, and the plain-words half of each record last.
     junctions = detect_junctions(walls, config)
+    # A wall ends at another wall or at the outside of the building, never in
+    # the margin. Cutting the tails changes where walls meet, so the junctions
+    # are read again over the walls as they now stand.
+    tails = trim_free_tails(walls, rooms or [], mm_per_point, config)
+    if tails:
+        logger.info(
+            f"{sheet_id}: {tails} candidate(s) ran on past the building into the "
+            "margin, and were cut back to the last wall they meet"
+        )
+        junctions = detect_junctions(walls, config)
     classify_outer_inner(walls, config)
     describe_walls(walls, mm_per_point, config, sheet_id, page_number)
 
@@ -476,6 +519,7 @@ def _walls_from(
     thickness_tolerance: float,
     join_gap: float,
     outside_excluded,
+    text_boxes=None,
 ) -> list:
     """Wall records from one set of drawn faces, whatever produced them."""
     settings = config.get("walls", {})
@@ -487,6 +531,9 @@ def _walls_from(
         # Dimension lines, leaders and hatch strokes are dropped before
         # anything is paired, so they cannot become half of a false wall.
         segments = _drop_lines_that_are_not_wall_faces(segments, widths, settings)
+        # Letters are not walls. This runs before pairing, so a word can never
+        # become one face of a wall and a line of text can never become two.
+        segments = _drop_lettering(segments, axis, text_boxes, settings)
         faces = _merge_faces(segments, position_tolerance, join_gap)
         faces = _drop_hatching(faces, mm_per_point, settings)
         faces = [f for f in faces if outside_excluded(f[0], f[1], f[2], axis)]
@@ -793,17 +840,87 @@ def mark_walls_that_stand_alone(walls: list, mm_per_point: float, config: dict) 
             wall["meets_another_wall"] = True
         return 0
 
+    # **Touching one other line is not being part of a building.** Two lines
+    # of a legend row touch each other; so do the two sides of a car drawn in
+    # a garage, the pair of witness lines beside a dimension figure, and a
+    # cupboard drawn against a bench. Every one of those passed a test that
+    # only asked "does anything touch this", and every one of them appeared on
+    # the marked-up sheet as a wall.
+    #
+    # A building is a *connected group*: its walls reach each other, corner to
+    # corner and partition to wall, all the way round. So the walls are grouped
+    # into everything that reaches everything else, and a group too small to
+    # enclose anything is not part of the building. A closed shape takes four
+    # walls, which is why that is the size — and it is a fact about shapes, not
+    # a threshold to tune. A genuinely separate structure on the same sheet, a
+    # detached garage or a shed, is its own group of four or more and survives.
+    smallest_group = int(settings.get("min_walls_in_a_group", 4))
+    groups = _connected_groups(walls, slack)
+
+    # **A sheet with no connected building cannot be judged this way.** On a
+    # slab setout plan the walls are drawn sparsely and none of them reaches
+    # another, so every group is of one or two — and applying the rule threw
+    # away all 19 of that sheet's walls. The rule says "this group is too small
+    # to be part of the building", which means nothing when no group on the
+    # sheet is a building. Where the biggest group is itself too small, nothing
+    # is judged and every candidate is reported as it was found.
+    if max((len(group) for group in groups), default=0) < smallest_group:
+        for wall in walls:
+            wall["meets_another_wall"] = True
+            wall["wall_group_size"] = None
+        return 0
+
+    # **A small group of long walls is still part of a building.** Counting
+    # alone said otherwise, and on a sheet whose drawing is stored as a picture
+    # - where the tracing recovers the walls in pieces rather than as one
+    # connected outline - it threw away 32 m of real wall. What a legend row,
+    # a car in a garage and a cupboard have in common is not only that they are
+    # in a small group: it is that everything in that group is *short*. A wall
+    # metres long, joined to another wall metres long, is a building however
+    # little else of it was traced.
+    long_enough_alone = float(settings.get("min_lone_wall_length_mm", 0.0))
+
     alone = 0
-    for wall in walls:
-        meets = any(
-            other is not wall and _touching(wall, other, slack) for other in walls
+    for group in groups:
+        longest = max(walls[index]["length_mm"] for index in group)
+        # A candidate meeting nothing at all is never part of the building,
+        # whatever its length — that is the eave, the roof extent, the fence
+        # and the block boundary, and every one of them is long. What the
+        # length allows for is a *pair* of long walls that meet each other on a
+        # sheet where the rest of the outline was not traced.
+        big_enough = len(group) >= smallest_group or (
+            len(group) >= 2 and longest >= long_enough_alone
         )
-        wall["meets_another_wall"] = meets
-        if not meets:
-            alone += 1
-            wall["confidence"] = round(min(wall["confidence"], 0.4), 3)
-            wall["confidence_band"] = "review"
+        for index in group:
+            wall = walls[index]
+            wall["meets_another_wall"] = big_enough
+            wall["wall_group_size"] = len(group)
+            if not big_enough:
+                alone += 1
+                wall["confidence"] = round(min(wall["confidence"], 0.4), 3)
+                wall["confidence_band"] = "review"
     return alone
+
+
+def _connected_groups(walls: list, slack: float) -> list:
+    """The walls grouped into everything that reaches everything else."""
+    parent = list(range(len(walls)))
+
+    def root(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    for i in range(len(walls)):
+        for j in range(i + 1, len(walls)):
+            if _touching(walls[i], walls[j], slack):
+                parent[root(i)] = root(j)
+
+    groups: dict = {}
+    for index in range(len(walls)):
+        groups.setdefault(root(index), []).append(index)
+    return list(groups.values())
 
 
 # --- Step 6, before pairing: lines that are not wall faces ----------------
@@ -1229,6 +1346,32 @@ def describe_walls(
         # than settled — not only a low score. A candidate longer than the
         # sheet measures, one meeting no other wall, and one whose thickness is
         # nothing the office builds are each a reason to look at the drawing.
+        # **Nothing is set aside without a reason beside it.** Three different
+        # rules can decide a pair of lines is not a wall of this building, and
+        # a reader looking at a table row that says "not used" is owed which
+        # one it was (Critical Rule 5).
+        wall["not_used_because"] = None
+        if not wall.get("meets_another_wall", True):
+            if wall.get("inside_the_drawing") is False:
+                wall["not_used_because"] = (
+                    "This is outside the part of the sheet the plan is drawn on, so it "
+                    "is a dimension line rather than a wall."
+                )
+            elif wall.get("wall_group_size") == 1:
+                wall["not_used_because"] = (
+                    "This pair of lines meets no other wall. A building's walls hold on "
+                    "to each other, so this is more likely an eave, a roof line, a fence "
+                    "or a boundary."
+                )
+            else:
+                wall["not_used_because"] = (
+                    "This is part of a small group of short lines that encloses nothing, "
+                    "so it is joinery, furniture or a panel on the sheet rather than part "
+                    "of the building."
+                )
+        elif wall.get("trimmed_to_the_drawing"):
+            wall["not_used_because"] = None
+
         wall["review_needed"] = bool(
             wall["confidence_label"] != "high"
             or wall.get("longer_than_sheet_measures")
@@ -1263,10 +1406,350 @@ def walls_as_records(walls: list) -> list:
             "measured_from": wall.get("line_source"),
             "longer_than_sheet_measures": wall.get("longer_than_sheet_measures", False),
             "meets_another_wall": wall.get("meets_another_wall", True),
+            "not_used_because": wall.get("not_used_because"),
+            "trimmed_to_the_drawing": bool(wall.get("trimmed_to_the_drawing")),
             "confidence": wall.get("confidence_label", "low"),
             "confidence_score": wall.get("confidence"),
             "review_needed": wall.get("review_needed", True),
             "review_status": wall.get("review_status", "needs_review"),
         }
         for wall in walls
+    ]
+
+
+# --- letters are not walls -------------------------------------------------
+
+
+def _drop_lettering(segments: list, axis: str, text_boxes, settings: dict) -> list:
+    """Drops the drawn lines that are actually printed words.
+
+    **The single largest source of false walls, and it is worst exactly where
+    the reading is weakest.** A sheet whose drawing is stored as a picture has
+    its lines recovered by looking for continuous runs of dark pixels — and a
+    word set in capitals is a continuous run of dark pixels. So a room name
+    became a horizontal line, the top and bottom of the same word became two
+    parallel lines a plausible wall thickness apart, and every room label on
+    the plan was reported as a wall lying across the middle of its own room.
+    On one floor plan 32 of 157 walls were printed words.
+
+    On a sheet stored as line work the same thing happens more quietly: an
+    abbreviations list, a materials schedule and a notes column are ruled into
+    rows, and those rules are parallel lines a few millimetres apart at drawing
+    scale — the same trap the title block was already excluded for.
+
+    **The test is containment, not overlap.** A line is lettering when it runs
+    from end to end inside the box of one printed line of text. A real wall
+    passing under a room label is many times longer than the label, so only a
+    fraction of it is inside and it is kept — which matters, because a plan
+    prints its room names on top of the rooms, and every wall of that room
+    passes near one.
+    """
+    if not text_boxes or not settings.get("drop_lettering", True):
+        return segments
+
+    padding = float(settings.get("lettering_padding_pt", 1.0))
+    inside_share = float(settings.get("lettering_inside_share", 0.8))
+    min_span_share = float(settings.get("lettering_min_share_of_the_word", 0.0))
+
+    # A line can only be lettering if it lies within a text box's own extent,
+    # so the boxes are indexed across the axis the lines run along and only the
+    # few that could contain a given line are ever looked at.
+    across = 3 if axis == "x" else 2  # the box side the line's position sits in
+    low_side = 1 if axis == "x" else 0
+    boxes_by_band: dict = {}
+    for box in text_boxes:
+        for band in range(
+            int((box[low_side] - padding) // _TEXT_BAND_PT),
+            int((box[across] + padding) // _TEXT_BAND_PT) + 1,
+        ):
+            boxes_by_band.setdefault(band, []).append(box)
+
+    kept = []
+    for position, start, end in segments:
+        span = end - start
+        if span <= 0:
+            kept.append((position, start, end))
+            continue
+        lettering = False
+        for box in boxes_by_band.get(int(position // _TEXT_BAND_PT), ()):
+            if not (box[low_side] - padding <= position <= box[across] + padding):
+                continue
+            if axis == "x":
+                low, high = box[0] - padding, box[2] + padding
+            else:
+                low, high = box[1] - padding, box[3] + padding
+            # **One box, not several added together.** A line covered by three
+            # text boxes end to end is a line with words printed along it, not
+            # a word. Adding their coverage up said otherwise.
+            #
+            # **And the line has to be about the size of the word.** A drawn
+            # line is the outline of the lettering only if it is as long as the
+            # lettering is; a short line sitting inside a long printed note is
+            # a piece of the drawing with a note printed over it. Without this,
+            # a slab setout plan that prints its notes right across the slab
+            # lost 20 of its 25 walls.
+            if (min(end, high) - max(start, low)) / span < inside_share:
+                continue
+            if span < (high - low) * min_span_share:
+                continue
+            lettering = True
+            break
+        if not lettering:
+            kept.append((position, start, end))
+    return kept
+
+
+# How wide a band the text boxes are bucketed into, in points. Only an index:
+# it changes how fast the search is, never which lines it finds.
+_TEXT_BAND_PT = 20.0
+
+
+# --- the building is drawn between its dimension strings -------------------
+
+
+def drawing_region(rooms: list, chains: list, page_width: float, page_height: float):
+    """The part of the sheet the building itself is drawn on.
+
+    **The false wall this exists to stop.** A dimension string is printed
+    outside the thing it measures, and from each figure a thin witness line
+    runs back to the feature it dimensions. Two witness lines belonging to a
+    90 mm dimension are two parallel lines 90 mm apart — which is a wall, by
+    every test applied up to here — and they are drawn on the same line as the
+    real wall face they measure to, so they merge with it into one face. That
+    is how a 20 m house came to report a 17.9 m wall running from the top
+    dimension string, down through the building, and out to the bottom one.
+
+    **The rule is a drafting convention, not a threshold.** A building is drawn
+    *between* its dimension strings; it is never drawn through them. So the
+    strings printed outside the plan bound the region the building occupies,
+    and nothing outside that region is a wall.
+
+    Two things keep it safe:
+
+    *   **Only strings printed outside the rooms are used.** A plan may print a
+        dimension string across the middle of itself, and using that one would
+        cut the building in half. A string overlapping the area where the room
+        names are printed is an internal string and is left out of this.
+    *   **Where there is nothing to work from it does not apply.** A sheet with
+        no room labels, or with no dimension string outside them, returns the
+        whole page — the rule then removes nothing rather than guessing at
+        where the building is.
+
+    Returns (x0, y0, x1, y1) in points.
+    """
+    whole_page = (0.0, 0.0, page_width, page_height)
+    boxes = [room["bbox"] for room in rooms if room.get("bbox")]
+    if len(boxes) < 2 or not chains:
+        return whole_page
+
+    inside = (
+        min(b[0] for b in boxes),
+        min(b[1] for b in boxes),
+        max(b[2] for b in boxes),
+        max(b[3] for b in boxes),
+    )
+
+    low_x, high_x = _clear_interval(
+        inside[0], inside[2], _bands(chains, "y", inside, 0, 2), page_width
+    )
+    low_y, high_y = _clear_interval(
+        inside[1], inside[3], _bands(chains, "x", inside, 1, 3), page_height
+    )
+    return (low_x, low_y, high_x, high_y)
+
+
+def _bands(chains: list, axis: str, inside, low_side: int, high_side: int) -> list:
+    """Where each outside dimension string sits, across its own direction.
+
+    ``axis`` is what the string measures; a string measuring across the sheet
+    is printed above or below the plan, so it bounds the building vertically.
+    """
+    bands = []
+    for chain in chains:
+        if chain.get("axis") != axis or chain.get("member_count", 0) < 2:
+            continue
+        box = chain.get("bbox")
+        if not box:
+            continue
+        # A string printed over the plan is an internal dimension. Using it
+        # would cut the building in half, so it is left out.
+        if box[high_side] > inside[low_side] and box[low_side] < inside[high_side]:
+            continue
+        bands.append((box[low_side], box[high_side]))
+    return bands
+
+
+def _clear_interval(inside_low: float, inside_high: float, bands: list, page_extent: float):
+    """The stretch either side of the rooms that no dimension string reaches."""
+    low, high = 0.0, page_extent
+    for band_low, band_high in bands:
+        if band_high <= inside_low:
+            low = max(low, band_high)
+        elif band_low >= inside_high:
+            high = min(high, band_low)
+    return low, high
+
+
+def trim_walls_to_the_drawing(walls: list, region, mm_per_point: float, config: dict):
+    """Cuts every candidate back to the part of the sheet the plan is drawn on.
+
+    **Cut, not thrown away, and that distinction is the whole point.** A
+    dimension string's witness line is drawn from the feature it measures out
+    to where the figure is printed, and it lies on the same line as the wall
+    face it measures to — so the two merge into one candidate that is half real
+    wall and half witness line. Rejecting it loses the real half: on one floor
+    plan five such candidates carried 4.2 m of genuine wall each. Keeping it
+    whole reports a wall running out of the building. Cutting it at the edge of
+    the drawing keeps exactly what was drawn as a wall.
+
+    A candidate lying wholly outside is left in the list with the reason, kept
+    off the marked-up sheet and out of the model (Critical Rule 5). One left
+    too short to be a wall after cutting goes the same way.
+
+    Returns (trimmed, dropped).
+    """
+    settings = config.get("walls", {})
+    if not region or not settings.get("require_walls_inside_the_plan", True):
+        return 0, 0
+
+    floor = float(_setting(settings, "min_wall_length_mm", default=200))
+    x0, y0, x1, y1 = region
+    trimmed = dropped = 0
+
+    for wall in walls:
+        horizontal = wall["runs_along"] == "x"
+        band_low, band_high = _band(wall)
+        run_low, run_high = _run(wall)
+        across_low, across_high = (y0, y1) if horizontal else (x0, x1)
+        along_low, along_high = (x0, x1) if horizontal else (y0, y1)
+
+        wall["inside_the_drawing"] = True
+        # Across its own thickness a wall is either on the plan or it is not;
+        # there is nothing to cut.
+        if band_high < across_low or band_low > across_high:
+            wall["inside_the_drawing"] = False
+            dropped += 1
+            _set_aside(wall)
+            continue
+
+        kept_low, kept_high = max(run_low, along_low), min(run_high, along_high)
+        if kept_high - kept_low <= 0:
+            wall["inside_the_drawing"] = False
+            dropped += 1
+            _set_aside(wall)
+            continue
+        if (kept_low, kept_high) == (run_low, run_high):
+            continue
+
+        length_mm = (kept_high - kept_low) * mm_per_point
+        if length_mm < floor:
+            wall["inside_the_drawing"] = False
+            dropped += 1
+            _set_aside(wall)
+            continue
+
+        _recut(wall, kept_low, kept_high, length_mm)
+        wall["trimmed_to_the_drawing"] = True
+        trimmed += 1
+
+    return trimmed, dropped
+
+
+def trim_free_tails(walls: list, rooms: list, mm_per_point: float, config: dict) -> int:
+    """Cuts off the stretch of a wall that runs past the building into nothing.
+
+    **What this is for.** A dimension string is printed clear of the plan, and
+    the witness line running back from each figure lies on the same line as the
+    wall face it measures to. The two merge into one candidate that is a real
+    wall for part of its length and a witness line for the rest — so it is
+    drawn crossing the building's outside wall and carrying on into the margin.
+    Cutting it to the edge of the drawing helps, but the edge of the drawing is
+    the dimension string itself, and the tail between the building and the
+    string survives.
+
+    **The rule is what a wall's end can be.** A wall ends where it meets
+    another wall, or at the outside of the building. It never ends in the
+    middle of empty paper outside the plan. So the stretch beyond a wall's
+    outermost junction is cut off — but *only where that stretch is outside the
+    area the rooms are printed in*, because inside the building a wall
+    genuinely can stop free: at a doorway, at the end of a nib, at a return.
+    That is the distinction that makes this safe.
+    """
+    settings = config.get("walls", {})
+    if not settings.get("trim_free_tails", True) or not rooms:
+        return 0
+
+    boxes = [room["bbox"] for room in rooms if room.get("bbox")]
+    if len(boxes) < 2:
+        return 0
+    inside = (
+        min(b[0] for b in boxes),
+        min(b[1] for b in boxes),
+        max(b[2] for b in boxes),
+        max(b[3] for b in boxes),
+    )
+    shortest_tail = float(settings.get("shortest_free_tail_mm", 600)) / mm_per_point
+    floor = float(_setting(settings, "min_wall_length_mm", default=200))
+
+    trimmed = 0
+    for wall in walls:
+        junctions = wall.get("junctions") or []
+        if not junctions:
+            continue
+        horizontal = wall["runs_along"] == "x"
+        along = 0 if horizontal else 1
+        low, high = _run(wall)
+        met = [junction["at_pt"][along] for junction in junctions]
+        first, last = min(met), max(met)
+
+        kept_low = first if (first - low) > shortest_tail and _outside(
+            wall, low, first, inside, horizontal
+        ) else low
+        kept_high = last if (high - last) > shortest_tail and _outside(
+            wall, last, high, inside, horizontal
+        ) else high
+        if (kept_low, kept_high) == (low, high):
+            continue
+
+        length_mm = (kept_high - kept_low) * mm_per_point
+        if length_mm < floor:
+            continue
+        _recut(wall, kept_low, kept_high, length_mm)
+        wall["trimmed_to_the_drawing"] = True
+        trimmed += 1
+    return trimmed
+
+
+def _outside(wall: dict, low: float, high: float, inside, horizontal: bool) -> bool:
+    """Whether this stretch of the wall lies clear of where the rooms print."""
+    if horizontal:
+        return high <= inside[0] or low >= inside[2]
+    return high <= inside[1] or low >= inside[3]
+
+
+def _set_aside(wall: dict) -> None:
+    """Keeps a candidate in the list but out of the drawing and the model."""
+    wall["meets_another_wall"] = False
+    wall["confidence"] = round(min(wall["confidence"], 0.35), 3)
+    wall["confidence_band"] = "review"
+
+
+def _recut(wall: dict, low: float, high: float, length_mm: float) -> None:
+    """Moves a wall's ends to ``low`` and ``high`` along its own axis."""
+    horizontal = wall["runs_along"] == "x"
+    centre = sum(wall["face_positions_pt"]) / 2.0
+    if horizontal:
+        wall["start_point_pt"] = [round(low, 2), round(centre, 2)]
+        wall["end_point_pt"] = [round(high, 2), round(centre, 2)]
+        wall["bbox"] = [round(low, 2), wall["bbox"][1], round(high, 2), wall["bbox"][3]]
+    else:
+        wall["start_point_pt"] = [round(centre, 2), round(low, 2)]
+        wall["end_point_pt"] = [round(centre, 2), round(high, 2)]
+        wall["bbox"] = [wall["bbox"][0], round(low, 2), wall["bbox"][2], round(high, 2)]
+    wall["length_mm"] = round(length_mm, 1)
+    # A break that was in the part cut away is not a door in what is left.
+    wall["gaps_pt"] = [
+        [max(start, low), min(end, high)]
+        for start, end in wall.get("gaps_pt", [])
+        if min(end, high) > max(start, low)
     ]

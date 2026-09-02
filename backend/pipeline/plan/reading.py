@@ -39,7 +39,13 @@ from pipeline.plan.layout import extract_rulings
 from pipeline.plan.openings import openings_from_wall_gaps, place_openings_on_walls
 from pipeline.plan.pagetype import detect_page_type
 from pipeline.plan.scale import calibrate_page
-from pipeline.plan.walls import detect_walls, wall_graph_for, walls_as_records
+from pipeline.plan.walls import (
+    detect_walls,
+    drawing_region,
+    trim_walls_to_the_drawing,
+    wall_graph_for,
+    walls_as_records,
+)
 from pipeline.plan.sheetindex import parse_sheet_index
 from pipeline.plan.textmodel import bbox_center
 from pipeline.plan.titleblock import (
@@ -672,12 +678,31 @@ def analyze_page(
         # looked for — otherwise the revisions table is reported as a wall.
         # The longest distance this sheet actually measures, from its own
         # printed figures — the only honest upper bound on a wall's length.
-        measured_spans = [
-            dimension["value_mm"]
-            for dimension in detected_dimensions
-            if dimension["kind"] == "linear" and dimension["value_mm"]
-        ] + [chain["sum_mm"] for chain in chains if chain.get("sum_mm")]
-        sheet_span_mm = max(measured_spans) if measured_spans else None
+        # Measured separately for each direction. A house is commonly twice as
+        # wide as it is deep, and one limit taken from the wider direction lets
+        # a "wall" through in the other that is half as long again as the
+        # building — which is how a dimension string's witness lines came to be
+        # reported as walls running down the whole sheet.
+        sheet_span_mm = {}
+        for axis in ("x", "y"):
+            spans = [
+                dimension["value_mm"]
+                for dimension in detected_dimensions
+                if dimension["kind"] == "linear"
+                and dimension["value_mm"]
+                and dimension["measures_axis"] == axis
+            ] + [
+                chain["sum_mm"]
+                for chain in chains
+                if chain.get("sum_mm") and chain.get("axis") == axis
+            ]
+            sheet_span_mm[axis] = max(spans) if spans else None
+        # A sheet that dimensions only one direction still bounds the other:
+        # nothing on it is longer than the longest thing it measures.
+        widest = max((v for v in sheet_span_mm.values() if v), default=None)
+        for axis in ("x", "y"):
+            if not sheet_span_mm[axis]:
+                sheet_span_mm[axis] = widest
 
         # A site plan draws the block, not the building's walls. Its parallel
         # lines are boundaries, setbacks, easements, fences and driveways, and
@@ -712,6 +737,14 @@ def analyze_page(
                 page=page,
                 sheet_span_mm=sheet_span_mm,
                 page_number=page_number,
+                # Every word printed on the sheet. A word set in capitals is a
+                # continuous run of dark pixels, which is exactly what a wall
+                # face looks like to a page read as a picture.
+                text_boxes=[line["bbox"] for line in lines],
+                # Where the room names are printed is the inside of the
+                # building, which is what tells a wall stopping free at a
+                # doorway from one running out into the margin.
+                rooms=detected_rooms,
             )
             if trace_walls_here
             else []
@@ -735,6 +768,27 @@ def analyze_page(
                 detected_walls = []
         if not page_type.get("draws_a_plan"):
             detected_rooms = []
+
+        # A building is drawn between its dimension strings, never through
+        # them. The strings printed outside the rooms bound the part of the
+        # sheet the plan is on, and a pair of parallel lines outside that is a
+        # dimension string's own witness lines, not a wall.
+        region = drawing_region(
+            detected_rooms, chains, page_width, page_height
+        )
+        mm_per_point = calibration.get("measured_mm_per_point") or calibration.get(
+            "printed_mm_per_point"
+        )
+        if detected_walls and mm_per_point:
+            trimmed, dropped = trim_walls_to_the_drawing(
+                detected_walls, region, mm_per_point, config
+            )
+            if trimmed or dropped:
+                logger.info(
+                    f"{sheet_id}: {trimmed} candidate(s) ran out of the part of the "
+                    f"sheet the plan is drawn on and were cut back to it; {dropped} "
+                    "lay outside it altogether"
+                )
 
         detected_openings = place_openings_on_walls(
             opening_marks, detected_walls, calibration, config, sheet_id
@@ -1173,6 +1227,7 @@ def write_plan_reading_csvs(run_dir: Path, run_id: str, pages: list) -> None:
                 "thickness_mm", "nominal_thickness_mm", "matches_nominal_thickness",
                 "connects_to", "junction_count", "openings_on_this_wall",
                 "breaks_in_the_wall_mm", "measured_from", "longer_than_sheet_measures",
+                "not_used_because", "cut_back_to_the_plan",
                 "confidence", "confidence_band", "review_needed", "bbox",
             ]
         )
@@ -1190,6 +1245,8 @@ def write_plan_reading_csvs(run_dir: Path, run_id: str, pages: list) -> None:
                         "; ".join(str(gap["gap_mm"]) for gap in wall.get("gaps", [])),
                         wall["line_source"],
                         wall.get("longer_than_sheet_measures", False),
+                        wall.get("not_used_because") or "",
+                        bool(wall.get("trimmed_to_the_drawing")),
                         wall["confidence"], wall["confidence_band"],
                         wall.get("review_needed", True),
                         json.dumps(wall["bbox"]),

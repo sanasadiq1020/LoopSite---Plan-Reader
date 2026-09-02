@@ -329,6 +329,11 @@ export interface WallCandidate {
   line_source: string;
   longer_than_sheet_measures: boolean;
   meets_another_wall: boolean;
+  /** Why a candidate was set aside, in a sentence. Null when it is used. */
+  not_used_because: string | null;
+  /** Whether it ran out of the part of the sheet the plan is drawn on and was
+   *  cut back to it. */
+  trimmed_to_the_drawing: boolean;
   confidence: number;
   confidence_band: ConfidenceBand;
   confidence_label: "high" | "medium" | "low" | null;
