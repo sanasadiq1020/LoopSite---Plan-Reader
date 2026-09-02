@@ -169,15 +169,21 @@ def _collect_marks(page_reading: dict) -> list:
         marks.append(("wall", wall["bbox"], label, confirmed, "line"))
 
     for opening in page_reading.get("openings", []):
-        label = opening["mark"]
+        # **Every opening is named on the sheet.** Where the drawing prints a
+        # mark that is the name; where it prints none — and a great many plans
+        # print none — a short one is made from what the opening is, so a row
+        # of the doors-and-windows table can always be found on the drawing.
+        name = opening.get("display_mark") or opening.get("mark") or ""
+        label = name
         if opening.get("width_mm") and opening.get("height_mm"):
-            label = f"{label} {opening['width_mm']:.0f}×{opening['height_mm']:.0f}"
+            label = f"{name} {opening['width_mm']:.0f}×{opening['height_mm']:.0f}"
         elif opening.get("width_mm"):
             # An opening the drawing does not label still has a measured width,
             # and that is what identifies it on the sheet.
-            label = f"{label} {opening['width_mm']:.0f} wide".strip()
-        confirmed = bool(opening.get("in_schedule") and opening.get("wall_id"))
-        marks.append(("opening", opening["source_bbox"], label, confirmed))
+            label = f"{name} {opening['width_mm']:.0f} wide".strip()
+        confirmed = opening.get("confidence_band") == "high"
+        if opening.get("mark"):
+            marks.append(("opening", opening["source_bbox"], label, confirmed))
 
         # **And where the opening itself was put.** The box above is where the
         # mark is printed, which is beside the door rather than on it. A
@@ -186,7 +192,12 @@ def _collect_marks(page_reading: dict) -> list:
         # — the same evidence the 3D model is cut from.
         placed = _opening_on_its_wall(opening, walls_by_id)
         if placed:
-            marks.append(("opening", placed, "", confirmed))
+            # The name goes on the opening itself. The mark's own box is beside
+            # the door, often inside the room on a leader, so a label there
+            # says where the *label* is rather than where the opening is.
+            marks.append(("opening", placed, label if not opening.get("mark") else name, confirmed))
+        elif not opening.get("mark"):
+            marks.append(("opening", opening["source_bbox"], label, confirmed))
 
     for table in page_reading.get("schedules", []):
         for row in table["rows"]:

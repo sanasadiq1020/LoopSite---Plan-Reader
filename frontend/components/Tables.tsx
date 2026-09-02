@@ -9,6 +9,7 @@ import {
   techniqueLabel,
   unitSourceLabel,
   junctionShapeLabel,
+  openingTypeLabel,
   wallDirectionLabel,
   NOT_AVAILABLE,
   type DimensionItem,
@@ -818,24 +819,35 @@ export function OpeningsTable({
         row.mark ? (
           <span className="font-mono text-xs font-bold">{row.mark}</span>
         ) : (
-          // The drawing prints no code for this one, so it is referred to by
-          // the reference drawn beside it on the marked-up sheet.
+          // The drawing prints no code for this one, so it carries a short
+          // reference made here — and the same one is drawn on the opening
+          // itself on the marked-up sheet, so the two can be put side by side.
           <span
             className="font-mono text-xs text-slate-500"
-            title="This drawing prints no code for its openings. This is the reference shown beside it on the marked-up sheet."
+            title="This drawing prints no code for this opening. This reference was made here, and it is drawn on the opening itself on the marked-up sheet."
           >
-            {row.opening_id}
+            {row.display_mark ?? row.opening_id}
           </span>
         ),
-      sortValue: (row) => row.mark || row.opening_id,
+      sortValue: (row) => row.mark || row.display_mark || row.opening_id,
     },
     {
       key: "type",
       header: "Type",
-      width: "90px",
+      width: "150px",
       render: (row) =>
         row.element_type ? (
-          <span className="capitalize">{row.element_type}</span>
+          <div>
+            <span>{openingTypeLabel(row.element_type)}</span>
+            {row.evidence?.length > 1 && (
+              <span
+                className="mt-0.5 block text-[11px] text-slate-500"
+                title={row.how_it_was_decided ?? undefined}
+              >
+                {row.evidence.length} readings agree
+              </span>
+            )}
+          </div>
         ) : (
           <span className="text-slate-400">{NOT_AVAILABLE}</span>
         ),

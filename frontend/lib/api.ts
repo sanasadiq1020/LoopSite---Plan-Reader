@@ -355,7 +355,14 @@ export interface PositionOnWall {
 export interface Opening {
   opening_id: string;
   mark: string;
+  /** What the opening is called on the marked-up sheet: the printed mark, or a
+   *  short made-up one where the drawing prints none. */
+  display_mark: string | null;
+  display_mark_is_made_up: boolean;
   element_type: string | null;
+  /** Every way the drawing said this opening is here. */
+  evidence: string[];
+  how_it_was_decided: string | null;
   wall_id: string | null;
   wall_note: string | null;
   position_on_wall: PositionOnWall | null;
@@ -1071,7 +1078,29 @@ export function wallLineSourceLabel(source: string): string {
 /** How an opening came to be known, in plain words. */
 export function openingFoundByLabel(source: string): string {
   if (source === "gap_in_the_wall") return "Measured from the break in the wall";
+  if (source === "window_symbol") return "The window drawn inside the wall";
+  if (source === "door_swing") return "The door's swing drawn on the plan";
   return "Labelled on the drawing";
+}
+
+/** What kind of opening it is, in the words a plan reader would use. */
+export function openingTypeLabel(kind: string | null): string {
+  switch (kind) {
+    case "sliding_window":
+      return "Sliding window or door";
+    case "fixed_window":
+      return "Fixed window";
+    case "highlight_window":
+      return "Highlight window";
+    case "unknown_opening":
+      return "Opening — kind not stated";
+    case "door":
+      return "Door";
+    case "window":
+      return "Window";
+    default:
+      return kind ?? "";
+  }
 }
 
 /** How an opening's place along its wall was arrived at, in a reader's words. */

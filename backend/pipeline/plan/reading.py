@@ -36,12 +36,19 @@ from pipeline.plan import dimensions as dimensions_module
 from pipeline.plan import rooms as rooms_module
 from pipeline.plan import schedules as schedules_module
 from pipeline.plan.layout import extract_rulings
-from pipeline.plan.openings import openings_from_wall_gaps, place_openings_on_walls
+from pipeline.plan.openings import (
+    openings_from_symbols,
+    openings_from_wall_gaps,
+    place_openings_on_walls,
+)
 from pipeline.plan.pagetype import detect_page_type
 from pipeline.plan.scale import calibrate_page
 from pipeline.plan.walls import (
+    building_outline,
     detect_walls,
     drawing_region,
+    mark_walls_in_dead_ground,
+    text_bands_to_avoid,
     trim_walls_to_the_drawing,
     wall_graph_for,
     walls_as_records,
@@ -790,18 +797,47 @@ def analyze_page(
                     "lay outside it altogether"
                 )
 
+        # **A drawing says an opening is here in up to four ways, and all four
+        # are read.** The mark printed beside it carries a schedule row and so
+        # a real size and type; the window drawn inside the wall says what kind
+        # of window it is and how wide; a door's swing says it is a door and
+        # how wide; and a break in the wall says where the wall stops. Reading
+        # only the marks meant a plan set that labels nothing returned nothing,
+        # and reading only the breaks meant a hole of unknown kind where the
+        # drawing had drawn a sliding window plainly.
+        # **Three more places a pair of parallel lines is not a wall.** Outside
+        # the outline the building's own connected walls make; where the sheet
+        # prints a note saying the line is a roof, an eave or a boundary; and
+        # inside a panel printed on the sheet, whose ruled rows are parallel
+        # lines a few millimetres apart at drawing scale.
+        if detected_walls:
+            panels = [
+                legend["bbox"] for legend in detected_legends if legend.get("bbox")
+            ] + [
+                table["bbox"] for table in detected_schedules if table.get("bbox")
+            ]
+            dead = mark_walls_in_dead_ground(
+                detected_walls,
+                building_outline(detected_walls, config),
+                text_bands_to_avoid(lines, config),
+                panels,
+            )
+            if dead:
+                logger.info(
+                    f"{sheet_id}: {dead} candidate(s) are outside the building, on a "
+                    "line the sheet names as a roof or a boundary, or inside a panel "
+                    "printed on the drawing"
+                )
+
         detected_openings = place_openings_on_walls(
             opening_marks, detected_walls, calibration, config, sheet_id
         )
-        # A plan that prints no marks still draws its doors and windows. Where
-        # no mark was found on this sheet, the openings are read from the
-        # breaks in the walls themselves. Marks are always preferred when they
-        # exist, because a mark carries a schedule row and therefore a real
-        # size and type; a break carries only what can be measured.
-        if not detected_openings:
-            detected_openings = openings_from_wall_gaps(
-                detected_walls, calibration, config, sheet_id, lines
-            )
+        detected_openings += openings_from_symbols(
+            detected_walls, rulings, page, calibration, config, sheet_id
+        )
+        detected_openings += openings_from_wall_gaps(
+            detected_walls, calibration, config, sheet_id, lines
+        )
         fields["discipline"] = resolve_discipline(
             fields, page_type["value"], lines, region, config
         )
@@ -832,6 +868,10 @@ def analyze_page(
             "overlay_url": None,
             "error": None,
         }
+        # The several readings of one opening are joined together later, once
+        # every sheet has been read: a mark is only placed on its wall after
+        # the schedule that gives it a width has been found, and the schedule
+        # is printed on a different sheet.
         page["unresolved_items"] = _collect_unresolved(page, text_evidence)
         return page
     except Exception as e:
@@ -1265,7 +1305,9 @@ def write_plan_reading_csvs(run_dir: Path, run_id: str, pages: list) -> None:
         writer = csv.writer(handle)
         writer.writerow(
             [
-                "run_id", "page_number", "sheet_id", "opening_id", "mark", "element_type",
+                "run_id", "page_number", "sheet_id", "opening_id", "mark",
+                "shown_on_the_sheet_as", "name_was_made_up", "element_type",
+                "how_the_drawing_said_so", "how_it_was_decided",
                 "wall_id", "width_mm", "height_mm", "sill_height_mm", "head_height_mm",
                 "location_on_plan", "schedule_sheet", "schedule_row_id", "in_schedule",
                 "found_by", "position_along_the_wall_mm", "position_measured_from",
@@ -1277,7 +1319,13 @@ def write_plan_reading_csvs(run_dir: Path, run_id: str, pages: list) -> None:
                 writer.writerow(
                     [
                         run_id, page["page_number"], page["sheet_id"], opening["opening_id"],
-                        opening["mark"], opening["element_type"] or "", opening["wall_id"] or "",
+                        opening["mark"],
+                        opening.get("display_mark") or opening["mark"],
+                        bool(opening.get("display_mark_is_made_up")),
+                        opening["element_type"] or "",
+                        "; ".join(opening.get("evidence") or []),
+                        opening.get("how_it_was_decided") or "",
+                        opening["wall_id"] or "",
                         opening["width_mm"] if opening["width_mm"] is not None else "",
                         opening["height_mm"] if opening["height_mm"] is not None else "",
                         opening["sill_height_mm"] if opening["sill_height_mm"] is not None else "",

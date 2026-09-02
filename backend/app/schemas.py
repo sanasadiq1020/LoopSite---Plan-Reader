@@ -27,7 +27,7 @@ OcrStatus = Literal[
     "not_attempted_budget_spent",
 ]
 ConfidenceBand = Literal["high", "review", "low"]
-ReviewStatus = Literal["confirmed", "needs_review", "unresolved"]
+ReviewStatus = Literal["confirmed", "needs_review", "unresolved", "auto_confirmed"]
 PageType = Literal[
     "cover", "notes", "schedule", "detail", "section", "elevation",
     "site_plan", "roof_plan", "floor_plan", "unknown",
@@ -362,6 +362,11 @@ class Opening(BaseModel):
 
     opening_id: str
     mark: str
+    # What the opening is called on the marked-up sheet. The printed mark where
+    # the drawing prints one; a short made-up one where it does not, so a table
+    # row can always be found on the drawing.
+    display_mark: Optional[str] = None
+    display_mark_is_made_up: bool = False
     element_type: Optional[str] = None
     wall_id: Optional[str] = None
     wall_note: Optional[str] = None
@@ -380,6 +385,11 @@ class Opening(BaseModel):
     # "mark_on_the_drawing" or "gap_in_the_wall" — a reader must be able to see
     # which openings were labelled and which were measured off the geometry.
     found_by: str = "mark_on_the_drawing"
+    # Every way the drawing said this opening is here: the window drawn inside
+    # the wall, the door's swing, the mark printed beside it, the break in the
+    # wall. Two or more agreeing is what makes an opening confirmed.
+    evidence: list[str] = []
+    how_it_was_decided: Optional[str] = None
     source_sheet: str
     source_bbox: list[float]
     confidence: float

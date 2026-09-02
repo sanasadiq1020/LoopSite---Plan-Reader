@@ -35,6 +35,14 @@ is labelling.
 """
 
 from app.logging_setup import get_logger
+from pipeline.plan.walls import break_is_a_junction
+from pipeline.plan.symbols import (
+    door_swings,
+    marks_inside,
+    small_marks,
+    swing_against_wall,
+    window_symbols_in,
+)
 from pipeline.plan.textmodel import bbox_center
 
 logger = get_logger()
@@ -642,11 +650,30 @@ def openings_from_wall_gaps(
     if not mm_per_point or not calibration.get("usable_for_measurement"):
         return []
 
+    # A break where another wall runs into this one is a junction, not a door.
+    # Both stop the wall's two faces at the same place and they mean opposite
+    # things: one is a hole to be cut and counted, the other is solid wall with
+    # a wall attached to it.
+    standards = config.get("walls", {}).get("nominal_thickness_mm", []) or [300]
+    junction_slack = float(
+        config.get("walls", {}).get("junction_tolerance_points", 10.0)
+    )
+    junction_share = float(
+        config.get("walls", {}).get("junction_share_of_a_break", 0.6)
+    )
+
     found = []
     for wall in walls:
+        run_low, run_high = _span_on_wall(wall)
         for opening_break in _breaks_on(wall, mm_per_point):
             width_mm = opening_break["width_mm"]
             if not (smallest <= width_mm <= largest):
+                continue
+            break_low = run_low + opening_break["start_fraction"] * (run_high - run_low)
+            break_high = run_low + opening_break["end_fraction"] * (run_high - run_low)
+            if break_is_a_junction(
+                wall, break_low, break_high, walls, junction_slack, junction_share
+            ):
                 continue
             half = wall["thickness_mm"] / mm_per_point / 2.0
             start, end = wall["start_point_pt"], wall["end_point_pt"]
@@ -717,3 +744,455 @@ def openings_from_wall_gaps(
         "the words printed beside them"
     )
     return found
+
+
+# --- four ways a drawing says an opening is here ---------------------------
+#
+# A plan states its openings in up to four separate ways, and a good plan set
+# states each one twice or more. What follows reads all four, puts them
+# together, and decides — nothing here is handed to a person to sort out:
+#
+#   1. **The symbol inside the wall.** The glass, the frame and the sashes,
+#      drawn between the wall's two faces. Says the kind and the width.
+#   2. **The swing of a hinged door.** A quarter circle whose radius is the
+#      leaf. Says it is a door, and how wide.
+#   3. **The mark printed beside it** — D1, W12, SD04 — which carries a
+#      schedule row and therefore a real size and type.
+#   4. **The break in the wall**, where both faces stop and start again.
+#      Says where and how wide, and nothing else.
+#
+# Two or more of those agreeing is as good as this reading gets; one is
+# ordinary and usable; a break on its own is a hole of unknown kind. All three
+# outcomes are recorded and used. None of them stops to ask.
+
+
+def _span_on_wall(wall: dict):
+    start, end = wall["start_point_pt"], wall["end_point_pt"]
+    if wall["runs_along"] == "x":
+        return min(start[0], end[0]), max(start[0], end[0])
+    return min(start[1], end[1]), max(start[1], end[1])
+
+
+def _fractions(wall: dict, low: float, high: float):
+    run_low, run_high = _span_on_wall(wall)
+    length = run_high - run_low
+    if length <= 0:
+        return 0.0, 1.0
+    return (
+        max(0.0, (low - run_low) / length),
+        min(1.0, (high - run_low) / length),
+    )
+
+
+def _box_across(wall: dict, low: float, high: float, mm_per_point: float):
+    """The opening's own box on the sheet: its width, the wall's thickness."""
+    half = wall["thickness_mm"] / mm_per_point / 2.0
+    start = wall["start_point_pt"]
+    if wall["runs_along"] == "x":
+        return [low, start[1] - half, high, start[1] + half]
+    return [start[0] - half, low, start[0] + half, high]
+
+
+def openings_from_symbols(
+    walls: list,
+    rulings: dict,
+    page,
+    calibration: dict,
+    config: dict,
+    sheet_id: str,
+) -> list:
+    """Openings read from what the drawing draws inside and against its walls.
+
+    This is what makes a plan set that labels nothing still readable: the
+    symbols are there whether or not a mark is printed, and they carry the kind
+    of opening as well as its width.
+    """
+    settings = config.get("walls", {})
+    mm_per_point = _millimetres_per_point(calibration)
+    if not mm_per_point or not calibration.get("usable_for_measurement"):
+        return []
+
+    marks = small_marks(page, mm_per_point, settings)
+    swings = door_swings(page, mm_per_point, settings)
+
+    # **An opening has wall on both sides of it.** A run of lines reaching the
+    # end of the wall is not a window in that wall: it is the wall's own lining
+    # or hatch carrying on into the next one, and without this rule a hatched
+    # wall was reported as a 5.3 m "fixed window" covering nine tenths of it.
+    # The same figure the break reader already uses, because it is the same
+    # fact about a wall.
+    flank = float(
+        config.get("openings", {}).get("opening_min_wall_each_side_mm", 300)
+    ) / mm_per_point
+
+    found = []
+    for wall in walls:
+        run_low, run_high = _span_on_wall(wall)
+        for symbol in window_symbols_in(wall, rulings, mm_per_point, settings):
+            if symbol["start_pt"] - run_low < flank or run_high - symbol["end_pt"] < flank:
+                continue
+            box = _box_across(wall, symbol["start_pt"], symbol["end_pt"], mm_per_point)
+            arrows = marks_inside(marks, box)
+            kind = symbol["kind"]
+            confidence = symbol["confidence"]
+            # An arrow inside the opening is the drawing saying the sash runs.
+            # It cannot make a fixed pane slide, but it settles the case where
+            # the line count is on the edge.
+            if arrows >= int(settings.get("arrows_for_a_sliding_sash", 2)):
+                kind = "sliding_window"
+                confidence = min(confidence + 0.05, 0.95)
+            found.append(
+                _symbol_record(
+                    wall, symbol["start_pt"], symbol["end_pt"], mm_per_point, sheet_id,
+                    kind=kind,
+                    width_mm=symbol["width_mm"],
+                    confidence=confidence,
+                    found_by="window_symbol",
+                    note=(
+                        f"{symbol['lines_inside_the_wall']} lines are drawn inside this "
+                        "wall over this stretch, which is how a window is drawn."
+                    ),
+                )
+            )
+
+        for swing in swings:
+            against = swing_against_wall(swing, wall, mm_per_point, settings)
+            if not against:
+                continue
+            # A swing that covers the whole of a wall has not been matched to
+            # the wall the door is in — it has been matched to a fragment
+            # shorter than the door itself, which cannot hold it.
+            covered = (against[1] - against[0]) / max(run_high - run_low, 1e-6)
+            if covered > float(settings.get("max_swing_share_of_a_wall", 0.9)):
+                continue
+            found.append(
+                _symbol_record(
+                    wall, against[0], against[1], mm_per_point, sheet_id,
+                    kind="door",
+                    width_mm=swing["width_mm"],
+                    confidence=0.85,
+                    found_by="door_swing",
+                    note=(
+                        "The door's swing is drawn here, and the arc's radius is the "
+                        f"leaf: {swing['width_mm']:.0f} mm."
+                    ),
+                )
+            )
+    return found
+
+
+def _symbol_record(
+    wall, low, high, mm_per_point, sheet_id, *, kind, width_mm, confidence, found_by, note
+):
+    start_fraction, end_fraction = _fractions(wall, low, high)
+    return {
+        "opening_id": "",
+        "mark": "",
+        "element_type": kind,
+        "element_type_source": found_by,
+        "described_as": None,
+        "wall_id": wall["wall_id"],
+        "wall_note": note,
+        "position_on_wall": _position(wall, start_fraction, end_fraction, found_by),
+        "width_mm": float(round(width_mm)),
+        "height_mm": None,
+        "sill_height_mm": None,
+        "head_height_mm": None,
+        "location_on_plan": None,
+        "schedule_sheet": None,
+        "schedule_row_id": None,
+        "in_schedule": False,
+        "found_by": found_by,
+        "source_sheet": sheet_id,
+        "source_bbox": [
+            round(v, 2) for v in _box_across(wall, low, high, mm_per_point)
+        ],
+        "confidence": confidence,
+        "confidence_band": "high" if confidence >= 0.75 else "review",
+        "review_status": "auto_confirmed",
+        "evidence": [found_by],
+    }
+
+
+# --- putting the four together ---------------------------------------------
+
+
+def _overlap_on_the_wall(first: dict, second: dict) -> float:
+    """How much of the wall these two openings both claim, as a fraction."""
+    one, other = first.get("position_on_wall"), second.get("position_on_wall")
+    if not one or not other:
+        return 0.0
+    low = max(one["start_fraction"], other["start_fraction"])
+    high = min(one["end_fraction"], other["end_fraction"])
+    if high <= low:
+        return 0.0
+    shortest = min(
+        one["end_fraction"] - one["start_fraction"],
+        other["end_fraction"] - other["start_fraction"],
+    )
+    return (high - low) / shortest if shortest > 0 else 0.0
+
+
+# What each source is worth when two of them disagree about what an opening is.
+# **A drawn symbol outranks a printed label, and a label outranks a bare gap.**
+# The symbol and the swing are the thing itself, drawn to size; the label is a
+# reference to a schedule row that may have been typed against the wrong mark;
+# and a gap says only that the wall stops.
+_SOURCE_RANK = {
+    "door_swing": 4,
+    "window_symbol": 4,
+    "mark_on_the_drawing": 2,
+    "gap_in_the_wall": 1,
+}
+
+
+def merge_opening_evidence(page: dict, config: dict) -> dict:
+    """Joins every reading of the same opening into one record, and decides.
+
+    An opening a plan states three ways is one opening, not three. They are
+    merged when they sit on the same wall over the same stretch, and the record
+    that survives keeps every source that saw it — which is what the confidence
+    is then computed from:
+
+    | sources agreeing | confidence | what happens |
+    |---|---|---|
+    | two or more | high | confirmed |
+    | one | medium | confirmed, and the record says which one |
+    | a break in the wall alone | low | reported as an opening of unknown kind |
+
+    Nothing is set aside for a person to decide. Where two sources disagree
+    about *what* the opening is, the ranking above settles it and the losing
+    reading is kept on the record rather than thrown away, so the disagreement
+    is visible without being in the way.
+    """
+    settings = config.get("walls", {})
+    same_opening = float(settings.get("same_opening_overlap_share", 0.5))
+
+    openings = page.get("openings") or []
+    walls_by_id = {wall["wall_id"]: wall for wall in page.get("walls") or []}
+    mm_per_point = _millimetres_per_point(page.get("scale_calibration") or {})
+    for opening in openings:
+        opening.setdefault("evidence", [opening.get("found_by", "gap_in_the_wall")])
+        opening["placed_bbox"] = _placed_box(opening, walls_by_id, mm_per_point)
+
+    # **Two readings of one opening are in the same place on the paper.**
+    # Grouping them by which wall they were put on looked more precise and was
+    # not: a wall drawn with a lining produces two overlapping candidates, and
+    # the mark landed on one of them while the symbol drawn inside it landed on
+    # the other — so the same window was reported twice, on two walls, in the
+    # same place. Where they are on the sheet does not care which candidate
+    # they were attached to.
+    #
+    # The mark's own box is left out of this: it is printed *beside* the
+    # opening, often inside the room with a leader, so it says nothing about
+    # where the opening is. What is compared is the stretch of wall each
+    # reading claims, which every reading has once its mark has been placed.
+    placed = [o for o in openings if o.get("position_on_wall") and o.get("wall_id")]
+    loose = [o for o in openings if o not in placed]
+
+    clusters: list = []
+    for opening in sorted(placed, key=lambda o: _claimed_box(o)[0]):
+        for cluster in clusters:
+            if any(
+                _same_place(opening, member, same_opening) for member in cluster
+            ):
+                cluster.append(opening)
+                break
+        else:
+            clusters.append([opening])
+
+    merged_total = 0
+    kept = []
+    for cluster in clusters:
+        merged_total += len(cluster) - 1
+        kept.append(_one_opening_from(cluster))
+
+    for opening in loose:
+        _settle_confidence(opening)
+    kept.extend(loose)
+    kept.sort(key=lambda o: (o["source_bbox"][1], o["source_bbox"][0]))
+
+    # Every opening carries an identifier, whether the drawing labelled it or
+    # not. Without one it cannot be pointed at from a table, an overlay or the
+    # model.
+    for position, opening in enumerate(kept, start=1):
+        if not opening.get("opening_id"):
+            opening["opening_id"] = f"{page['sheet_id']}-OPG{position:03d}"
+
+    page["openings"] = kept
+    return {"merged": merged_total, "openings": len(kept)}
+
+
+def _placed_box(opening: dict, walls_by_id: dict, mm_per_point: float):
+    """The stretch of wall this reading claims, as a box on the sheet.
+
+    This — not the mark's own box — is what says where an opening is. A mark is
+    printed beside its opening, commonly inside the room with a leader, and two
+    marks for two different windows can be printed side by side.
+    """
+    place = opening.get("position_on_wall")
+    wall = walls_by_id.get(opening.get("wall_id") or "")
+    if not place or not wall or not mm_per_point:
+        return None
+    try:
+        start, end = wall["start_point_pt"], wall["end_point_pt"]
+        half = wall["thickness_mm"] / mm_per_point / 2.0
+        if wall["runs_along"] == "x":
+            low = start[0] + place["start_fraction"] * (end[0] - start[0])
+            high = start[0] + place["end_fraction"] * (end[0] - start[0])
+            return [min(low, high), start[1] - half, max(low, high), start[1] + half]
+        low = start[1] + place["start_fraction"] * (end[1] - start[1])
+        high = start[1] + place["end_fraction"] * (end[1] - start[1])
+        return [start[0] - half, min(low, high), start[0] + half, max(low, high)]
+    except Exception:
+        return None
+
+
+def _claimed_box(opening: dict):
+    """The stretch of wall this reading claims, as a box on the sheet."""
+    return opening.get("placed_bbox") or opening["source_bbox"]
+
+
+def _same_place(first: dict, second: dict, share: float) -> bool:
+    """Whether these two readings claim the same place on the sheet."""
+    a, b = _claimed_box(first), _claimed_box(second)
+    width = min(a[2], b[2]) - max(a[0], b[0])
+    height = min(a[3], b[3]) - max(a[1], b[1])
+    if width <= 0 or height <= 0:
+        return False
+    smaller = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+    return smaller > 0 and (width * height) / smaller >= share
+
+
+def _one_opening_from(cluster: list) -> dict:
+    """The single record for an opening several sources saw."""
+    if len(cluster) == 1:
+        opening = cluster[0]
+        _settle_confidence(opening)
+        return opening
+
+    # The record to build on is the one carrying a schedule row where there is
+    # one, because that is the only source with a height on it; otherwise the
+    # highest-ranked source wins.
+    def rank(opening):
+        return (
+            1 if opening.get("in_schedule") else 0,
+            _SOURCE_RANK.get(opening.get("found_by"), 0),
+            opening.get("confidence", 0.0),
+        )
+
+    best = max(cluster, key=rank)
+    evidence = []
+    for opening in cluster:
+        for source in opening.get("evidence", []):
+            if source not in evidence:
+                evidence.append(source)
+    best["evidence"] = evidence
+
+    # The kind of opening comes from the strongest source that names one, which
+    # is not always the record being built on: a schedule row gives the height,
+    # a drawn swing gives the fact that it is a door.
+    named = [o for o in cluster if o.get("element_type")]
+    if named:
+        chosen = max(named, key=lambda o: _SOURCE_RANK.get(o.get("found_by"), 0))
+        if chosen is not best and _SOURCE_RANK.get(
+            chosen.get("found_by"), 0
+        ) > _SOURCE_RANK.get(best.get("found_by"), 0):
+            best["element_type"] = chosen["element_type"]
+            best["element_type_source"] = chosen.get("found_by")
+    # A width measured off the drawing is kept where the record has none.
+    if not best.get("width_mm"):
+        for opening in cluster:
+            if opening.get("width_mm"):
+                best["width_mm"] = opening["width_mm"]
+                break
+    # A mark from any of them names the opening on the sheet.
+    if not best.get("mark"):
+        for opening in cluster:
+            if opening.get("mark"):
+                best["mark"] = opening["mark"]
+                break
+
+    _settle_confidence(best)
+    return best
+
+
+def _settle_confidence(opening: dict) -> None:
+    """How far to trust an opening, from how many ways the drawing said it.
+
+    And **the decision that follows from it**, because nothing here waits for a
+    person: two sources or more is confirmed, one is confirmed and says which,
+    and a bare break in a wall is reported as an opening whose kind the drawing
+    never stated.
+    """
+    sources = [s for s in opening.get("evidence", []) if s]
+    count = len(set(sources))
+    if count >= 2:
+        opening["confidence"] = max(opening.get("confidence", 0.0), 0.9)
+        opening["confidence_band"] = "high"
+        opening["review_status"] = "auto_confirmed"
+        opening["how_it_was_decided"] = (
+            f"{count} separate readings of the drawing agree that there is an opening "
+            "here, so it is taken as confirmed."
+        )
+    elif count == 1 and sources[0] != "gap_in_the_wall":
+        opening["confidence"] = max(opening.get("confidence", 0.0), 0.7)
+        opening["confidence_band"] = (
+            "high" if opening.get("confidence", 0) >= 0.75 else "review"
+        )
+        opening["review_status"] = "auto_confirmed"
+        opening["how_it_was_decided"] = (
+            f"Read from {_in_words(sources[0])}. That is one reading, and it is used."
+        )
+    else:
+        opening["confidence"] = min(opening.get("confidence", 0.5), 0.5)
+        opening["confidence_band"] = "low"
+        opening["review_status"] = "auto_confirmed"
+        if not opening.get("element_type"):
+            opening["element_type"] = "unknown_opening"
+            opening["element_type_source"] = "not_stated"
+        opening["how_it_was_decided"] = (
+            "The wall stops and starts again here, and nothing else on the sheet says "
+            "what goes in the gap, so it is reported as an opening of unknown kind."
+        )
+
+
+def _in_words(source: str) -> str:
+    return {
+        "window_symbol": "the window drawn inside the wall",
+        "door_swing": "the door's swing drawn on the plan",
+        "mark_on_the_drawing": "the mark printed beside it",
+        "gap_in_the_wall": "the break in the wall",
+    }.get(source, source)
+
+
+# --- every opening is named on the sheet -----------------------------------
+
+
+def name_openings(pages: list, config: dict) -> None:
+    """Gives every opening a short label, and puts it on the marked-up sheet.
+
+    **An opening a reader cannot name is one they cannot check.** Where the
+    drawing prints a mark that is the name, because that is what the schedule
+    is keyed on. Where it prints none — and a great many plans print none — a
+    short one is made from what the opening is: ``D`` for a door, ``W`` for a
+    window, ``O`` where the drawing never said. Numbered in reading order down
+    the sheet, so two runs of the same plan name the same opening the same way.
+    """
+    prefixes = config.get("walls", {}).get(
+        "opening_label_prefixes",
+        {"door": "D", "sliding_window": "W", "fixed_window": "W",
+         "highlight_window": "W", "window": "W"},
+    )
+    default = config.get("walls", {}).get("opening_label_default", "O")
+
+    for page in pages:
+        counters: dict = {}
+        for opening in page.get("openings") or []:
+            if opening.get("mark"):
+                opening["display_mark"] = opening["mark"]
+                continue
+            prefix = prefixes.get(opening.get("element_type") or "", default)
+            counters[prefix] = counters.get(prefix, 0) + 1
+            opening["display_mark"] = f"{prefix}{counters[prefix]:02d}"
+            opening["display_mark_is_made_up"] = True

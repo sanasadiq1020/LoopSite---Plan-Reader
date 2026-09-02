@@ -17,6 +17,7 @@ import pytest
 from pipeline.plan import accuracy
 from pipeline.plan import dimensions as dimensions_module
 from pipeline.plan import openings as openings_module
+from pipeline.plan.openings import merge_opening_evidence
 from pipeline.plan import reading, rooms as rooms_module, schedules, textmodel, validators
 from pipeline.plan.layout import extract_rulings, joined_text, value_candidates
 from pipeline.plan.sheetindex import cross_check_pages, parse_sheet_index
@@ -1969,3 +1970,231 @@ def test_a_sheet_with_no_connected_building_is_not_judged_this_way(config):
     ]
     assert mark_walls_that_stand_alone(walls, 10.0, config) == 0
     assert all(wall["meets_another_wall"] for wall in walls)
+
+
+# --- the drawing says what its openings are --------------------------------
+
+
+def test_three_lines_drawn_inside_a_wall_are_a_sliding_window(config):
+    """**The feature this whole reading turns on.** A wall is solid, so nothing
+    is drawn inside one. A window is not, and the drawing says so by putting
+    the glass, the frame and the sashes between the wall's two faces. Three or
+    more of them are the overlapping sashes of a sliding window."""
+    from pipeline.plan.symbols import window_symbols_in
+
+    wall = _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)  # faces at 195.5 / 204.5
+    rulings = {"h": [(198.0, 300.0, 400.0), (200.0, 300.0, 400.0), (202.0, 300.0, 400.0)],
+               "v": []}
+    found = window_symbols_in(wall, rulings, 10.0, config["walls"])
+
+    assert len(found) == 1
+    assert found[0]["kind"] == "sliding_window"
+    assert found[0]["width_mm"] == 1000.0
+
+
+def test_two_lines_drawn_inside_a_wall_are_a_fixed_pane(config):
+    from pipeline.plan.symbols import window_symbols_in
+
+    wall = _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)
+    rulings = {"h": [(198.5, 300.0, 400.0), (201.5, 300.0, 400.0)], "v": []}
+    found = window_symbols_in(wall, rulings, 10.0, config["walls"])
+
+    assert [f["kind"] for f in found] == ["fixed_window"]
+
+
+def test_a_wall_with_nothing_drawn_inside_it_carries_no_window(config):
+    from pipeline.plan.symbols import window_symbols_in
+
+    wall = _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)
+    assert window_symbols_in(wall, {"h": [], "v": []}, 10.0, config["walls"]) == []
+
+
+def test_a_wall_hatched_end_to_end_is_not_one_long_window(config):
+    """A wall drawn in section is hatched right through. Reading that as a
+    window reported a 5.3 m "fixed window" covering nine tenths of a wall."""
+    from pipeline.plan.symbols import window_symbols_in
+
+    wall = _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)
+    rulings = {"h": [(198.0, 100.0, 600.0), (200.0, 100.0, 600.0), (202.0, 100.0, 600.0)],
+               "v": []}
+    assert window_symbols_in(wall, rulings, 10.0, config["walls"]) == []
+
+
+# --- a door states its own width in its swing ------------------------------
+
+
+def test_a_quarter_circle_the_size_of_a_door_leaf_is_a_door(config):
+    """A hinged door is drawn as its swing, and the arc's radius is the leaf —
+    which is why a plan set is full of square-ish curved paths exactly 820 mm
+    and 1,100 mm across. Those *are* the doors, stated more precisely in the
+    geometry than in any label."""
+    from pipeline.plan.symbols import door_swings
+
+    class _Rect:
+        x0, y0, x1, y1 = 100.0, 100.0, 182.0, 182.0
+
+    class _Page:
+        _loopsite_drawings = [
+            {"items": [("c", None, None, None, None)], "rect": _Rect()},
+            # a leader: curved, but nothing like square
+            {"items": [("c", None, None, None, None)],
+             "rect": type("R", (), {"x0": 0.0, "y0": 0.0, "x1": 300.0, "y1": 8.0})()},
+        ]
+
+    found = door_swings(_Page(), 10.0, config["walls"])
+    assert [f["width_mm"] for f in found] == [820.0]
+
+
+# --- four readings of one opening ------------------------------------------
+
+
+def _opening(found_by, wall_id, start, end, kind=None, mark="", width=None):
+    return {
+        "opening_id": "", "mark": mark, "element_type": kind,
+        "element_type_source": found_by, "wall_id": wall_id,
+        "position_on_wall": {
+            "start_fraction": start, "end_fraction": end,
+            "centre_fraction": (start + end) / 2,
+            "from_wall_start_mm": 0.0, "width_mm": width or 0.0,
+            "measured_from": found_by,
+        },
+        "width_mm": width, "height_mm": None, "sill_height_mm": None,
+        "head_height_mm": None, "in_schedule": False, "found_by": found_by,
+        "source_sheet": "A02", "source_bbox": [0.0, 0.0, 1.0, 1.0],
+        "confidence": 0.6, "confidence_band": "review",
+        "review_status": "auto_confirmed",
+    }
+
+
+def _page_with(openings):
+    return {
+        "sheet_id": "A02",
+        "walls": [_candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)],
+        "scale_calibration": {"measured_mm_per_point": 10.0},
+        "openings": openings,
+    }
+
+
+def test_three_readings_of_one_opening_are_one_opening(config):
+    """A plan states an opening in up to four ways and a good plan set states
+    it twice or more. Three readings of the same window are one window."""
+    page = _page_with([
+        _opening("mark_on_the_drawing", "W1", 0.3, 0.5, "window", mark="W4", width=1800),
+        _opening("window_symbol", "W1", 0.31, 0.51, "sliding_window", width=1804),
+        _opening("gap_in_the_wall", "W1", 0.3, 0.5, None, width=1790),
+    ])
+    result = merge_opening_evidence(page, config)
+
+    assert result["openings"] == 1
+    kept = page["openings"][0]
+    assert result["merged"] == 2
+    assert len(set(kept["evidence"])) == 3
+    assert kept["confidence_band"] == "high"
+    assert kept["review_status"] == "auto_confirmed"
+
+
+def test_a_drawn_symbol_outranks_a_printed_label(config):
+    """The symbol is the thing itself, drawn to size; the label is a reference
+    to a schedule row that may have been typed against the wrong mark."""
+    page = _page_with([
+        _opening("mark_on_the_drawing", "W1", 0.3, 0.5, "window", mark="W4", width=1800),
+        _opening("window_symbol", "W1", 0.31, 0.51, "sliding_window", width=1804),
+    ])
+    merge_opening_evidence(page, config)
+
+    assert page["openings"][0]["element_type"] == "sliding_window"
+    assert page["openings"][0]["mark"] == "W4"
+
+
+def test_two_openings_in_different_places_stay_separate(config):
+    page = _page_with([
+        _opening("window_symbol", "W1", 0.05, 0.2, "fixed_window", width=800),
+        _opening("window_symbol", "W1", 0.6, 0.8, "sliding_window", width=1200),
+    ])
+    assert merge_opening_evidence(page, config)["openings"] == 2
+
+
+def test_a_break_with_nothing_else_saying_what_it_is_is_an_opening_of_unknown_kind(config):
+    """Nothing is set aside for a person to decide. A gap the drawing never
+    explained is reported as what it is."""
+    page = _page_with([_opening("gap_in_the_wall", "W1", 0.3, 0.5, None, width=900)])
+    merge_opening_evidence(page, config)
+    kept = page["openings"][0]
+
+    assert kept["element_type"] == "unknown_opening"
+    assert kept["confidence_band"] == "low"
+    assert kept["review_status"] == "auto_confirmed"
+    assert "unknown kind" in kept["how_it_was_decided"]
+
+
+def test_nothing_is_left_waiting_for_a_person(config):
+    """Every outcome is decided here. A reading that stops to ask is a reading
+    that cannot run on its own."""
+    page = _page_with([
+        _opening("gap_in_the_wall", "W1", 0.1, 0.2, None, width=900),
+        _opening("window_symbol", "W1", 0.6, 0.8, "sliding_window", width=1200),
+    ])
+    merge_opening_evidence(page, config)
+
+    assert all(o["review_status"] == "auto_confirmed" for o in page["openings"])
+    assert all(o.get("how_it_was_decided") for o in page["openings"])
+
+
+def test_every_opening_is_named_even_where_the_drawing_names_none(config):
+    """An opening a reader cannot name is one they cannot check. A great many
+    plans print no marks at all."""
+    from pipeline.plan.openings import name_openings
+
+    page = _page_with([
+        _opening("window_symbol", "W1", 0.1, 0.2, "sliding_window", width=1200),
+        _opening("door_swing", "W1", 0.6, 0.8, "door", width=820),
+        _opening("mark_on_the_drawing", "W1", 0.85, 0.95, "window", mark="W7", width=900),
+    ])
+    name_openings([page], config)
+    names = [o["display_mark"] for o in page["openings"]]
+
+    assert names == ["W01", "D01", "W7"]
+    assert page["openings"][0]["display_mark_is_made_up"] is True
+    assert "display_mark_is_made_up" not in page["openings"][2]
+
+
+# --- a break where a wall lands is not a door ------------------------------
+
+
+def test_a_break_where_a_partition_lands_is_a_junction_not_a_door(config):
+    """Both stop the wall's two faces at the same place and they mean opposite
+    things: one is a hole to cut and count, the other is solid wall with a wall
+    attached."""
+    from pipeline.plan.walls import break_is_a_junction
+
+    wall = _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)
+    partition = _candidate("W2", "y", 300.0, 200.0, 500.0, 90.0)
+    # the break is exactly as wide as the partition is thick
+    assert break_is_a_junction(wall, 295.5, 304.5, [wall, partition], 10.0)
+
+
+def test_a_door_beside_a_partition_is_still_a_door(config):
+    """A junction break is about as wide as the wall that made it. A partition
+    arriving at one jamb of an 820 mm door does not make the door a junction —
+    and without that rule a plan drawn as a picture lost every opening it had."""
+    from pipeline.plan.walls import break_is_a_junction
+
+    wall = _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)
+    partition = _candidate("W2", "y", 300.0, 200.0, 500.0, 90.0)
+    assert not break_is_a_junction(wall, 295.5, 377.5, [wall, partition], 10.0)
+
+
+# --- a face whose partner was never found ---------------------------------
+
+
+def test_the_second_look_widens_the_thickness_and_nothing_else(config):
+    """Every other test in the pairing is there for its own reason. Skipping
+    them on the second look let a 230 mm square back in as a wall."""
+    from pipeline.plan.walls import _pair_faces
+
+    faces = [(100.0, 500.0, 523.0, []), (123.0, 500.0, 523.0, [])]
+    settings = {
+        **config["walls"], "min_wall_length_mm": 200,
+        "min_length_to_thickness": 3.0, "second_look_widening": 0.2,
+    }
+    assert _pair_faces(faces, 10.0, {"walls": settings}, []) == []

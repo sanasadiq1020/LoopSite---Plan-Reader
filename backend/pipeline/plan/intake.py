@@ -54,6 +54,8 @@ from pipeline.plan.accuracy import (
     write_ground_truth_template,
 )
 from pipeline.plan.openings import (
+    merge_opening_evidence,
+    name_openings,
     reconcile_openings_with_schedules,
     score_openings,
     settle_opening_placement,
@@ -722,6 +724,18 @@ def process_upload(
     # the strongest evidence for which break in which wall it is labelling.
     try:
         opening_reconciliation.update(settle_opening_placement(plan_reading_pages, config))
+        # **Now that every mark sits on its wall, the several readings of one
+        # opening can be joined.** A mark cannot be placed until the schedule
+        # that gives it a width has been read, and that schedule is printed on
+        # its own sheet — so this waits until the whole document has been read,
+        # and only then decides. Two sources agreeing is confirmed; one is used
+        # and the record says which; a bare break in a wall is an opening whose
+        # kind the drawing never stated. Nothing is left for a person.
+        joined = 0
+        for page_reading in plan_reading_pages:
+            joined += merge_opening_evidence(page_reading, config)["merged"]
+        name_openings(plan_reading_pages, config)
+        opening_reconciliation["readings_joined"] = joined
         opening_reconciliation.update(score_openings(plan_reading_pages))
     except Exception as e:
         logger.exception(f"run={run_id} opening placement failed: {e}")
@@ -925,7 +939,7 @@ def process_upload(
 # rendering it would either fail or show a half-empty screen — so it is
 # detected here and the caller is told to run the file through again, rather
 # than the interface silently showing blanks.
-PLAN_READING_FORMAT = 9
+PLAN_READING_FORMAT = 10
 
 
 def load_plan_reading(run_id: str) -> dict | None:

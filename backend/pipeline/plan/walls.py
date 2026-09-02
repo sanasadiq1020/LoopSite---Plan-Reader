@@ -119,7 +119,12 @@ def _merge_faces(segments: list, position_tolerance: float, join_gap: float) -> 
     return faces
 
 
-def _pair_faces(faces: list, mm_per_point: float, config: dict, standards: list) -> list:
+def _pair_faces(faces: list, mm_per_point: float, config: dict, standards: list):
+    """Wrapper kept for readers that only want the pairs."""
+    return _pair_faces_and_faces(faces, mm_per_point, config, standards)[0]
+
+
+def _pair_faces_and_faces(faces: list, mm_per_point: float, config: dict, standards: list):
     """Pairs of parallel faces that run together, taken best-first.
 
     Scored by the length the two faces share, because that is what makes two
@@ -187,6 +192,7 @@ def _pair_faces(faces: list, mm_per_point: float, config: dict, standards: list)
     # stays available everywhere else.
     candidates.sort(key=lambda item: -item[0])
     taken: dict = {}
+    used: set = set()
     pairs = []
     for _score, _overlap, thickness, index, other_index in candidates:
         position, start, end, gaps = usable[index]
@@ -206,6 +212,8 @@ def _pair_faces(faces: list, mm_per_point: float, config: dict, standards: list)
 
         taken.setdefault(index, []).append(free)
         taken.setdefault(other_index, []).append(free)
+        used.add(index)
+        used.add(other_index)
         pairs.append(
             {
                 "centre_position": (position + other_position) / 2.0,
@@ -219,7 +227,57 @@ def _pair_faces(faces: list, mm_per_point: float, config: dict, standards: list)
                 ),
             }
         )
-    return pairs
+    # **A face that found no partner is tried again with more room.** The
+    # thickness range is what stops a wall being paired with the wrong line, so
+    # it is deliberately tight — and a wall drawn a little outside it, a
+    # rendered skin or a wall with a service duct in it, then loses its partner
+    # and disappears. Widening only for the faces that failed keeps the tight
+    # range where it is working.
+    stretch = float(_setting(settings, "second_look_widening", default=0.0))
+    if stretch > 0 and len(used) < len(usable):
+        for index, (position, start, end, _gaps) in enumerate(usable):
+            if index in used:
+                continue
+            for other_index in range(len(usable)):
+                if other_index == index or other_index in used:
+                    continue
+                other_position, other_start, other_end, _o = usable[other_index]
+                thickness = abs(other_position - position) * mm_per_point
+                if not (
+                    min_thickness * (1 - stretch)
+                    <= thickness
+                    <= max_thickness * (1 + stretch)
+                ):
+                    continue
+                overlap = (min(end, other_end) - max(start, other_start)) * mm_per_point
+                if overlap < min_length_mm:
+                    continue
+                # **The second look widens the thickness range and nothing
+                # else.** Every other test is there for its own reason and
+                # skipping them let a 230 mm square back in as a wall.
+                if overlap < thickness * min_slenderness:
+                    continue
+                shorter = min(end - start, other_end - other_start) * mm_per_point
+                if shorter > 0 and (overlap / shorter) < min_overlap_share:
+                    continue
+                run_start, run_end = max(start, other_start), min(end, other_end)
+                used.add(index)
+                used.add(other_index)
+                pairs.append(
+                    {
+                        "centre_position": (position + other_position) / 2.0,
+                        "face_positions": [round(position, 2), round(other_position, 2)],
+                        "start": run_start,
+                        "end": run_end,
+                        "thickness_mm": round(thickness, 1),
+                        "length_mm": round((run_end - run_start) * mm_per_point, 1),
+                        "gaps": [],
+                        "found_on_a_second_look": True,
+                    }
+                )
+                break
+
+    return pairs, used, usable
 
 
 def _still_free(claimed: list, within: tuple) -> list:
@@ -524,6 +582,7 @@ def _walls_from(
     """Wall records from one set of drawn faces, whatever produced them."""
     settings = config.get("walls", {})
     walls = []
+    lone_by_axis = []
     for axis, segments, widths in (
         ("x", rulings.get("h", []), rulings.get("h_widths", [])),
         ("y", rulings.get("v", []), rulings.get("v_widths", [])),
@@ -537,7 +596,10 @@ def _walls_from(
         faces = _merge_faces(segments, position_tolerance, join_gap)
         faces = _drop_hatching(faces, mm_per_point, settings)
         faces = [f for f in faces if outside_excluded(f[0], f[1], f[2], axis)]
-        for pair in _pair_faces(faces, mm_per_point, config, standards):
+        pairs, used_faces, usable_faces = _pair_faces_and_faces(
+            faces, mm_per_point, config, standards
+        )
+        for pair in pairs:
             nominal, difference = _nearest_standard(pair["thickness_mm"], standards)
             # A thickness close to one the office actually builds is a stronger
             # candidate than an arbitrary gap that happens to fall in range.
@@ -580,10 +642,50 @@ def _walls_from(
                     "gaps_pt": [
                         [round(low, 2), round(high, 2)] for low, high in pair["gaps"]
                     ],
+                    "thickness_is_assumed": False,
+                    "found_on_a_second_look": bool(pair.get("found_on_a_second_look")),
                 }
             )
 
+        lone_by_axis.append((usable_faces, used_faces, axis))
+
+    # **A drawn face that never found a partner is still a wall drawn with one
+    # face missing** — but only if it runs between other walls. That test needs
+    # the paired walls of *both* axes, so it waits until they are all found.
+    walls.extend(
+        _lone_face_walls(lone_by_axis, walls, mm_per_point, config, standards)
+    )
     return walls
+
+
+def _lone_face_walls(lone_by_axis: list, paired: list, mm_per_point, config, standards):
+    """The lone faces that are built into the building, as walls.
+
+    **A lone line touching nothing is a leader, a hatch boundary or a fold
+    mark; a lone line running into two walls is a wall with a face missing.**
+    Without that test every long line on the sheet became a wall — 119 of them
+    on one floor plan — and the building's own outline was lost among them.
+    """
+    settings = config.get("walls", {})
+    if not settings.get("keep_lone_faces", True) or not paired:
+        return []
+    needed = int(settings.get("lone_face_min_junctions", 2))
+    slack = float(settings.get("junction_tolerance_points", 10.0))
+
+    kept = []
+    for usable_faces, used_faces, axis in lone_by_axis:
+        for candidate in walls_from_lone_faces(
+            usable_faces, used_faces, axis, mm_per_point, config, standards
+        ):
+            meets = sum(
+                1
+                for wall in paired
+                if _junction_between(candidate, wall, slack) is not None
+            )
+            if meets >= needed:
+                candidate["meets_this_many_walls"] = meets
+                kept.append(candidate)
+    return kept
 
 
 def _wall_bbox(axis: str, pair: dict) -> list:
@@ -1753,3 +1855,304 @@ def _recut(wall: dict, low: float, high: float, length_mm: float) -> None:
         for start, end in wall.get("gaps_pt", [])
         if min(end, high) > max(start, low)
     ]
+
+
+# --- Fix 1: a break where another wall lands is a junction, not a door -----
+
+
+def break_is_a_junction(
+    wall: dict, low: float, high: float, walls: list, slack: float, share: float = 0.6
+) -> bool:
+    """Whether this break in a wall is where another wall runs into it.
+
+    **Both look identical in the geometry, and they mean opposite things.** A
+    door stops both faces of its wall and leaves a hole; a partition landing on
+    a wall stops both faces of it too, because the drawing runs the partition's
+    own faces through. One is an opening to be cut and counted; the other is
+    solid wall with a wall attached.
+
+    What separates them is what is on the other side: a wall. So a break with a
+    wall of its own running into it, across it, is a junction and no opening is
+    reported there.
+    """
+    width = high - low
+    if width <= 0:
+        return False
+    for other in walls:
+        if other is wall or other["runs_along"] == wall["runs_along"]:
+            continue
+        band_low, band_high = _band(other)
+        # **A junction break is about as wide as the wall that made it.** A
+        # partition 90 mm thick landing on a wall breaks it for 90 mm; a door
+        # breaks it for 820 mm, and a partition happening to arrive at one jamb
+        # of that door does not make the door a junction. Requiring the wall
+        # running in to account for most of the break is what separates them,
+        # and without it a plan drawn as a picture - where the walls are dense
+        # and every opening has a partition near it - lost every opening it had.
+        covered = min(band_high, high) - max(band_low, low)
+        if covered <= 0 or covered / width < share:
+            continue
+        # And that wall has to actually reach this one, not merely line up
+        # with the break somewhere else on the sheet.
+        other_low, other_high = _run(other)
+        across_low, across_high = _band(wall)
+        if other_high < across_low - slack or other_low > across_high + slack:
+            continue
+        return True
+    return False
+
+
+# --- Fix 2: what is drawn beyond the building -----------------------------
+
+
+def building_outline(walls: list, config: dict):
+    """The box the building's own connected walls occupy, or None.
+
+    **The outline is the walls that hold each other up.** Everything that
+    belongs to the building is joined to the rest of it, so the largest group
+    of walls that reach each other *is* the building, and its extent is the
+    building's extent. Nothing outside it is a wall of this building — not the
+    eave line, not the block boundary, not the roof extent drawn round it.
+
+    Returned as None where no group is big enough to be a building, so a sheet
+    that traced very little loses nothing.
+    """
+    settings = config.get("walls", {})
+    if not settings.get("reject_outside_the_building", True) or not walls:
+        return None
+    standards = settings.get("nominal_thickness_mm", []) or [300]
+    slack_mm = float(settings.get("meeting_slack_mm", max(float(s) for s in standards)))
+    thickness = max(float(s) for s in standards)
+    smallest = int(settings.get("min_walls_in_a_group", 4))
+
+    # The same reach the junction reader uses, in points, from any wall on the
+    # sheet — every wall here shares one scale.
+    slack = slack_mm / max(_mm_per_point_of(walls, thickness), 1e-6)
+    groups = _connected_groups(walls, slack)
+    biggest = max(groups, key=len) if groups else []
+    # **The outline is only usable when one group really is the building.** On
+    # a sheet whose drawing is stored as a picture the tracing recovers the
+    # walls in several pieces, and the biggest of those pieces is not the
+    # building - taking its box as the outline set aside 18 of that sheet's 38
+    # walls for being "outside the building". So it takes a clear majority
+    # before anything is judged against it.
+    share = float(settings.get("outline_share_of_the_walls", 0.4))
+    if len(biggest) < smallest or len(biggest) < len(walls) * share:
+        return None
+
+    # Built from the walls whose thickness was measured. A wall kept from a
+    # lone face has an assumed thickness and is only there because it meets
+    # others, so it can never define where the building's edge is.
+    boxes = [
+        walls[index]["bbox"]
+        for index in biggest
+        if not walls[index].get("thickness_is_assumed")
+    ] or [walls[index]["bbox"] for index in biggest]
+    # A wall may sit a little outside the box its neighbours make - an entry
+    # return, a porch pier - so the outline is given the reach a junction has.
+    outline = (
+        min(b[0] for b in boxes) - slack,
+        min(b[1] for b in boxes) - slack,
+        max(b[2] for b in boxes) + slack,
+        max(b[3] for b in boxes) + slack,
+    )
+
+    # **A narrow strip is not a building.** Counting the walls in a group is
+    # not enough: on a sheet drawn as a picture the biggest connected piece was
+    # twenty walls all lying along one wall of the house, and its box was a
+    # band 350 by 90 points on a drawing 770 points across — so half the real
+    # walls were "outside the building". The box has to look like a building
+    # before anything is measured against it.
+    every = [wall["bbox"] for wall in walls]
+    whole = (
+        min(b[0] for b in every), min(b[1] for b in every),
+        max(b[2] for b in every), max(b[3] for b in every),
+    )
+    whole_area = (whole[2] - whole[0]) * (whole[3] - whole[1])
+    outline_area = (outline[2] - outline[0]) * (outline[3] - outline[1])
+    least = float(settings.get("outline_share_of_the_drawing", 0.25))
+    if whole_area > 0 and outline_area / whole_area < least:
+        return None
+    return outline
+
+
+def _mm_per_point_of(walls: list, fallback_thickness: float) -> float:
+    """Millimetres per point, recovered from a wall's own measured thickness."""
+    for wall in walls:
+        low, high = _band(wall)
+        span = high - low
+        if span > 0 and wall.get("thickness_mm"):
+            return wall["thickness_mm"] / span
+    return fallback_thickness
+
+
+def text_bands_to_avoid(lines: list, config: dict) -> list:
+    """The parts of the sheet that a note says are not the building.
+
+    A plan labels what it draws round the building: *extent of roof*, *eave
+    over*, *skillion*, *site boundary*. Those words are printed **on** the
+    lines they name, and those lines are parallel pairs at a plausible wall
+    thickness — the eave line and the boundary drawn together were being paired
+    into a wall longer than the house.
+
+    The words are configuration, because every office writes them differently,
+    and the reach is in points because it is a distance on the paper.
+    """
+    settings = config.get("walls", {})
+    words = [
+        str(word).upper()
+        for word in settings.get("not_the_building_words", [])
+        if str(word).strip()
+    ]
+    if not words:
+        return []
+    reach = float(settings.get("not_the_building_reach_pt", 150))
+
+    bands = []
+    for line in lines or []:
+        text = (line.get("text") or "").upper()
+        if not any(word in text for word in words):
+            continue
+        x0, y0, x1, y1 = line["bbox"]
+        bands.append((x0 - reach, y0 - reach, x1 + reach, y1 + reach))
+    return bands
+
+
+def mark_walls_in_dead_ground(walls: list, outline, bands: list, panels: list) -> int:
+    """Sets aside every candidate outside the building or on something else.
+
+    Three separate places a pair of parallel lines is not a wall, all handled
+    the same way and all reported with the reason: outside the building's own
+    outline; inside the reach of a note saying the line is a roof, an eave or a
+    boundary; and inside a panel printed on the sheet — a legend, a schedule, a
+    notes block — which is ruled into rows a few millimetres apart at drawing
+    scale, exactly like a wall.
+    """
+    set_aside = 0
+    for wall in walls:
+        box = wall["bbox"]
+        reason = None
+        if outline and (
+            box[2] < outline[0] or box[0] > outline[2]
+            or box[3] < outline[1] or box[1] > outline[3]
+        ):
+            reason = (
+                "This is outside the outline of the building, so it is a boundary, an "
+                "eave line or a roof extent rather than a wall."
+            )
+        elif any(_inside(box, band) for band in bands):
+            reason = (
+                "The sheet prints a note here saying this line is a roof, an eave or a "
+                "boundary, so it is not a wall."
+            )
+        elif any(_inside(box, panel) for panel in panels):
+            reason = (
+                "This is inside a panel printed on the sheet - a legend, a schedule or "
+                "a block of notes - whose ruled rows look like a wall at drawing scale."
+            )
+        if reason:
+            set_aside += 1
+            wall["meets_another_wall"] = False
+            wall["not_used_because"] = reason
+            wall["confidence"] = round(min(wall.get("confidence", 0.5), 0.35), 3)
+            wall["confidence_band"] = "review"
+    return set_aside
+
+
+def _inside(box, region) -> bool:
+    return (
+        region[0] <= box[0] and box[2] <= region[2]
+        and region[1] <= box[1] and box[3] <= region[3]
+    )
+
+
+# --- Fix 3: a face whose partner was never found ---------------------------
+
+
+def _nearest_nominal(thickness_mm, standards: list):
+    if not standards:
+        return None
+    return float(min(standards, key=lambda s: abs(float(s) - (thickness_mm or 0))))
+
+
+def walls_from_lone_faces(
+    faces: list,
+    used: set,
+    axis: str,
+    mm_per_point: float,
+    config: dict,
+    standards: list,
+) -> list:
+    """Walls for the drawn faces that never found a partner.
+
+    **A wall drawn with one of its faces missing is still a wall.** It happens
+    constantly: the other face is hidden behind a cupboard, drawn as part of
+    the joinery, broken into pieces too short to merge, or simply not drawn
+    where the plan cuts through a bulkhead. Dropping the face lost the wall
+    entirely, which is worse than reporting it with a thickness that has to be
+    assumed.
+
+    Two things keep this honest:
+
+    *   **It only applies to a face that meets the building.** A lone line
+        touching nothing is a leader, a hatch boundary or a fold mark. A lone
+        line running into two walls is a wall with a face missing.
+    *   **The assumed thickness is said out loud.** The nearest thickness the
+        office actually builds is used, the record carries
+        ``thickness_is_assumed``, and it says so on screen and in the
+        spreadsheet. Nothing pretends to have measured it.
+    """
+    settings = config.get("walls", {})
+    if not settings.get("keep_lone_faces", True):
+        return []
+
+    min_length_mm = float(_setting(settings, "min_wall_length_mm", default=600))
+    assumed = _nearest_nominal(
+        float(settings.get("assumed_thickness_mm", 90)), standards
+    ) or float(settings.get("assumed_thickness_mm", 90))
+    half = assumed / mm_per_point / 2.0
+
+    walls = []
+    for index, (position, start, end, gaps) in enumerate(faces):
+        if index in used:
+            continue
+        length_mm = (end - start) * mm_per_point
+        if length_mm < min_length_mm:
+            continue
+        if axis == "x":
+            start_point, end_point = [start, position], [end, position]
+        else:
+            start_point, end_point = [position, start], [position, end]
+        walls.append(
+            {
+                "wall_id": "",
+                "runs_along": axis,
+                "length_mm": round(length_mm, 1),
+                "thickness_mm": assumed,
+                "thickness_is_assumed": True,
+                "nominal_thickness_mm": assumed,
+                "thickness_difference_mm": 0.0,
+                "matches_nominal_thickness": True,
+                "start_point_pt": [round(v, 2) for v in start_point],
+                "end_point_pt": [round(v, 2) for v in end_point],
+                "face_positions_pt": [
+                    round(position - half, 2), round(position + half, 2)
+                ],
+                "bbox": (
+                    [round(start, 2), round(position - half, 2),
+                     round(end, 2), round(position + half, 2)]
+                    if axis == "x"
+                    else [round(position - half, 2), round(start, 2),
+                          round(position + half, 2), round(end, 2)]
+                ),
+                "line_source": "",
+                "confidence": 0.45,
+                "confidence_band": "review",
+                "review_status": "auto_confirmed",
+                "merged_from": 1,
+                "meets_another_wall": True,
+                "linked_opening_marks": [],
+                "gaps_pt": [[round(low, 2), round(high, 2)] for low, high in gaps],
+            }
+        )
+    return walls
