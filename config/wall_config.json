@@ -98,5 +98,13 @@
   "panel_text_coverage": 0.35,
   "panel_max_share_of_the_sheet": 0.2,
   "_leader_note": "A note's leader finishes in an arrowhead, and a wall never points at anything - so an arrowhead at the end of a line should say it is a leader. It is OFF here because of what it measured: a wall's end is precisely where the arrowheads of the dimensions that measure it are drawn, so the rule set aside the building's longest and most obviously real walls - 34 of one floor plan's 88, including its 19.6 m external wall, and 31 of another's 71. Requiring the arrowhead to sit on the line and past its end rather than merely near it changed nothing, because a dimension's arrowhead sits against the very wall face it measures to. Turn it on only where an office draws its leaders differently, and check the wall count.",
-  "same_opening_apart_mm": 300
+  "same_opening_apart_mm": 300,
+  "_raster_swing_note": "A plan set can be published as pictures: one of the sets in use draws its whole plan as embedded images, so the quarter circle every hinged door is drawn with is pixels rather than a curve. The page is then rendered and each outline on it is tested for being an arc of a circle - it must lie on one, turn through about a quarter, and have the radius of a door leaf in millimetres through the sheet's own scale. Hough circles were not used: they answer 'is there a full circle here', which returns every fixture and every letter O, and a door swing is precisely the case where most of the circle is absent.",
+  "read_door_swings_from_the_page": true,
+  "swing_render_dpi": 200,
+  "swing_fit_tolerance": 0.12,
+  "swing_min_degrees": 55,
+  "swing_max_degrees": 150,
+  "_raster_swing_when_note": "When to look. The count of curve paths in the PDF is the cheap test and it is kept, but it is not enough on its own: the picture-drawn set has 12 to 24 curve paths on every sheet - its border, its north point, its clouded revisions - so a count alone would never look at the very file that needs it. What decides is the outcome, as it does for the wall lines: the page is read as a picture when the sheet's own geometry put no door swing on any of its walls.",
+  "few_curve_paths": 10
 }

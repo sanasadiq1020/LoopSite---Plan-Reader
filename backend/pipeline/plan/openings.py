@@ -37,10 +37,12 @@ is labelling.
 from app.logging_setup import get_logger
 from pipeline.plan.walls import break_is_a_junction
 from pipeline.plan.symbols import (
+    curve_paths_on,
     door_swings,
     marks_inside,
     small_marks,
     swing_against_wall,
+    swings_at_the_openings,
     window_symbols_in,
 )
 from pipeline.plan.textmodel import bbox_center
@@ -880,6 +882,43 @@ def openings_from_symbols(
                 )
             )
     return found
+
+
+def confirm_doors_from_the_page(
+    page, openings: list, walls: list, calibration: dict, config: dict, sheet_id: str
+) -> int:
+    """Reads the door swings off the rendered page, where the PDF holds none.
+
+    Only where the sheet's own geometry found none on a wall. The drawing's own
+    curves are exact and nothing recovered from pixels can beat them, so they
+    are never displaced — this is for the sheet that has none to displace.
+    """
+    settings = config.get("walls", {})
+    mm_per_point = _millimetres_per_point(calibration)
+    if not mm_per_point or not calibration.get("usable_for_measurement"):
+        return 0
+
+    already = sum(
+        1 for opening in openings if opening.get("found_by") == "door_swing"
+    )
+    if already:
+        return 0
+    if curve_paths_on(page) < int(settings.get("few_curve_paths", 10)):
+        logger.info(
+            f"{sheet_id}: the sheet holds almost no curves of its own, so its doors "
+            "are looked for on the page as a picture"
+        )
+
+    confirmed = swings_at_the_openings(
+        page,
+        openings,
+        {wall["wall_id"]: wall for wall in walls},
+        mm_per_point,
+        settings,
+    )
+    if confirmed:
+        logger.info(f"{sheet_id}: {confirmed} doors read from their swing on the page")
+    return confirmed
 
 
 def _symbol_record(

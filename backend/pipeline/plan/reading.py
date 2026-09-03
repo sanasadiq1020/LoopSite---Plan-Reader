@@ -37,6 +37,7 @@ from pipeline.plan import rooms as rooms_module
 from pipeline.plan import schedules as schedules_module
 from pipeline.plan.layout import extract_rulings
 from pipeline.plan.openings import (
+    confirm_doors_from_the_page,
     openings_from_symbols,
     openings_from_wall_gaps,
     place_openings_on_walls,
@@ -845,6 +846,17 @@ def analyze_page(
         )
         detected_openings += openings_from_wall_gaps(
             detected_walls, calibration, config, sheet_id, lines
+        )
+        # **A sheet whose drawing is stored as a picture keeps its doors in
+        # pixels.** Where the sheet's own geometry put no swing on any of its
+        # walls, the page is rendered and each opening of a door's width is
+        # asked whether an arc of that width springs from its jamb. The test
+        # is the outcome, not a count of curved paths: the picture-drawn set
+        # has 12 to 24 of those on every sheet — its border, its north point,
+        # its clouded revisions — so a count alone would never look at the one
+        # file that needs it.
+        confirm_doors_from_the_page(
+            page, detected_openings, detected_walls, calibration, config, sheet_id
         )
         fields["discipline"] = resolve_discipline(
             fields, page_type["value"], lines, region, config

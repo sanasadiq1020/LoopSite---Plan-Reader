@@ -2434,3 +2434,90 @@ def test_an_opening_with_no_mark_is_never_an_unmatched_mark(config):
     result = reconcile_openings_with_schedules([page])
 
     assert result["marks_without_a_schedule"] == []
+
+
+# --- a door on a sheet that is stored as a picture --------------------------
+
+
+def _drawn_arc(centre, radius, from_degrees, to_degrees, size=400):
+    """A page-sized mask with one arc inked on it, as OpenCV would see it."""
+    numpy = pytest.importorskip("numpy")
+    cv2 = pytest.importorskip("cv2")
+    mask = numpy.zeros((size, size), dtype=numpy.uint8)
+    cv2.ellipse(
+        mask, (int(centre[0]), int(centre[1])), (int(radius), int(radius)),
+        0, from_degrees, to_degrees, 255, 2,
+    )
+    return mask
+
+
+def _arc_reader():
+    numpy = pytest.importorskip("numpy")
+    from pipeline.plan.symbols import _widest_arc_near
+
+    angles = numpy.arange(0, 360, 1.0)
+    around = (numpy.cos(numpy.radians(angles)), numpy.sin(numpy.radians(angles)))
+    return _widest_arc_near, around, numpy
+
+
+def test_a_quarter_arc_about_a_jamb_is_measured_as_one():
+    """**Why this is asked at the opening and not across the page.** A swing is
+    joined to the wall it springs from, so tracing the outlines returns one
+    shape of 17,882 points covering half the drawing, and Hough proposed 4,767
+    circles on a floor plan without the real swings among them. Asked at a
+    known jamb, with a known radius, the image only has to confirm or deny."""
+    widest, around, numpy = _arc_reader()
+    mask = _drawn_arc((200, 200), 60, 0, 90)
+
+    assert widest(mask, 200, 200, 60, 6, around, numpy) >= 80
+
+
+def test_a_jamb_a_few_pixels_out_still_finds_its_arc():
+    """The wall was traced from the same picture and is not exact to the pixel.
+    At this radius, three pixels out breaks the arc into fragments — which is
+    what made the first attempt at this find nothing at all."""
+    widest, around, numpy = _arc_reader()
+    mask = _drawn_arc((200, 200), 60, 0, 90)
+
+    assert widest(mask, 204, 197, 60, 6, around, numpy) >= 80
+
+
+def test_an_empty_place_has_no_arc():
+    widest, around, numpy = _arc_reader()
+    mask = _drawn_arc((200, 200), 60, 0, 90)
+
+    assert widest(mask, 50, 50, 60, 6, around, numpy) < 55
+
+
+def test_a_straight_corner_is_not_a_swing():
+    """Two walls meeting make a right angle, not an arc."""
+    numpy = pytest.importorskip("numpy")
+    cv2 = pytest.importorskip("cv2")
+    widest, around, _ = _arc_reader()
+    mask = numpy.zeros((400, 400), dtype=numpy.uint8)
+    cv2.line(mask, (200, 200), (260, 200), 255, 2)
+    cv2.line(mask, (200, 200), (200, 260), 255, 2)
+
+    assert widest(mask, 200, 200, 60, 6, around, numpy) < 55
+
+
+def test_the_drawings_own_curves_are_never_displaced_by_the_page(config):
+    """Exact geometry beats anything recovered from pixels, so the page is only
+    read where the sheet's own curves put no swing on a wall."""
+    from pipeline.plan.openings import confirm_doors_from_the_page
+
+    already = [{"found_by": "door_swing", "wall_id": "W1", "position_on_wall": {}}]
+    assert confirm_doors_from_the_page(
+        None, already, [], {"usable_for_measurement": True,
+                           "measured_mm_per_point": 10.0}, config, "A02"
+    ) == 0
+
+
+def test_nothing_is_read_from_a_page_whose_scale_was_never_settled(config):
+    """A radius in millimetres needs a scale. Without one there is nothing to
+    ask the image for."""
+    from pipeline.plan.openings import confirm_doors_from_the_page
+
+    assert confirm_doors_from_the_page(
+        None, [], [], {"usable_for_measurement": False}, config, "A02"
+    ) == 0

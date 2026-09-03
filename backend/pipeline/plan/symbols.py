@@ -298,3 +298,176 @@ def marks_inside(marks: list, box) -> int:
     """How many small strokes fall inside this box on the sheet."""
     x0, y0, x1, y1 = box
     return sum(1 for x, y in marks if x0 <= x <= x1 and y0 <= y <= y1)
+
+
+
+# --- a door swing on a sheet that is stored as a picture -------------------
+
+
+def curve_paths_on(page) -> int:
+    """How many of the sheet's drawn paths contain a curve."""
+    try:
+        return sum(
+            1
+            for path in page_drawings(page)
+            if any(item[0] == "c" for item in path.get("items", []))
+        )
+    except Exception:
+        return 0
+
+
+def swings_at_the_openings(
+    page, openings: list, walls_by_id: dict, mm_per_point: float, settings: dict
+) -> int:
+    """Finds the doors on a sheet whose drawing is stored as a picture.
+
+    **A plan set can be published as pictures**, and one of the sets in use is:
+    its whole plan is embedded images, so ``page.get_drawings()`` holds almost
+    nothing and the quarter circle every hinged door is drawn with is pixels
+    rather than a curve. The page is rendered and the arcs are looked for
+    there instead.
+
+    **They are looked for at the openings, not across the page**, and that is
+    the whole of why this works. Two page-wide searches were tried first and
+    both failed, for reasons worth keeping:
+
+    *   *Tracing the outlines and fitting circles to them.* A swing is not a
+        shape on its own — it springs from the jamb and closes on the door
+        leaf, so it is joined to the wall. The tracing returns one outline of
+        17,882 points covering half the drawing, and there is no arc in it to
+        fit.
+    *   *Hough circles.* On a floor plan it proposed 4,767 of them and the real
+        swings were not among the survivors. Hough asks "is there a circle
+        here", which every fixture, symbol and letter O answers, while a door
+        swing is precisely the case where three quarters of the circle is
+        missing.
+
+    What is asked here instead is a question with an answer: *this opening is
+    820 mm wide and this is its jamb — is there an arc of radius 820 mm about
+    that point?* The place and the radius both come from the reading, so the
+    image only has to confirm or deny, and it separates cleanly: on the two
+    sheets tried, every real door answers between 92 and 118 degrees and
+    everything else stops at 52.
+
+    The jamb is searched for a few pixels around, because the traced wall and
+    the drawn hinge are not the same point to the pixel, and at this radius
+    being three pixels out breaks the arc into fragments — which is what made
+    the first attempt at this find nothing.
+
+    Returns how many openings were confirmed as doors.
+    """
+    if page is None or not settings.get("read_door_swings_from_the_page", True):
+        return 0
+    try:
+        import numpy as np
+    except ImportError:
+        return 0
+    try:
+        from pipeline.plan.rasterlines import _binary_image
+
+        mask, scale = _binary_image(page, int(settings.get("swing_render_dpi", 200)))
+    except Exception as e:
+        logger.exception(f"could not render the page to look for door swings: {e}")
+        return 0
+
+    smallest = float(settings.get("min_door_width_mm", 600)) / mm_per_point
+    largest = float(settings.get("max_door_width_mm", 2400)) / mm_per_point
+    least_turn = float(settings.get("swing_min_degrees", 55))
+    reach = int(settings.get("swing_centre_search_px", 6))
+
+    angles = np.arange(0, 360, 1.0)
+    around = (np.cos(np.radians(angles)), np.sin(np.radians(angles)))
+
+    found = 0
+    for opening in openings:
+        place = opening.get("position_on_wall")
+        wall = walls_by_id.get(opening.get("wall_id") or "")
+        if not place or not wall:
+            continue
+        start, end = wall["start_point_pt"], wall["end_point_pt"]
+        jambs = [
+            (
+                start[0] + fraction * (end[0] - start[0]),
+                start[1] + fraction * (end[1] - start[1]),
+            )
+            for fraction in (place["start_fraction"], place["end_fraction"])
+        ]
+        leaf = (
+            (jambs[1][0] - jambs[0][0]) ** 2 + (jambs[1][1] - jambs[0][1]) ** 2
+        ) ** 0.5
+        if not (smallest <= leaf <= largest):
+            continue
+
+        turn = max(
+            _widest_arc_near(mask, x * scale, y * scale, leaf * scale, reach, around, np)
+            for x, y in jambs
+        )
+        if turn < least_turn:
+            continue
+
+        opening["element_type"] = "door"
+        opening["element_type_source"] = "door_swing"
+        opening["swing_degrees"] = int(turn)
+        opening["wall_note"] = (
+            f"The door's swing is drawn here on the page: an arc of {int(turn)} degrees "
+            f"about this opening's jamb, the width of the opening."
+        )
+        evidence = opening.setdefault("evidence", [])
+        if "door_swing" not in evidence:
+            evidence.append("door_swing")
+        found += 1
+
+    if found:
+        logger.info(f"{found} openings confirmed as doors by their swing on the page")
+    return found
+
+
+def _widest_arc_near(mask, x: float, y: float, radius: float, reach: int, around, np) -> float:
+    """The longest unbroken stretch of a circle about here that is drawn on.
+
+    The centre is tried a few pixels either way, and the radius a little either
+    way with it: the wall this opening sits on was traced from the same picture
+    and is not exact to the pixel, while an arc only reads as one when the
+    circle is where the ink is.
+    """
+    best = 0.0
+    for dx in range(-reach, reach + 1, 2):
+        for dy in range(-reach, reach + 1, 2):
+            for dr in (-2, 0, 2):
+                best = max(best, _arc_drawn_on(mask, x + dx, y + dy, radius + dr, around, np))
+    return best
+
+
+def _arc_drawn_on(mask, x: float, y: float, radius: float, around, np) -> float:
+    """How far round this circle the drawing is inked, in degrees, unbroken."""
+    height, width = mask.shape
+    cos, sin = around
+    xs = np.round(x + radius * cos).astype(int)
+    ys = np.round(y + radius * sin).astype(int)
+    inside = (xs >= 1) & (xs < width - 1) & (ys >= 1) & (ys < height - 1)
+    where = np.where(inside)[0]
+    if len(where) == 0:
+        return 0.0
+    column, row = xs[where], ys[where]
+    # A pixel either way, so a line drawn a hair off the exact circle still
+    # counts as drawn — the alternative is measuring the rendering, not the arc.
+    inked = (
+        (mask[row, column] > 0)
+        | (mask[row - 1, column] > 0)
+        | (mask[row + 1, column] > 0)
+        | (mask[row, column - 1] > 0)
+        | (mask[row, column + 1] > 0)
+    )
+    on = np.zeros(len(cos), dtype=bool)
+    on[where] = inked
+    return float(_longest_unbroken(np.concatenate([on, on])))
+
+
+def _longest_unbroken(doubled) -> int:
+    """The longest run of True, allowing for the circle joining up at zero."""
+    best = run = 0
+    for lit in doubled:
+        run = run + 1 if lit else 0
+        if run > best:
+            best = run
+    return min(best, 360)
