@@ -95,5 +95,26 @@
   "lone_face_min_junctions": 2,
   "outline_share_of_the_walls": 0.4,
   "outline_share_of_the_drawing": 0.25,
-  "_outline_note": "Everything belonging to a building is joined to the rest of it, so the largest group of walls that reach each other is the building and its extent bounds it - nothing outside is a wall of this building, not the eave line, not the block boundary, not the roof extent drawn round it. Two guards, both measured: the group has to hold a clear share of the sheet's walls, and its box has to look like a building. On a sheet drawn as a picture the biggest connected piece was twenty walls lying along one side of the house, a band 350 by 90 points on a drawing 770 across, and half the real walls were reported as outside the building."
+  "_outline_note": "Everything belonging to a building is joined to the rest of it, so the largest group of walls that reach each other is the building and its extent bounds it - nothing outside is a wall of this building, not the eave line, not the block boundary, not the roof extent drawn round it. Two guards, both measured: the group has to hold a clear share of the sheet's walls, and its box has to look like a building. On a sheet drawn as a picture the biggest connected piece was twenty walls lying along one side of the house, a band 350 by 90 points on a drawing 770 across, and half the real walls were reported as outside the building.",
+  "_detached_note": "A carport, a pergola, a shed and a detached garage are drawn on the same sheet and are not the same building. They are not joined to it - that is what detached means - so the house forms one connected group of walls and each outbuilding forms its own, which is what the junctions already say. The largest group is the building; every other group large enough to enclose something is a detached structure, kept in the table, drawn in its own colour and left out of the building's model. Nothing is judged unless the largest group really is a building.",
+  "separate_detached_structures": true,
+  "_dash_note": "A dashed line is not always stored as one. Every plan set here exports its dashes as many short separate segments with a solid dash pattern, so the PDF's own property says nothing - on one floor plan all 5,595 paths are marked solid, including the roof extent that is plainly dashed on the page. What is left is the shape of the line: a run drawn in this many short pieces separated by gaps no longer than this is a dashed line, whatever the file calls it.",
+  "dash_min_pieces": 5,
+  "dash_gap_mm": 400,
+  "_annotation_note": "A plan labels its construction, and the label is joined to the wall it describes by a leader drawn more lightly than the wall. Within this reach of one of these words, only the lines drawn more lightly than the sheet's own walls are set aside - a wall under the same note stays a wall. The share is measured against the median stroke of the candidates on that sheet, so it means the same on a drawing plotted heavily and one plotted fine.",
+  "annotation_words": [
+    "BRICK VENEER",
+    "REVERSE BRICK",
+    "STUD WALL",
+    "CAVITY BRICK",
+    "BLOCKWORK WALL",
+    "RENDERED",
+    "WEATHERBOARD",
+    "CLADDING",
+    "INSULATION",
+    "REFER TO ENGINEER"
+  ],
+  "annotation_reach_pt": 30,
+  "annotation_thin_share": 0.8,
+  "min_detached_structure_mm": 2000
 }

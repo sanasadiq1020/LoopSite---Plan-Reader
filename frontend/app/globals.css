@@ -31,3 +31,30 @@ body {
     background: linear-gradient(180deg, #0a0a0a 0%, #111318 100%);
   }
 }
+
+/* **A thing you can click says so under the cursor.**
+ *
+ * Tailwind v4 sets `cursor: default` on buttons, so every button, tab, menu
+ * entry and icon in this interface showed a plain arrow — which reads as "this
+ * is text", not "this does something". The hand comes back here for the
+ * elements that actually do something, and only those: a disabled button is
+ * not one of them, and neither is a text box.
+ *
+ * Anything already carrying Tailwind's own `cursor-*` class keeps it, because
+ * a class in the markup is more specific than this. */
+button:not(:disabled),
+[role="button"]:not([aria-disabled="true"]),
+[role="tab"],
+[role="menuitem"],
+summary,
+label[for],
+select:not(:disabled),
+a[href] {
+  cursor: pointer;
+}
+
+button:disabled,
+select:disabled,
+[aria-disabled="true"] {
+  cursor: not-allowed;
+}

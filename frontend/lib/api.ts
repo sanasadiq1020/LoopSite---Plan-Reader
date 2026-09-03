@@ -313,6 +313,10 @@ export interface WallCandidate {
    *  on one side of it is an outer wall. "unknown" where the wall meets no
    *  other wall, so it has not been established as part of the building. */
   wall_type: "outer" | "inner" | "unknown";
+  /** A carport, pergola or detached garage is not the same building. */
+  building: "main" | "detached";
+  structure_id: string | null;
+  drawn_dashed: boolean;
   orientation: "horizontal" | "vertical" | null;
   connects_to: string[];
   /** A tally of the meeting shapes: {"L": 2, "T": 3}. The record of every

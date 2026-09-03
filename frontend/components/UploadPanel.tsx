@@ -115,33 +115,38 @@ export function UploadPanel({
           </div>
         </div>
 
+        {/* **The box takes a dropped file; only the button opens the chooser.**
+          * Making the whole panel a button meant a stray click anywhere near
+          * the wording - or on the wording itself - threw up a file dialog
+          * nobody asked for. Dropping a plan on it still works, which is what
+          * a drop zone is for. */}
         <div
           onDragOver={(e) => {
             e.preventDefault();
-            setIsDragOver(true);
+            if (!isProcessing) setIsDragOver(true);
           }}
-          onDragLeave={() => setIsDragOver(false)}
+          onDragLeave={(e) => {
+            // Moving onto the icon or the wording inside the box is not
+            // leaving the box, and treating it as such made the highlight
+            // flicker while a file was being dragged across it.
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+              setIsDragOver(false);
+            }
+          }}
           onDrop={(e) => {
             e.preventDefault();
             setIsDragOver(false);
-            handleFiles(e.dataTransfer.files);
+            if (!isProcessing) handleFiles(e.dataTransfer.files);
           }}
-          onClick={() => !isProcessing && inputRef.current?.click()}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") inputRef.current?.click();
-          }}
-          aria-label="Choose a plan PDF, or drop one here"
-          className={`group order-1 flex h-full cursor-pointer flex-col items-center justify-center gap-5 rounded-2xl border-2 border-dashed px-6 py-14 text-center transition-all duration-200 lg:order-2 ${
+          className={`group order-1 flex h-full flex-col items-center justify-center gap-5 rounded-2xl border-2 border-dashed px-6 py-14 text-center transition-all duration-200 lg:order-2 ${
             isDragOver
               ? "scale-[1.01] border-blue-500 bg-blue-50 shadow-md"
-              : "border-slate-300 bg-gradient-to-b from-slate-50 to-white hover:border-blue-400 hover:bg-blue-50/40"
+              : "border-slate-300 bg-gradient-to-b from-slate-50 to-white"
           }`}
         >
           <div
             className={`rounded-2xl p-4 transition-colors ${
-              isDragOver ? "bg-blue-600" : "bg-blue-100 group-hover:bg-blue-200"
+              isDragOver ? "bg-blue-600" : "bg-blue-100"
             }`}
           >
             <svg
@@ -167,7 +172,7 @@ export function UploadPanel({
               {isDragOver ? "Drop it here" : "Drop your plan PDF here"}
             </p>
             <p className="mt-1 text-sm text-slate-500">
-              or click anywhere in this box to choose a file
+              or choose one with the button below
             </p>
           </div>
 
@@ -182,10 +187,7 @@ export function UploadPanel({
           <button
             type="button"
             disabled={isProcessing}
-            onClick={(e) => {
-              e.stopPropagation();
-              inputRef.current?.click();
-            }}
+            onClick={() => inputRef.current?.click()}
             className="rounded-lg bg-blue-600 px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
           >
             {isProcessing ? "Reading…" : "Choose PDF"}

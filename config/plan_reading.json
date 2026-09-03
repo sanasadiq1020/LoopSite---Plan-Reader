@@ -297,7 +297,7 @@
     ]
   },
   "sheet_index": {
-    "_comment": "Most Australian plan sets print a drawing index on the cover sheet listing every sheet's number, title, scale and revision. Parsing it gives an independent, in-document reference to cross-check every sheet's own title block against — this is what turns a detected value into a verified one instead of an unchecked guess.",
+    "_comment": "Most Australian plan sets print a drawing index on the cover sheet listing every sheet's number, title, scale and revision. Parsing it gives an independent, in-document reference to cross-check every sheet's own title block against \u2014 this is what turns a detected value into a verified one instead of an unchecked guess.",
     "table_title_keywords": [
       "DRAWING INDEX",
       "DRAWING LIST",
@@ -565,7 +565,7 @@
     }
   },
   "rooms": {
-    "_comment": "Room detection uses two independent methods and records which one found each room. (1) Vocabulary: the label matches a known Australian residential room name. (2) Geometry: a short label with a paired dimension printed directly beneath it in the same column is a room callout by drawing convention, whatever it is called — this is what lets an unseen plan's unusual room name ('MULTI-FUNCTION') still be found without adding it to any list.",
+    "_comment": "Room detection uses two independent methods and records which one found each room. (1) Vocabulary: the label matches a known Australian residential room name. (2) Geometry: a short label with a paired dimension printed directly beneath it in the same column is a room callout by drawing convention, whatever it is called \u2014 this is what lets an unseen plan's unusual room name ('MULTI-FUNCTION') still be found without adding it to any list.",
     "keywords": [
       "MASTER BEDROOM",
       "MASTER BED",
@@ -845,7 +845,7 @@
       "OVERALL LENGTH",
       "OVERALL WIDTH"
     ],
-    "_association_note": "A dimension is only linked to a room or an opening mark when the geometry supports it: the label must lie in the direction the dimension measures and within this many multiples of the dimension's own text height. An unlinked dimension is reported as unlinked — a wrong link is worse than none, because downstream stages trust it (the project rules/5).",
+    "_association_note": "A dimension is only linked to a room or an opening mark when the geometry supports it: the label must lie in the direction the dimension measures and within this many multiples of the dimension's own text height. An unlinked dimension is reported as unlinked \u2014 a wrong link is worse than none, because downstream stages trust it (the project rules/5).",
     "opening_mark_search_heights": 9.0,
     "room_label_search_heights": 22.0,
     "_level_note": "Elevation and section sheets print reduced levels (RL) rather than plan dimensions.",
@@ -919,7 +919,7 @@
     "max_age_hours": 6
   },
   "openings": {
-    "_comment": "Door and window marks used on Australian residential plans. The prefix decides the element type; the number is the mark's instance. Extend this list for an office that uses different marks — nothing else in the pipeline needs changing.",
+    "_comment": "Door and window marks used on Australian residential plans. The prefix decides the element type; the number is the mark's instance. Extend this list for an office that uses different marks \u2014 nothing else in the pipeline needs changing.",
     "mark_prefixes": {
       "D": "door",
       "DR": "door",
@@ -1015,7 +1015,7 @@
     "_default_size_note": "A plan is a horizontal cut, so it never shows an opening's height. Where the schedule states one it is always used. These office defaults are used only when it does not, and every opening built from them is marked as an assumption on screen, in the model and in the issues log. An opening whose kind the drawing never states is not given a height at all and is not cut."
   },
   "schedules": {
-    "_comment": "Door/window/finishes schedules are real tables. Their header row is found by matching printed column headers below, then every row beneath is read by column position — so the schedule's actual contents are extracted, not merely the fact that the word 'SCHEDULE' appeared somewhere.",
+    "_comment": "Door/window/finishes schedules are real tables. Their header row is found by matching printed column headers below, then every row beneath is read by column position \u2014 so the schedule's actual contents are extracted, not merely the fact that the word 'SCHEDULE' appeared somewhere.",
     "table_title_keywords": [
       "DOOR SCHEDULE",
       "WINDOW SCHEDULE",
@@ -1147,7 +1147,7 @@
     "max_entry_length": 120
   },
   "overlay": {
-    "_comment": "Colours used to draw detected items over the source page render, so a reviewer can see false positives and misses directly. Each category is drawn in a distinct colour and listed in the on-image legend.",
+    "_comment": "Colours used to draw detected items over the source page render, so a reviewer can see false positives and misses directly. Each category is drawn in a distinct colour and listed in the on-image legend. A structure standing apart from the house - a carport, a pergola, an outbuilding - is drawn in its own grey so it is not read as part of the building.",
     "dpi": 150,
     "colors": {
       "title_block": "#2563eb",
@@ -1159,12 +1159,13 @@
       "unresolved": "#dc2626",
       "wall": "#7c3aed",
       "opening": "#db2777",
-      "drawing index": "#0d9488"
+      "drawing index": "#0d9488",
+      "detached structure": "#64748b"
     },
     "line_width": 2
   },
   "ocr": {
-    "_comment": "Settings for reading scanned (image-only) sheets. OCR runs only on pages that have no usable text layer of their own; a page with real text is never OCR’d, so a vector plan set is unaffected by anything here. Measured on this machine: one dense A3 construction sheet at 150 DPI takes about 230 seconds and returns roughly 400 text items at 0.89–1.00 recognition confidence. The default budget below is set above that so a scanned sheet actually completes; lower it for a faster run that gives up sooner, raise it for larger or denser sheets. A page that exceeds the budget is reported as timed out, never silently returned empty.",
+    "_comment": "Settings for reading scanned (image-only) sheets. OCR runs only on pages that have no usable text layer of their own; a page with real text is never OCR\u2019d, so a vector plan set is unaffected by anything here. Measured on this machine: one dense A3 construction sheet at 150 DPI takes about 230 seconds and returns roughly 400 text items at 0.89\u20131.00 recognition confidence. The default budget below is set above that so a scanned sheet actually completes; lower it for a faster run that gives up sooner, raise it for larger or denser sheets. A page that exceeds the budget is reported as timed out, never silently returned empty.",
     "page_timeout_seconds": 300,
     "min_native_chars_to_skip": 20,
     "_render_dpi_note": "The resolution the page is rendered at before OCR. Higher reads small text more reliably but costs proportionally more time.",
@@ -1210,7 +1211,7 @@
     ],
     "_merge_note": "A wall face is interrupted wherever a door or window sits in it, so the drawing contains it as several collinear pieces. Pieces on the same line separated by less than this are joined into one face: a wall with a window in it is still one wall. Without this the longest wall found on a 20 m building was 6 m.",
     "face_join_gap_mm": 6000,
-    "_pairing_note": "Faces are paired by how far they run together, not by which is nearest. A long external wall has many lines near it — linings, hatching, joinery — and the nearest one is rarely its own other face. The longest shared run wins, a nominal thickness breaks ties, and each face belongs to one wall only.",
+    "_pairing_note": "Faces are paired by how far they run together, not by which is nearest. A long external wall has many lines near it \u2014 linings, hatching, joinery \u2014 and the nearest one is rarely its own other face. The longest shared run wins, a nominal thickness breaks ties, and each face belongs to one wall only.",
     "length_allowance": 1.05,
     "_length_allowance_comment": "A wall may run a little past the point a dimension string measures to, so a candidate is kept up to this multiple of the longest distance the sheet itself measures. Anything longer is not a wall of this building - it is the block boundary or an eave line - and is set aside as an item to check.",
     "merge_overlapping_candidates": true,

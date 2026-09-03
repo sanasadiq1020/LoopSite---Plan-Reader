@@ -316,6 +316,15 @@ class WallCandidate(BaseModel):
     # face that leaves the drawing without crossing another wall is an outside
     # face — never from where the wall happens to sit in a bounding rectangle.
     wall_type: Literal["outer", "inner", "unknown"] = "unknown"
+    # Which building this wall belongs to. A carport, a pergola or a detached
+    # garage is drawn on the same sheet and is not the same building: its walls
+    # form their own connected group, and that is what says so.
+    building: Literal["main", "detached"] = "main"
+    structure_id: Optional[str] = None
+    # Drawn as a dashed line — a roof extent, an eave, a line above rather than
+    # a wall. Recognised from the shape of the run, because these plan sets
+    # export their dashes as separate short segments.
+    drawn_dashed: bool = False
     orientation: Optional[Literal["horizontal", "vertical"]] = None
     # The walls this one meets, and how each meeting is drawn: L at a corner,
     # T where a partition lands on it, + where two cross, collinear where the

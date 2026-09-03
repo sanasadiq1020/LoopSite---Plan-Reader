@@ -47,6 +47,7 @@ from pipeline.plan.walls import (
     building_outline,
     detect_walls,
     drawing_region,
+    annotation_bands,
     mark_walls_in_dead_ground,
     text_bands_to_avoid,
     trim_walls_to_the_drawing,
@@ -820,6 +821,8 @@ def analyze_page(
                 building_outline(detected_walls, config),
                 text_bands_to_avoid(lines, config),
                 panels,
+                annotation_bands(lines, config),
+                config.get("walls", {}),
             )
             if dead:
                 logger.info(

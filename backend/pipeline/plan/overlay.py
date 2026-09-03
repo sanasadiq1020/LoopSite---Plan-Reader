@@ -166,7 +166,21 @@ def _collect_marks(page_reading: dict) -> list:
         # the drawing under the overlay.
         if wall["length_mm"] >= 3000:
             label = f"{label} {wall['length_mm']:.0f}×{wall['thickness_mm']:.0f}"
-        marks.append(("wall", wall["bbox"], label, confirmed, "line"))
+        # **A carport is drawn, and drawn as a carport.** A structure standing
+        # apart from the house is a real thing on the sheet and belongs on the
+        # marked-up sheet, but drawing it in the same colour as the building
+        # says it is part of the building, which is the thing this is for
+        # telling apart. Its own colour, and its structure's number on it.
+        if wall.get("building") == "detached":
+            marks.append((
+                "detached structure",
+                wall["bbox"],
+                f"{wall.get('structure_id') or ''} {label}".strip(),
+                confirmed,
+                "line",
+            ))
+        else:
+            marks.append(("wall", wall["bbox"], label, confirmed, "line"))
 
     for opening in page_reading.get("openings", []):
         # **Every opening is named on the sheet.** Where the drawing prints a

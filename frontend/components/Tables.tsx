@@ -695,21 +695,25 @@ export function WallsTable({ walls, showSheet }: { walls: WallRow[]; showSheet?:
             row.wall_type === "unknown" ? "text-xs text-slate-400" : "text-xs text-slate-700"
           }
           title={
-            row.wall_type === "outer"
+            row.building === "detached"
+              ? "This wall belongs to a structure standing apart from the house — a carport, a pergola or an outbuilding. It is drawn on the marked-up sheet in grey and is left out of the building's own model."
+              : row.wall_type === "outer"
               ? "Nothing but open paper on one side of it, so it is on the outside of the building."
               : row.wall_type === "inner"
                 ? "There is building on both sides of it, so it is a wall inside the plan."
                 : "This pair of lines meets no other wall, so it has not been established as part of this building and neither answer would be honest."
           }
         >
-          {row.wall_type === "outer"
-            ? "Outside wall"
-            : row.wall_type === "inner"
-              ? "Inside wall"
-              : "Not established"}
+          {row.building === "detached"
+            ? `Detached structure${row.structure_id ? ` ${row.structure_id}` : ""}`
+            : row.wall_type === "outer"
+              ? "Outside wall"
+              : row.wall_type === "inner"
+                ? "Inside wall"
+                : "Not established"}
         </span>
       ),
-      sortValue: (row) => row.wall_type,
+      sortValue: (row) => `${row.building}-${row.wall_type}`,
     },
     {
       key: "direction",

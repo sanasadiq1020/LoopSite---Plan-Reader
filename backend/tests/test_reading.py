@@ -1425,9 +1425,9 @@ def test_one_long_face_can_pair_along_several_stretches(config):
 
     # (position across, start along, end along, breaks). 10 mm per point.
     faces = [
-        (0.0, 0.0, 1000.0, []),      # the outside of the wall, all of it
-        (9.0, 0.0, 400.0, []),       # the inside behind the first room
-        (9.0, 600.0, 1000.0, []),    # and behind the second
+        (0.0, 0.0, 1000.0, [], {}),      # the outside of the wall, all of it
+        (9.0, 0.0, 400.0, [], {}),       # the inside behind the first room
+        (9.0, 600.0, 1000.0, [], {}),    # and behind the second
     ]
     pairs = _pair_faces(faces, 10.0, config, config["walls"]["nominal_thickness_mm"])
 
@@ -1443,9 +1443,9 @@ def test_a_stretch_is_never_given_to_two_walls(config):
     from pipeline.plan.walls import _pair_faces
 
     faces = [
-        (0.0, 0.0, 1000.0, []),
-        (9.0, 0.0, 1000.0, []),
-        (9.4, 0.0, 1000.0, []),   # a third line along the same wall
+        (0.0, 0.0, 1000.0, [], {}),
+        (9.0, 0.0, 1000.0, [], {}),
+        (9.4, 0.0, 1000.0, [], {}),   # a third line along the same wall
     ]
     pairs = _pair_faces(faces, 10.0, config, config["walls"]["nominal_thickness_mm"])
     spans = [(p["start"], p["end"]) for p in pairs]
@@ -1744,10 +1744,10 @@ def test_a_line_with_no_stated_width_is_never_dropped_as_too_thin(config):
     from pipeline.plan.walls import _drop_lines_that_are_not_wall_faces
 
     segments = [(200.0, 100.0, 600.0), (210.0, 100.0, 600.0)]
-    kept = _drop_lines_that_are_not_wall_faces(
+    kept, widths = _drop_lines_that_are_not_wall_faces(
         segments, [0.0, 0.2], {"reject_lines_thinner_than_pt": 0.5}
     )
-    assert kept == [segments[0]]
+    assert kept == [segments[0]] and widths == [0.0]
 
 
 def test_the_office_wall_settings_are_read_from_their_own_file():
@@ -1790,7 +1790,7 @@ def test_a_printed_word_is_not_a_wall(config):
 
     label = [200.0, 100.0, 260.0, 108.0]  # the word "KITCHEN"
     segments = [(100.5, 200.0, 260.0), (107.5, 200.0, 260.0)]
-    assert _drop_lettering(segments, "x", [label], config["walls"]) == []
+    assert _drop_lettering(segments, None, "x", [label], config["walls"])[0] == []
 
 
 def test_a_wall_running_under_a_room_label_is_kept(config):
@@ -1801,7 +1801,7 @@ def test_a_wall_running_under_a_room_label_is_kept(config):
 
     label = [200.0, 100.0, 260.0, 108.0]
     wall_face = [(104.0, 60.0, 700.0)]
-    assert _drop_lettering(wall_face, "x", [label], config["walls"]) == wall_face
+    assert _drop_lettering(wall_face, None, "x", [label], config["walls"])[0] == wall_face
 
 
 def test_a_short_line_inside_a_long_note_is_not_lettering(config):
@@ -1812,7 +1812,7 @@ def test_a_short_line_inside_a_long_note_is_not_lettering(config):
 
     note = [100.0, 100.0, 500.0, 108.0]  # a sentence printed over the plan
     short = [(104.0, 300.0, 322.0)]
-    assert _drop_lettering(short, "x", [note], config["walls"]) == short
+    assert _drop_lettering(short, None, "x", [note], config["walls"])[0] == short
 
 
 def test_a_square_is_not_a_wall(config):
@@ -1822,7 +1822,7 @@ def test_a_square_is_not_a_wall(config):
     from pipeline.plan.walls import _pair_faces
 
     # two faces 230 mm apart running together for 230 mm
-    faces = [(100.0, 500.0, 523.0, []), (123.0, 500.0, 523.0, [])]
+    faces = [(100.0, 500.0, 523.0, [], {}), (123.0, 500.0, 523.0, [], {})]
     settings = {**config["walls"], "min_wall_length_mm": 200, "min_length_to_thickness": 3.0}
     assert _pair_faces(faces, 10.0, {"walls": settings}, []) == []
 
@@ -2196,9 +2196,124 @@ def test_the_second_look_widens_the_thickness_and_nothing_else(config):
     them on the second look let a 230 mm square back in as a wall."""
     from pipeline.plan.walls import _pair_faces
 
-    faces = [(100.0, 500.0, 523.0, []), (123.0, 500.0, 523.0, [])]
+    faces = [(100.0, 500.0, 523.0, [], {}), (123.0, 500.0, 523.0, [], {})]
     settings = {
         **config["walls"], "min_wall_length_mm": 200,
         "min_length_to_thickness": 3.0, "second_look_widening": 0.2,
     }
     assert _pair_faces(faces, 10.0, {"walls": settings}, []) == []
+
+
+# --- a carport is not part of the house ------------------------------------
+
+
+def test_a_structure_standing_apart_is_reported_as_its_own(config):
+    """**A carport, a pergola and a detached garage are drawn on the same sheet
+    and are not the same building.** They are not joined to it, so the house is
+    one connected group of walls and the outbuilding is another — which is what
+    the junctions already said, and it was being thrown away as "outside the
+    building", which is true and useless."""
+    from pipeline.plan.walls import mark_detached_structures
+
+    house = [
+        _candidate("H1", "x", 100.0, 100.0, 900.0, 90.0),
+        _candidate("H2", "x", 600.0, 100.0, 900.0, 90.0),
+        _candidate("H3", "y", 100.0, 100.0, 600.0, 90.0),
+        _candidate("H4", "y", 900.0, 100.0, 600.0, 90.0),
+    ]
+    # A carport well clear of it, 4 m by 6 m at this scale.
+    carport = [
+        _candidate("C1", "x", 1200.0, 1200.0, 1600.0, 90.0),
+        _candidate("C2", "x", 1800.0, 1200.0, 1600.0, 90.0),
+        _candidate("C3", "y", 1200.0, 1200.0, 1800.0, 90.0),
+        _candidate("C4", "y", 1600.0, 1200.0, 1800.0, 90.0),
+    ]
+    walls = house + carport
+    assert mark_detached_structures(walls, config) == 4
+
+    assert {w["wall_id"] for w in walls if w["building"] == "detached"} == {
+        "C1", "C2", "C3", "C4"
+    }
+    assert all(w["building"] == "main" for w in house)
+    # It is a wall, and it does meet other walls — it is simply not the house.
+    assert all(w["meets_another_wall"] for w in carport)
+    assert {w["structure_id"] for w in carport} == {"S01"}
+
+
+def test_a_car_in_the_garage_is_not_a_detached_structure(config):
+    """The first thing this rule found on a real plan was the car drawn in the
+    garage: its outline and the dashed door swing make a closed group of four
+    standing apart from the walls around it. So does a shower recess and a
+    robe. A structure is metres across in both directions."""
+    from pipeline.plan.walls import mark_detached_structures
+
+    house = [
+        _candidate("H1", "x", 100.0, 100.0, 900.0, 90.0),
+        _candidate("H2", "x", 600.0, 100.0, 900.0, 90.0),
+        _candidate("H3", "y", 100.0, 100.0, 600.0, 90.0),
+        _candidate("H4", "y", 900.0, 100.0, 600.0, 90.0),
+    ]
+    # A closed box 1.5 m by 1.2 m: a shower recess, not a building.
+    fitting = [
+        _candidate("F1", "x", 1200.0, 1200.0, 1350.0, 90.0),
+        _candidate("F2", "x", 1320.0, 1200.0, 1350.0, 90.0),
+        _candidate("F3", "y", 1200.0, 1200.0, 1320.0, 90.0),
+        _candidate("F4", "y", 1350.0, 1200.0, 1320.0, 90.0),
+    ]
+    walls = house + fitting
+    assert mark_detached_structures(walls, config) == 0
+    assert all(not w["meets_another_wall"] for w in fitting)
+    assert "furniture or a fitting" in fitting[0]["not_used_because"]
+
+
+def test_nothing_is_called_detached_where_there_is_no_building_to_detach_from(config):
+    """On a sheet whose drawing is stored as a picture the tracing recovers the
+    walls in pieces. Calling every piece but the biggest "detached" would be an
+    invention."""
+    from pipeline.plan.walls import mark_detached_structures
+
+    scattered = [
+        _candidate(f"W{n}", "x", 200.0 * n, 100.0, 400.0, 90.0) for n in range(1, 7)
+    ]
+    assert mark_detached_structures(scattered, config) == 0
+    assert all(w["building"] == "main" for w in scattered)
+
+
+# --- a note beside a line does not make the line a note --------------------
+
+
+def test_a_solid_wall_under_a_roof_note_is_still_a_wall(config):
+    """The note is printed on the roof line, but a wall runs under that note as
+    often as not. Setting every candidate near it aside took real walls with
+    it, which is why the reach came down from 150 points to 40 and why only the
+    lines drawn as roof lines go."""
+    from pipeline.plan.walls import mark_walls_in_dead_ground
+
+    wall = _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)  # solid, nominal
+    eave = _candidate("W2", "x", 260.0, 100.0, 600.0, 90.0, nominal=False)
+    eave["drawn_dashed"] = True
+    band = (0.0, 0.0, 1000.0, 400.0)
+
+    assert mark_walls_in_dead_ground([wall, eave], None, [band], []) == 1
+    # Untouched means kept: only the candidates set aside are marked.
+    assert wall.get("meets_another_wall", True) is True
+    assert eave["meets_another_wall"] is False
+
+
+def test_only_the_light_lines_go_where_a_construction_note_is_printed(config):
+    """A label describing a wall is joined to it by a leader drawn more lightly
+    than the wall itself."""
+    from pipeline.plan.walls import mark_walls_in_dead_ground
+
+    wall = _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)
+    wall["stroke_pt"] = 0.5
+    leader = _candidate("W2", "x", 260.0, 100.0, 600.0, 90.0)
+    leader["stroke_pt"] = 0.1
+    band = (0.0, 0.0, 1000.0, 400.0)
+
+    set_aside = mark_walls_in_dead_ground(
+        [wall, leader], None, [], [], [band], {"annotation_thin_share": 0.8}
+    )
+    assert set_aside == 1
+    assert wall.get("meets_another_wall", True) is True
+    assert leader["meets_another_wall"] is False

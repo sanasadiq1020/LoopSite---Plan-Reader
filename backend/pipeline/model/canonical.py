@@ -63,6 +63,11 @@ def buildable_walls(page: dict, minimum_length: float) -> list:
         for wall in page.get("walls", [])
         if wall.get("length_mm", 0) >= minimum_length
         and wall.get("meets_another_wall", True)
+        # A carport, a pergola or a detached garage is a real structure on the
+        # sheet and is listed as one — but it is not this building, and putting
+        # its walls into the building's model puts its area into every quantity
+        # taken from it.
+        and wall.get("building", "main") != "detached"
     ]
 
 
