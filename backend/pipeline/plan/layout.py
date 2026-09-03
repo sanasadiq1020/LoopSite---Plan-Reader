@@ -143,37 +143,53 @@ def extract_rulings(page) -> dict:
     verticals: list = []
     horizontal_widths: list = []
     vertical_widths: list = []
+    horizontal_dashed: list = []
+    vertical_dashed: list = []
+    empty = {
+        "h": [], "v": [], "h_widths": [], "v_widths": [],
+        "h_dashed": [], "v_dashed": [],
+    }
     try:
         drawings = page_drawings(page)
     except Exception as e:
         logger.exception(f"extract_rulings: get_drawings() failed: {e}")
-        return {"h": [], "v": [], "h_widths": [], "v_widths": []}
+        return empty
 
-    def add_segment(x0, y0, x1, y1, width):
+    def add_segment(x0, y0, x1, y1, width, dashed):
         if abs(y0 - y1) <= _STRAIGHTNESS_TOLERANCE_PT and abs(x0 - x1) >= _MIN_RULING_LENGTH_PT:
             horizontals.append(((y0 + y1) / 2.0, min(x0, x1), max(x0, x1)))
             horizontal_widths.append(width)
+            horizontal_dashed.append(dashed)
         elif abs(x0 - x1) <= _STRAIGHTNESS_TOLERANCE_PT and abs(y0 - y1) >= _MIN_RULING_LENGTH_PT:
             verticals.append(((x0 + x1) / 2.0, min(y0, y1), max(y0, y1)))
             vertical_widths.append(width)
+            vertical_dashed.append(dashed)
 
     for path in drawings:
         try:
             width = float(path.get("width") or 0.0)
         except (TypeError, ValueError):
             width = 0.0
+        # **The dash pattern the PDF states, where it states one.** A dashed
+        # line is a roof extent, a setback, a boundary or a line above — never
+        # a wall — and this is the file saying so outright. It is worth taking
+        # whenever it is there, and on these plan sets it very often is not:
+        # every dash on one floor plan is exported as separate short segments
+        # with the pattern left empty. So this is one of two ways a dashed line
+        # is recognised, not the only one (see `walls._how_it_was_drawn`).
+        dashed = _states_a_dash_pattern(path.get("dashes"))
         for item in path.get("items", []):
             try:
                 kind = item[0]
                 if kind == "l":
                     a, b = item[1], item[2]
-                    add_segment(a.x, a.y, b.x, b.y, width)
+                    add_segment(a.x, a.y, b.x, b.y, width, dashed)
                 elif kind == "re":
                     r = item[1]
-                    add_segment(r.x0, r.y0, r.x1, r.y0, width)
-                    add_segment(r.x0, r.y1, r.x1, r.y1, width)
-                    add_segment(r.x0, r.y0, r.x0, r.y1, width)
-                    add_segment(r.x1, r.y0, r.x1, r.y1, width)
+                    add_segment(r.x0, r.y0, r.x1, r.y0, width, dashed)
+                    add_segment(r.x0, r.y1, r.x1, r.y1, width, dashed)
+                    add_segment(r.x0, r.y0, r.x0, r.y1, width, dashed)
+                    add_segment(r.x1, r.y0, r.x1, r.y1, width, dashed)
             except Exception:
                 # A malformed path item must never take the page down.
                 continue
@@ -183,7 +199,25 @@ def extract_rulings(page) -> dict:
         "v": verticals,
         "h_widths": horizontal_widths,
         "v_widths": vertical_widths,
+        "h_dashed": horizontal_dashed,
+        "v_dashed": vertical_dashed,
     }
+
+
+def _states_a_dash_pattern(dashes) -> bool:
+    """Whether the PDF says this path is drawn with a dash pattern.
+
+    PyMuPDF gives it as the PostScript form, ``"[] 0"`` for a solid line and
+    ``"[ 2.02 2.02 ] 0"`` for a dashed one. Anything with a number inside the
+    brackets is dashed.
+    """
+    if not dashes:
+        return False
+    try:
+        inside = str(dashes).split("[", 1)[1].split("]", 1)[0]
+    except IndexError:
+        return False
+    return any(character.isdigit() for character in inside)
 
 
 def enclosing_cell(x: float, y: float, rulings: dict, page_width: float, page_height: float):

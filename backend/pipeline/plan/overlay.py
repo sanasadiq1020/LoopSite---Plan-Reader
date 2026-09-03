@@ -187,14 +187,19 @@ def _collect_marks(page_reading: dict) -> list:
         # mark that is the name; where it prints none — and a great many plans
         # print none — a short one is made from what the opening is, so a row
         # of the doors-and-windows table can always be found on the drawing.
-        name = opening.get("display_mark") or opening.get("mark") or ""
-        label = name
+        name = opening.get("display_mark") or opening.get("mark") or "O?"
+        # **Every opening says its name and what is known of its size**, and
+        # says plainly when nothing is known. A blank label on the sheet reads
+        # as a reader's oversight; a question mark reads as the drawing not
+        # having stated it, which is what actually happened.
         if opening.get("width_mm") and opening.get("height_mm"):
             label = f"{name} {opening['width_mm']:.0f}×{opening['height_mm']:.0f}"
         elif opening.get("width_mm"):
             # An opening the drawing does not label still has a measured width,
             # and that is what identifies it on the sheet.
-            label = f"{name} {opening['width_mm']:.0f} wide".strip()
+            label = f"{name} {opening['width_mm']:.0f}w"
+        else:
+            label = f"{name} ?"
         confirmed = opening.get("confidence_band") == "high"
         if opening.get("mark"):
             marks.append(("opening", opening["source_bbox"], label, confirmed))
@@ -209,7 +214,7 @@ def _collect_marks(page_reading: dict) -> list:
             # The name goes on the opening itself. The mark's own box is beside
             # the door, often inside the room on a leader, so a label there
             # says where the *label* is rather than where the opening is.
-            marks.append(("opening", placed, label if not opening.get("mark") else name, confirmed))
+            marks.append(("opening", placed, label, confirmed))
         elif not opening.get("mark"):
             marks.append(("opening", opening["source_bbox"], label, confirmed))
 

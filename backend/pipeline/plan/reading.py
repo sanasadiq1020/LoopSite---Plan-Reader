@@ -47,9 +47,10 @@ from pipeline.plan.walls import (
     building_outline,
     detect_walls,
     drawing_region,
-    annotation_bands,
+    arrow_heads,
     mark_walls_in_dead_ground,
-    text_bands_to_avoid,
+    mark_walls_with_an_arrow_at_the_end,
+    printed_panels,
     trim_walls_to_the_drawing,
     wall_graph_for,
     walls_as_records,
@@ -805,30 +806,35 @@ def analyze_page(
         # only the marks meant a plan set that labels nothing returned nothing,
         # and reading only the breaks meant a hole of unknown kind where the
         # drawing had drawn a sliding window plainly.
-        # **Three more places a pair of parallel lines is not a wall.** Outside
-        # the outline the building's own connected walls make; where the sheet
-        # prints a note saying the line is a roof, an eave or a boundary; and
-        # inside a panel printed on the sheet, whose ruled rows are parallel
-        # lines a few millimetres apart at drawing scale.
+        # **Three more places a pair of parallel lines is not a wall, and all
+        # three are read from the drawing rather than from what is written on
+        # it.** Outside the outline the building's own connected walls make;
+        # drawn as a dashed line, which is what a roof extent, an eave, a
+        # setback and a boundary all are; and inside a panel of printed matter,
+        # whose ruled rows are parallel lines a few millimetres apart at
+        # drawing scale.
+        wall_settings = config.get("walls", {})
         if detected_walls:
-            panels = [
-                legend["bbox"] for legend in detected_legends if legend.get("bbox")
-            ] + [
-                table["bbox"] for table in detected_schedules if table.get("bbox")
-            ]
             dead = mark_walls_in_dead_ground(
                 detected_walls,
                 building_outline(detected_walls, config),
-                text_bands_to_avoid(lines, config),
-                panels,
-                annotation_bands(lines, config),
-                config.get("walls", {}),
+                printed_panels(lines, page_width, page_height, wall_settings),
+                wall_settings,
             )
             if dead:
                 logger.info(
-                    f"{sheet_id}: {dead} candidate(s) are outside the building, on a "
-                    "line the sheet names as a roof or a boundary, or inside a panel "
-                    "printed on the drawing"
+                    f"{sheet_id}: {dead} candidate(s) are outside the building, drawn "
+                    "dashed, or inside a panel printed on the sheet"
+                )
+            # A line finishing in an arrowhead points at something, which a
+            # wall never does.
+            leaders = mark_walls_with_an_arrow_at_the_end(
+                detected_walls, arrow_heads(page, wall_settings), wall_settings
+            )
+            if leaders:
+                logger.info(
+                    f"{sheet_id}: {leaders} candidate(s) finish in an arrowhead, so "
+                    "they are notes' leaders rather than walls"
                 )
 
         detected_openings = place_openings_on_walls(

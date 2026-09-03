@@ -66,6 +66,7 @@ coordinate, a room name or a count from any particular drawing (Critical Rule 1)
 """
 
 from app.logging_setup import get_logger
+from pipeline.plan.layout import page_drawings
 from pipeline.plan.rasterlines import extract_rulings_from_image
 
 logger = get_logger()
@@ -86,7 +87,11 @@ def _setting(settings: dict, *names, default=None):
 
 
 def _merge_faces(
-    segments: list, position_tolerance: float, join_gap: float, widths: list = None
+    segments: list,
+    position_tolerance: float,
+    join_gap: float,
+    widths: list = None,
+    dashes: list = None,
 ) -> list:
     """Collapses repeated and broken-up drawings of the same line into one face.
 
@@ -103,16 +108,23 @@ def _merge_faces(
     carried from here or it is lost.
     """
     widths = widths if widths and len(widths) == len(segments) else None
+    dashes = dashes if dashes and len(dashes) == len(segments) else None
     grouped: dict = {}
     for index, (position, start, end) in enumerate(segments):
         key = round(position / position_tolerance)
-        grouped.setdefault(key, []).append(
-            (position, start, end, widths[index] if widths else 0.0)
-        )
+        grouped.setdefault(
+            key, []
+        ).append((
+            position,
+            start,
+            end,
+            widths[index] if widths else 0.0,
+            bool(dashes[index]) if dashes else False,
+        ))
 
     faces = []
 
-    def finish(members, pieces, gaps, current_start, current_end):
+    def finish(members, pieces, marked, gaps, current_start, current_end):
         strokes = [w for w in pieces if w > 0]
         faces.append((
             sum(members) / len(members),
@@ -124,6 +136,8 @@ def _merge_faces(
                 "gaps": len(gaps),
                 "longest_gap": max((h - l for l, h in gaps), default=0.0),
                 "stroke_pt": sorted(strokes)[len(strokes) // 2] if strokes else 0.0,
+                # The file's own word for it, where the file gives one.
+                "states_a_dash": any(marked),
             },
         ))
 
@@ -132,8 +146,9 @@ def _merge_faces(
         current_start, current_end = spans[0][1], spans[0][2]
         members = [spans[0][0]]
         pieces = [spans[0][3]]
+        marked = [spans[0][4]]
         gaps: list = []
-        for position, start, end, width in spans[1:]:
+        for position, start, end, width, dashed in spans[1:]:
             if start <= current_end + join_gap:
                 # The break being bridged is a real break in the drawn line.
                 # A door or a window is exactly that, so it is kept rather
@@ -144,11 +159,12 @@ def _merge_faces(
                 current_end = max(current_end, end)
                 members.append(position)
                 pieces.append(width)
+                marked.append(dashed)
             else:
-                finish(members, pieces, gaps, current_start, current_end)
+                finish(members, pieces, marked, gaps, current_start, current_end)
                 current_start, current_end = start, end
-                members, pieces, gaps = [position], [width], []
-        finish(members, pieces, gaps, current_start, current_end)
+                members, pieces, marked, gaps = [position], [width], [dashed], []
+        finish(members, pieces, marked, gaps, current_start, current_end)
     faces.sort()
     return faces
 
@@ -333,6 +349,9 @@ def _how_it_was_drawn(first: dict, second: dict, mm_per_point: float, settings: 
     least_pieces = int(settings.get("dash_min_pieces", 5))
 
     def dashed(traits: dict) -> bool:
+        # The file's own word first, where it gives one; otherwise the shape.
+        if traits.get("states_a_dash"):
+            return True
         return (
             traits.get("pieces", 1) >= least_pieces
             and traits.get("gaps", 0) >= least_pieces - 1
@@ -659,20 +678,33 @@ def _walls_from(
     settings = config.get("walls", {})
     walls = []
     lone_by_axis = []
-    for axis, segments, widths in (
-        ("x", rulings.get("h", []), rulings.get("h_widths", [])),
-        ("y", rulings.get("v", []), rulings.get("v_widths", [])),
+    for axis, segments, widths, dashes in (
+        ("x", rulings.get("h", []), rulings.get("h_widths", []), rulings.get("h_dashed", [])),
+        ("y", rulings.get("v", []), rulings.get("v_widths", []), rulings.get("v_dashed", [])),
     ):
         # Dimension lines, leaders and hatch strokes are dropped before
         # anything is paired, so they cannot become half of a false wall.
         # Both filters keep the stroke widths lined up with the segments they
         # belong to, because how heavily a line was drawn is what separates an
         # annotation's leader from the edge of a wall further down.
-        segments, widths = _drop_lines_that_are_not_wall_faces(segments, widths, settings)
+        # How each line was drawn travels with it: the two filters below remove
+        # segments, and a width or a dash pattern left behind belongs to the
+        # wrong line from that point on.
+        drawn = list(
+            zip(
+                widths or [0.0] * len(segments),
+                dashes or [False] * len(segments),
+            )
+        ) if len(widths or []) == len(segments) or len(dashes or []) == len(segments) else [
+            (0.0, False)
+        ] * len(segments)
+        segments, drawn = _drop_lines_that_are_not_wall_faces(segments, drawn, settings)
         # Letters are not walls. This runs before pairing, so a word can never
         # become one face of a wall and a line of text can never become two.
-        segments, widths = _drop_lettering(segments, widths, axis, text_boxes, settings)
-        faces = _merge_faces(segments, position_tolerance, join_gap, widths)
+        segments, drawn = _drop_lettering(segments, drawn, axis, text_boxes, settings)
+        widths = [w for w, _ in drawn]
+        dashes = [d for _, d in drawn]
+        faces = _merge_faces(segments, position_tolerance, join_gap, widths, dashes)
         faces = _drop_hatching(faces, mm_per_point, settings)
         faces = [f for f in faces if outside_excluded(f[0], f[1], f[2], axis)]
         pairs, used_faces, usable_faces = _pair_faces_and_faces(
@@ -1109,9 +1141,7 @@ def _connected_groups(walls: list, slack: float) -> list:
 # --- Step 6, before pairing: lines that are not wall faces ----------------
 
 
-def _drop_lines_that_are_not_wall_faces(
-    segments: list, widths: list, settings: dict
-) -> list:
+def _drop_lines_that_are_not_wall_faces(segments: list, drawn: list, settings: dict):
     """Drops the drawn lines that can never be the edge of a wall.
 
     **A dimension line is drawn thin.** So is a leader, a hatch stroke and a
@@ -1126,14 +1156,14 @@ def _drop_lines_that_are_not_wall_faces(
     away every wall on a sheet whose drawing is stored as an image.
     """
     thinner_than = float(_setting(settings, "reject_lines_thinner_than_pt", default=0.0))
-    if thinner_than <= 0 or not widths or len(widths) != len(segments):
-        return segments, widths
+    if thinner_than <= 0 or not drawn or len(drawn) != len(segments):
+        return segments, drawn
     kept = [
-        (segment, width)
-        for segment, width in zip(segments, widths)
-        if not (0.0 < width < thinner_than)
+        (segment, traits)
+        for segment, traits in zip(segments, drawn)
+        if not (0.0 < traits[0] < thinner_than)
     ]
-    return [s for s, _ in kept], [w for _, w in kept]
+    return [s for s, _ in kept], [t for _, t in kept]
 
 
 def _drop_hatching(faces: list, mm_per_point: float, settings: dict) -> list:
@@ -1607,7 +1637,7 @@ def walls_as_records(walls: list) -> list:
 # --- letters are not walls -------------------------------------------------
 
 
-def _drop_lettering(segments: list, widths: list, axis: str, text_boxes, settings: dict):
+def _drop_lettering(segments: list, drawn: list, axis: str, text_boxes, settings: dict):
     """Drops the drawn lines that are actually printed words.
 
     **The single largest source of false walls, and it is worst exactly where
@@ -1632,7 +1662,7 @@ def _drop_lettering(segments: list, widths: list, axis: str, text_boxes, setting
     passes near one.
     """
     if not text_boxes or not settings.get("drop_lettering", True):
-        return segments, widths
+        return segments, drawn
 
     padding = float(settings.get("lettering_padding_pt", 1.0))
     inside_share = float(settings.get("lettering_inside_share", 0.8))
@@ -1651,14 +1681,14 @@ def _drop_lettering(segments: list, widths: list, axis: str, text_boxes, setting
         ):
             boxes_by_band.setdefault(band, []).append(box)
 
-    aligned = widths if widths and len(widths) == len(segments) else [0.0] * len(segments)
+    aligned = drawn if drawn and len(drawn) == len(segments) else [(0.0, False)] * len(segments)
     kept = []
-    kept_widths = []
-    for (position, start, end), width in zip(segments, aligned):
+    kept_traits = []
+    for (position, start, end), traits in zip(segments, aligned):
         span = end - start
         if span <= 0:
             kept.append((position, start, end))
-            kept_widths.append(width)
+            kept_traits.append(traits)
             continue
         lettering = False
         for box in boxes_by_band.get(int(position // _TEXT_BAND_PT), ()):
@@ -1686,8 +1716,8 @@ def _drop_lettering(segments: list, widths: list, axis: str, text_boxes, setting
             break
         if not lettering:
             kept.append((position, start, end))
-            kept_widths.append(width)
-    return kept, kept_widths
+            kept_traits.append(traits)
+    return kept, kept_traits
 
 
 # How wide a band the text boxes are bucketed into, in points. Only an index:
@@ -2075,54 +2105,8 @@ def _mm_per_point_of(walls: list, fallback_thickness: float) -> float:
     return fallback_thickness
 
 
-def annotation_bands(lines: list, config: dict) -> list:
-    """Where the sheet prints a note describing a wall rather than drawing one.
-
-    A plan labels its construction: *reverse brick veneer wall*, *stud wall*,
-    *cavity brick*. The label is joined to the wall it describes by a thin
-    leader, and that leader is a line the right length in the right place. It
-    is not a wall, and the only thing that says so is how lightly it is drawn.
-    """
-    settings = config.get("walls", {})
-    return words_near_lines(
-        lines,
-        settings.get("annotation_words", []),
-        float(settings.get("annotation_reach_pt", 30)),
-    )
-
-
-def text_bands_to_avoid(lines: list, config: dict) -> list:
-    """The parts of the sheet that a note says are not the building.
-
-    A plan labels what it draws round the building: *extent of roof*, *eave
-    over*, *skillion*, *site boundary*. Those words are printed **on** the
-    lines they name, and those lines are parallel pairs at a plausible wall
-    thickness — the eave line and the boundary drawn together were being paired
-    into a wall longer than the house.
-
-    The words are configuration, because every office writes them differently,
-    and the reach is in points because it is a distance on the paper.
-    """
-    settings = config.get("walls", {})
-    words = [
-        str(word).upper()
-        for word in settings.get("not_the_building_words", [])
-        if str(word).strip()
-    ]
-    if not words:
-        return []
-    reach = float(settings.get("not_the_building_reach_pt", 150))
-
-    return words_near_lines(lines, words, reach)
-
-
 def mark_walls_in_dead_ground(
-    walls: list,
-    outline,
-    bands: list,
-    panels: list,
-    annotations: list = None,
-    settings: dict = None,
+    walls: list, outline, panels: list, settings: dict = None
 ) -> int:
     """Sets aside every candidate outside the building or on something else.
 
@@ -2134,9 +2118,6 @@ def mark_walls_in_dead_ground(
     scale, exactly like a wall.
     """
     settings = settings or {}
-    thin_share = float(settings.get("annotation_thin_share", 0.8))
-    thin_below = _median_stroke(walls) * thin_share
-
     set_aside = 0
     for wall in walls:
         box = wall["bbox"]
@@ -2149,31 +2130,18 @@ def mark_walls_in_dead_ground(
                 "This is outside the outline of the building, so it is a boundary, an "
                 "eave line or a roof extent rather than a wall."
             )
-        elif any(_inside(box, band) for band in bands) and _not_a_wall_by_how_it_is_drawn(
-            wall
-        ):
-            # **Only the dashed lines, and only where they are not built.** The
-            # note is printed on the roof line, but a wall runs under that note
-            # as often as not, and setting every candidate near it aside was
-            # taking real walls with it. A roof extent and an eave are drawn
-            # dashed and are not a thickness anything is built at; a wall under
-            # the same note is neither.
+        elif wall.get("drawn_dashed"):
+            # **A dashed line is not a wall, anywhere on the sheet.** A roof
+            # extent, an eave, a setback, a boundary, a line above — every one
+            # of them is drawn dashed, and every office draws them that way
+            # whatever it calls them. Reading the words printed nearby was
+            # doing this job badly: it only worked where the office wrote a
+            # word this reader knew, and it set aside real walls that happened
+            # to run under the note.
             reason = (
-                "The sheet prints a note here saying this line is a roof, an eave or a "
-                "boundary, and it is drawn as one, so it is not a wall."
-            )
-        elif (
-            annotations
-            and thin_below > 0
-            and 0 < wall.get("stroke_pt", 0.0) < thin_below
-            and any(_inside(box, band) for band in annotations)
-        ):
-            # A label describing a wall is joined to it by a leader drawn more
-            # lightly than the wall itself. Only the light lines go.
-            reason = (
-                "The sheet prints a note describing the construction here, and this "
-                "line is drawn more lightly than the walls on this sheet, so it is the "
-                "note's leader rather than a wall."
+                "This is drawn as a dashed line, so it is something drawn over or "
+                "around the building - a roof extent, an eave, a setback or a "
+                "boundary - rather than a wall."
             )
         elif any(_inside(box, panel) for panel in panels):
             reason = (
@@ -2187,15 +2155,6 @@ def mark_walls_in_dead_ground(
             wall["confidence"] = round(min(wall.get("confidence", 0.5), 0.35), 3)
             wall["confidence_band"] = "review"
     return set_aside
-
-
-def _not_a_wall_by_how_it_is_drawn(wall: dict) -> bool:
-    """Whether this candidate looks like a roof line rather than a wall.
-
-    Drawn dashed, or measuring a thickness nothing is built at. A solid pair at
-    a thickness the office builds is a wall, whatever note is printed over it.
-    """
-    return bool(wall.get("drawn_dashed")) or not wall.get("matches_nominal_thickness")
 
 
 def _inside(box, region) -> bool:
@@ -2400,21 +2359,207 @@ def mark_detached_structures(walls: list, config: dict) -> int:
 # --- a dashed line and a light line are not walls, where a note says so -----
 
 
-def _median_stroke(walls: list) -> float:
-    strokes = sorted(w.get("stroke_pt", 0.0) for w in walls if w.get("stroke_pt"))
-    return strokes[len(strokes) // 2] if strokes else 0.0
+def arrow_heads(page, settings: dict) -> list:
+    """Every arrowhead on the sheet, as a point.
 
-
-def words_near_lines(lines: list, words: list, reach: float) -> list:
-    """The areas of the sheet within reach of any of these printed words."""
-    wanted = [str(word).upper() for word in words if str(word).strip()]
-    if not wanted:
+    **An arrowhead is a small filled shape**, and that is all it has to be to
+    be recognised: a solid triangle or a barb, a few points across, filled
+    rather than stroked. Nothing else on a construction drawing is a small
+    filled shape except a solid dot, which is close enough to be worth
+    treating the same way — both of them mark the end of a line that *points*
+    at something, and a line that points at something is a leader.
+    """
+    if page is None or not settings.get("reject_leader_lines", True):
         return []
-    bands = []
-    for line in lines or []:
-        text = (line.get("text") or "").upper()
-        if not any(word in text for word in wanted):
+    try:
+        drawings = page_drawings(page)
+    except Exception as e:
+        logger.exception(f"could not read the sheet's drawn paths for arrowheads: {e}")
+        return []
+
+    biggest = float(settings.get("arrow_head_max_pt", 12.0))
+    heads = []
+    for path in drawings:
+        try:
+            if path.get("type") not in ("f", "fs"):
+                continue
+            rect = path.get("rect")
+            if rect is None:
+                continue
+            width, height = rect.x1 - rect.x0, rect.y1 - rect.y0
+            if not (0 < width <= biggest and 0 < height <= biggest):
+                continue
+            heads.append(((rect.x0 + rect.x1) / 2.0, (rect.y0 + rect.y1) / 2.0))
+        except Exception:
             continue
-        x0, y0, x1, y1 = line["bbox"]
-        bands.append((x0 - reach, y0 - reach, x1 + reach, y1 + reach))
-    return bands
+    return heads
+
+
+def mark_walls_with_an_arrow_at_the_end(walls: list, heads: list, settings: dict) -> int:
+    """Sets aside every candidate with an arrowhead at one of its ends.
+
+    A leader is drawn from a note to the thing it describes and finishes in an
+    arrowhead. Paired with any line beside it, it is two parallel lines a
+    plausible thickness apart — a wall by every geometric test up to here — and
+    the arrowhead is what says otherwise, in the drawing rather than in words.
+
+    **Both ends are looked at, and only the ends.** A wall runs *past* the
+    arrowheads of the dimensions that measure it all day long; what a leader
+    does is stop at one.
+    """
+    if not heads or not settings.get("reject_leader_lines", True):
+        return 0
+    reach = float(settings.get("arrow_reach_pt", 4.0))
+
+    set_aside = 0
+    for wall in walls:
+        if wall.get("not_used_because"):
+            continue
+        # **The arrowhead has to be on the line, past its end.** A dimension's
+        # arrowhead sits against the very wall face it measures to, so simply
+        # asking "is there an arrowhead near either end" set aside 34 of one
+        # floor plan's 88 walls — the wall was measured, which is the opposite
+        # of evidence that it is not a wall. A leader's arrowhead is on the
+        # leader, carrying on in the direction it runs; a dimension's is
+        # across it.
+        low, high = _run(wall)
+        band_low, band_high = _band(wall)
+        horizontal = wall["runs_along"] == "x"
+        if not any(
+            _arrow_at_the_tip(x, y, low, high, band_low, band_high, horizontal, reach)
+            for x, y in heads
+        ):
+            continue
+        set_aside += 1
+        wall["meets_another_wall"] = False
+        wall["not_used_because"] = (
+            "There is an arrowhead at the end of this line, so it points at something: "
+            "it is a note's leader rather than a wall."
+        )
+        wall["confidence"] = round(min(wall.get("confidence", 0.5), 0.35), 3)
+        wall["confidence_band"] = "review"
+    return set_aside
+
+
+def _arrow_at_the_tip(
+    x: float, y: float, low: float, high: float,
+    band_low: float, band_high: float, horizontal: bool, reach: float,
+) -> bool:
+    """Whether this arrowhead is on the end of the line, pointing on past it."""
+    along, across = (x, y) if horizontal else (y, x)
+    # Across the line: within its own thickness. An arrowhead offset from the
+    # line belongs to something drawn beside it.
+    if not (band_low - reach <= across <= band_high + reach):
+        return False
+    # Along it: at an end, and beyond it rather than inside the run.
+    return (low - reach <= along <= low) or (high <= along <= high + reach)
+
+
+def printed_panels(lines: list, page_width: float, page_height: float, settings: dict) -> list:
+    """The panels of printed matter on the sheet: title block, legend, notes.
+
+    **A panel is where the sheet stops being a drawing and becomes a page.** A
+    title block, a legend, an abbreviations list, a schedule and a block of
+    notes are all the same thing to this reader: a dense rectangle of text,
+    ruled into rows, pushed against an edge of the sheet so it stays clear of
+    the drawing. The rows of those rules are parallel lines a few millimetres
+    apart at drawing scale — which is to say they are walls, by every test that
+    looks only at the lines.
+
+    Found from where the text is and nothing else:
+
+    *   **Dense.** The sheet is divided into small squares and the ones holding
+        text are counted. A drawing's own labels are scattered; a panel's are
+        packed, line under line.
+    *   **Joined.** Dense squares touching each other are one panel. That is
+        what makes a notes column a column rather than forty separate lines.
+    *   **Against an edge.** A panel is put where it will not cover the
+        drawing, which is the edge of the sheet. A dense patch in the middle of
+        the paper is the drawing being busy — a stack of dimensions, a room
+        with its finishes listed — and is left alone.
+
+    No word is read and no size is assumed: the squares are a fraction of the
+    sheet, so the same setting works on an A4 and an A0.
+    """
+    if not lines or not settings.get("reject_printed_panels", True):
+        return []
+    square = max(min(page_width, page_height) * float(
+        settings.get("panel_square_share", 0.02)
+    ), 4.0)
+    least_covered = float(settings.get("panel_text_coverage", 0.35))
+    least_squares = int(settings.get("panel_min_squares", 12))
+    edge = min(page_width, page_height) * float(settings.get("panel_edge_share", 0.18))
+
+    across = max(int(page_width / square) + 1, 1)
+    down = max(int(page_height / square) + 1, 1)
+    # **How much of each square is printed on, not how many lines start in it.**
+    # A notes column is one line every nine points, each of them a hundred
+    # points long: counting the lines whose centre lands in a square misses
+    # almost all of them, while the share of the square they cover is close to
+    # one. It is also the right quantity — a panel is dense *ink*.
+    covered: dict = {}
+    for line in lines:
+        box = line.get("bbox")
+        if not box or box[2] <= box[0] or box[3] <= box[1]:
+            continue
+        for column in range(
+            min(max(int(box[0] / square), 0), across - 1),
+            min(max(int(box[2] / square), 0), across - 1) + 1,
+        ):
+            for row in range(
+                min(max(int(box[1] / square), 0), down - 1),
+                min(max(int(box[3] / square), 0), down - 1) + 1,
+            ):
+                cell = (column * square, row * square)
+                width = min(box[2], cell[0] + square) - max(box[0], cell[0])
+                height = min(box[3], cell[1] + square) - max(box[1], cell[1])
+                if width > 0 and height > 0:
+                    key = (column, row)
+                    covered[key] = covered.get(key, 0.0) + width * height
+
+    area = square * square
+    dense = {cell for cell, ink in covered.items() if ink / area >= least_covered}
+    panels = []
+    seen: set = set()
+    for cell in dense:
+        if cell in seen:
+            continue
+        # Everything joined to it, including corner to corner: a panel's rows
+        # do not line up square with an arbitrary grid.
+        group = [cell]
+        seen.add(cell)
+        queue = [cell]
+        while queue:
+            column, row = queue.pop()
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    neighbour = (column + dx, row + dy)
+                    if neighbour in dense and neighbour not in seen:
+                        seen.add(neighbour)
+                        group.append(neighbour)
+                        queue.append(neighbour)
+        if len(group) < least_squares:
+            continue
+
+        x0 = min(c for c, _ in group) * square
+        x1 = (max(c for c, _ in group) + 1) * square
+        y0 = min(r for _, r in group) * square
+        y1 = (max(r for _, r in group) + 1) * square
+        against_an_edge = (
+            x0 <= edge
+            or y0 <= edge
+            or x1 >= page_width - edge
+            or y1 >= page_height - edge
+        )
+        # **A panel is a panel; it is not the sheet.** One that claims a third
+        # of the page is the reading having joined a notes column to the
+        # drawing's own labels across the gap between them, and everything
+        # inside it is then thrown away — on one sheet that was every wall it
+        # had. The same rule the table reader already uses: a table claiming
+        # more of the sheet than a table ever does is not believed.
+        biggest = float(settings.get("panel_max_share_of_the_sheet", 0.2))
+        if against_an_edge and (
+            (x1 - x0) * (y1 - y0) <= page_width * page_height * biggest
+        ):
+            panels.append((x0, y0, x1, y1))
+    return panels

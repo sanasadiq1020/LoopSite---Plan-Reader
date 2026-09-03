@@ -1744,10 +1744,11 @@ def test_a_line_with_no_stated_width_is_never_dropped_as_too_thin(config):
     from pipeline.plan.walls import _drop_lines_that_are_not_wall_faces
 
     segments = [(200.0, 100.0, 600.0), (210.0, 100.0, 600.0)]
-    kept, widths = _drop_lines_that_are_not_wall_faces(
-        segments, [0.0, 0.2], {"reject_lines_thinner_than_pt": 0.5}
+    # How a line was drawn travels with it as (stroke width, dashed).
+    kept, drawn = _drop_lines_that_are_not_wall_faces(
+        segments, [(0.0, False), (0.2, False)], {"reject_lines_thinner_than_pt": 0.5}
     )
-    assert kept == [segments[0]] and widths == [0.0]
+    assert kept == [segments[0]] and drawn == [(0.0, False)]
 
 
 def test_the_office_wall_settings_are_read_from_their_own_file():
@@ -2279,41 +2280,157 @@ def test_nothing_is_called_detached_where_there_is_no_building_to_detach_from(co
     assert all(w["building"] == "main" for w in scattered)
 
 
-# --- a note beside a line does not make the line a note --------------------
+# --- what is not a wall, read from the drawing and not from the words ------
 
 
-def test_a_solid_wall_under_a_roof_note_is_still_a_wall(config):
-    """The note is printed on the roof line, but a wall runs under that note as
-    often as not. Setting every candidate near it aside took real walls with
-    it, which is why the reach came down from 150 points to 40 and why only the
-    lines drawn as roof lines go."""
-    from pipeline.plan.walls import mark_walls_in_dead_ground
-
-    wall = _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)  # solid, nominal
-    eave = _candidate("W2", "x", 260.0, 100.0, 600.0, 90.0, nominal=False)
-    eave["drawn_dashed"] = True
-    band = (0.0, 0.0, 1000.0, 400.0)
-
-    assert mark_walls_in_dead_ground([wall, eave], None, [band], []) == 1
-    # Untouched means kept: only the candidates set aside are marked.
-    assert wall.get("meets_another_wall", True) is True
-    assert eave["meets_another_wall"] is False
-
-
-def test_only_the_light_lines_go_where_a_construction_note_is_printed(config):
-    """A label describing a wall is joined to it by a leader drawn more lightly
-    than the wall itself."""
+def test_a_dashed_line_is_not_a_wall(config):
+    """**A roof extent, an eave, a setback and a boundary are all drawn
+    dashed**, and every office draws them that way whatever it calls them.
+    Reading the words printed nearby only worked where the office wrote a word
+    this reader knew, and it set aside real walls that ran under the note."""
     from pipeline.plan.walls import mark_walls_in_dead_ground
 
     wall = _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)
-    wall["stroke_pt"] = 0.5
-    leader = _candidate("W2", "x", 260.0, 100.0, 600.0, 90.0)
-    leader["stroke_pt"] = 0.1
-    band = (0.0, 0.0, 1000.0, 400.0)
+    eave = _candidate("W2", "x", 260.0, 100.0, 600.0, 90.0)
+    eave["drawn_dashed"] = True
 
-    set_aside = mark_walls_in_dead_ground(
-        [wall, leader], None, [], [], [band], {"annotation_thin_share": 0.8}
-    )
-    assert set_aside == 1
+    assert mark_walls_in_dead_ground([wall, eave], None, []) == 1
     assert wall.get("meets_another_wall", True) is True
+    assert eave["meets_another_wall"] is False
+    assert "dashed" in eave["not_used_because"]
+
+
+def test_the_pdfs_own_dash_pattern_is_read_where_it_gives_one(config):
+    """PyMuPDF reports it in the PostScript form. These plan sets mostly export
+    their dashes as separate short segments and leave the pattern empty, so
+    this is one of two ways a dashed line is recognised — but where the file
+    does say so outright, it is taken."""
+    from pipeline.plan.layout import _states_a_dash_pattern
+
+    assert _states_a_dash_pattern("[ 2.02 2.02 ] 0") is True
+    assert _states_a_dash_pattern("[] 0") is False
+    assert _states_a_dash_pattern(None) is False
+
+
+def test_a_line_finishing_in_an_arrowhead_is_a_leader(config):
+    """A leader is drawn from a note to the thing it describes and finishes in
+    an arrowhead. Paired with any line beside it, it is a wall by every test
+    that looks only at the lines — the arrowhead is what says otherwise, in the
+    drawing rather than in words."""
+    from pipeline.plan.walls import mark_walls_with_an_arrow_at_the_end
+
+    leader = _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)
+    wall = _candidate("W2", "y", 900.0, 100.0, 600.0, 90.0)
+    heads = [(600.0, 200.0)]  # at the leader's far end
+
+    assert mark_walls_with_an_arrow_at_the_end(
+        [leader, wall], heads, {"arrow_reach_pt": 4.0}
+    ) == 1
     assert leader["meets_another_wall"] is False
+    assert wall.get("meets_another_wall", True) is True
+
+
+def test_a_wall_running_past_an_arrowhead_is_still_a_wall(config):
+    """A wall runs past the arrowheads of the dimensions that measure it all
+    day long. What a leader does is *stop* at one."""
+    from pipeline.plan.walls import mark_walls_with_an_arrow_at_the_end
+
+    wall = _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)
+    beside_it = [(350.0, 200.0)]  # partway along, not at an end
+
+    assert mark_walls_with_an_arrow_at_the_end(
+        [wall], beside_it, {"arrow_reach_pt": 4.0}
+    ) == 0
+
+
+def test_a_panel_of_printed_matter_is_found_from_where_the_text_is(config):
+    """A title block, a legend and a notes column are the same thing: a dense
+    rectangle of text pushed against an edge so it stays clear of the drawing.
+    Its ruled rows are parallel lines a few millimetres apart at drawing
+    scale — walls, to anything that looks only at the lines."""
+    from pipeline.plan.walls import printed_panels
+
+    # A notes column down the left edge: forty lines, one under the other.
+    column = [
+        {"bbox": [20.0, 40.0 + n * 9.0, 150.0, 48.0 + n * 9.0], "text": "note"}
+        for n in range(40)
+    ]
+    # And the drawing's own labels, scattered across the middle.
+    scattered = [
+        {"bbox": [300.0 + n * 70.0, 300.0 + n * 40.0, 360.0 + n * 70.0, 310.0 + n * 40.0],
+         "text": "BED"}
+        for n in range(6)
+    ]
+    panels = printed_panels(column + scattered, 842.0, 595.0, config["walls"])
+
+    assert len(panels) == 1
+    x0, y0, x1, y1 = panels[0]
+    assert x0 < 60 and x1 < 300, "the panel is the column down the edge"
+    assert y1 > 300, "and it runs the depth of the column"
+
+
+def test_the_drawings_own_labels_are_not_a_panel(config):
+    """A dense patch in the middle of the paper is the drawing being busy — a
+    stack of dimensions, a room with its finishes listed."""
+    from pipeline.plan.walls import printed_panels
+
+    middle = [
+        {"bbox": [400.0, 200.0 + n * 9.0, 480.0, 208.0 + n * 9.0], "text": "x"}
+        for n in range(20)
+    ]
+    assert printed_panels(middle, 842.0, 595.0, config["walls"]) == []
+
+
+# --- two readings a door's width apart are one door ------------------------
+
+
+def test_two_readings_alongside_each_other_on_one_wall_are_one_opening(config):
+    """A door's swing is drawn from the hinge and a break is measured between
+    the jambs, so the two sit alongside rather than on top of each other.
+    Nearer than a door is wide, on one wall, there is not room for two."""
+    page = _page_with([
+        _opening("door_swing", "W1", 0.30, 0.42, "door", width=820),
+        _opening("gap_in_the_wall", "W1", 0.44, 0.56, None, width=830),
+    ])
+    result = merge_opening_evidence(page, config)
+
+    assert result["openings"] == 1
+    assert page["openings"][0]["element_type"] == "door"
+
+
+def test_a_swing_outranks_the_window_drawn_inside_the_wall(config):
+    """The swing is the door leaf itself, swept out to its own width. The
+    window drawn inside a wall is the opening, but its width is read off the
+    ends rather than swept."""
+    page = _page_with([
+        _opening("window_symbol", "W1", 0.30, 0.45, "sliding_window", width=900),
+        _opening("door_swing", "W1", 0.31, 0.46, "door", width=820),
+    ])
+    merge_opening_evidence(page, config)
+
+    assert page["openings"][0]["element_type"] == "door"
+
+
+def test_two_openings_a_room_apart_stay_two(config):
+    """The rule is a door's width, not a room's."""
+    page = _page_with([
+        _opening("window_symbol", "W1", 0.05, 0.18, "fixed_window", width=800),
+        _opening("window_symbol", "W1", 0.70, 0.85, "sliding_window", width=900),
+    ])
+    assert merge_opening_evidence(page, config)["openings"] == 2
+
+
+def test_an_opening_with_no_mark_is_never_an_unmatched_mark(config):
+    """It was measured from a break, or read from the window drawn inside the
+    wall, or from a door's swing. It can neither match a schedule row nor be
+    missing from one."""
+    from pipeline.plan.openings import reconcile_openings_with_schedules
+
+    page = _page_with([
+        _opening("window_symbol", "W1", 0.30, 0.45, "sliding_window", width=900),
+        _opening("door_swing", "W1", 0.60, 0.72, "door", width=820),
+    ])
+    page["schedules"] = []
+    result = reconcile_openings_with_schedules([page])
+
+    assert result["marks_without_a_schedule"] == []

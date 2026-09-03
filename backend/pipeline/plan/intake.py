@@ -955,7 +955,7 @@ def process_upload(
 # rendering it would either fail or show a half-empty screen — so it is
 # detected here and the caller is told to run the file through again, rather
 # than the interface silently showing blanks.
-PLAN_READING_FORMAT = 10
+PLAN_READING_FORMAT = 11
 
 
 def load_plan_reading(run_id: str) -> dict | None:

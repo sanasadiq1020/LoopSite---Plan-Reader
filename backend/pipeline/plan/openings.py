@@ -453,10 +453,11 @@ def reconcile_openings_with_schedules(pages: list) -> dict:
 
     for page in pages:
         for opening in page.get("openings", []):
-            if opening.get("found_by") == "gap_in_the_wall":
-                # This one was measured from a break in a wall, on a drawing
-                # that prints no codes at all. It never had a mark, so it can
-                # neither match a schedule row nor be missing from one —
+            if not opening.get("mark"):
+                # **This one was never marked.** It was measured from a break
+                # in a wall, or read from the window drawn inside it, or from a
+                # door's swing — on a drawing that prints no codes at all. It
+                # can neither match a schedule row nor be missing from one, and
                 # counting it as an unmatched mark produced 45 findings that
                 # said nothing and an opening count nearly half made of blanks.
                 continue
@@ -939,8 +940,13 @@ def _overlap_on_the_wall(first: dict, second: dict) -> float:
 # reference to a schedule row that may have been typed against the wrong mark;
 # and a gap says only that the wall stops.
 _SOURCE_RANK = {
+    # The swing is the strongest thing on the sheet: it is the door leaf itself,
+    # drawn to its own width. The window drawn inside the wall is next — it is
+    # the opening, but its width is read off the ends rather than swept out. A
+    # printed mark is a reference to a schedule row that may have been typed
+    # against the wrong code, and a break says only that the wall stops.
     "door_swing": 4,
-    "window_symbol": 4,
+    "window_symbol": 3,
     "mark_on_the_drawing": 2,
     "gap_in_the_wall": 1,
 }
@@ -967,10 +973,12 @@ def merge_opening_evidence(page: dict, config: dict) -> dict:
     """
     settings = config.get("walls", {})
     same_opening = float(settings.get("same_opening_overlap_share", 0.5))
+    apart_mm = float(settings.get("same_opening_apart_mm", 300))
 
     openings = page.get("openings") or []
     walls_by_id = {wall["wall_id"]: wall for wall in page.get("walls") or []}
     mm_per_point = _millimetres_per_point(page.get("scale_calibration") or {})
+    apart = (apart_mm / mm_per_point) if mm_per_point else 0.0
     for opening in openings:
         opening.setdefault("evidence", [opening.get("found_by", "gap_in_the_wall")])
         opening["placed_bbox"] = _placed_box(opening, walls_by_id, mm_per_point)
@@ -994,7 +1002,8 @@ def merge_opening_evidence(page: dict, config: dict) -> dict:
     for opening in sorted(placed, key=lambda o: _claimed_box(o)[0]):
         for cluster in clusters:
             if any(
-                _same_place(opening, member, same_opening) for member in cluster
+                _same_place(opening, member, same_opening, apart)
+                for member in cluster
             ):
                 cluster.append(opening)
                 break
@@ -1057,15 +1066,32 @@ def _claimed_box(opening: dict):
     return opening.get("placed_bbox") or opening["source_bbox"]
 
 
-def _same_place(first: dict, second: dict, share: float) -> bool:
-    """Whether these two readings claim the same place on the sheet."""
+def _same_place(first: dict, second: dict, share: float, apart: float = 0.0) -> bool:
+    """Whether these two readings are of the same opening.
+
+    Two ways, either of which is enough:
+
+    *   **They overlap.** A symbol drawn inside a wall and the break in that
+        wall are the same stretch of it, read two ways.
+    *   **They are on the same wall and close together.** A door's swing is
+        drawn from the hinge and a break is measured between the jambs; the two
+        can sit alongside each other rather than on top. Nearer than a door is
+        wide, on the same wall, they are one door — there is not room for two.
+    """
     a, b = _claimed_box(first), _claimed_box(second)
     width = min(a[2], b[2]) - max(a[0], b[0])
     height = min(a[3], b[3]) - max(a[1], b[1])
-    if width <= 0 or height <= 0:
+    if width > 0 and height > 0:
+        smaller = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+        if smaller > 0 and (width * height) / smaller >= share:
+            return True
+    if apart <= 0 or first.get("wall_id") != second.get("wall_id"):
         return False
-    smaller = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
-    return smaller > 0 and (width * height) / smaller >= share
+    gap = max(
+        max(a[0], b[0]) - min(a[2], b[2]),
+        max(a[1], b[1]) - min(a[3], b[3]),
+    )
+    return gap <= apart
 
 
 def _one_opening_from(cluster: list) -> dict:
@@ -1196,6 +1222,8 @@ def name_openings(pages: list, config: dict) -> None:
             if opening.get("mark"):
                 opening["display_mark"] = opening["mark"]
                 continue
+            # An opening the drawing never named still has to be nameable, or a
+            # row of the table cannot be found on the sheet.
             prefix = prefixes.get(opening.get("element_type") or "", default)
             counters[prefix] = counters.get(prefix, 0) + 1
             opening["display_mark"] = f"{prefix}{counters[prefix]:02d}"
