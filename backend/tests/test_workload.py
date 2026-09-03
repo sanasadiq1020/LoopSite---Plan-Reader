@@ -359,3 +359,41 @@ def test_a_container_is_asked_about_its_own_limit_first(tmp_path, monkeypatch):
 
     monkeypatch.setattr("builtins.open", fake_open)
     assert round(workload._memory_this_machine_has_mb()) == 512
+
+
+# --- what is offered can actually be downloaded ----------------------------
+
+
+def test_every_download_the_interface_offers_can_be_served():
+    """**A download offered and refused is worse than one not offered.** The
+    files the Download menu points at and the files allowed to leave a run
+    folder were two separate lists, and they drifted: walls.json and
+    wall_graph.json sat on the menu for two releases and returned "Not found"
+    every time, because adding them to the menu did not add them to the guard.
+    Found by clicking the link in a browser, not by any test here — so here is
+    the test.
+
+    It deliberately does not import the router, which needs the web framework:
+    the invariant belongs to the lists themselves, and a test that can only run
+    where the framework installs is a test that does not run.
+    """
+    from pipeline.plan.intake import (
+        EXPORTS,
+        JSON_EXPORTS,
+        _EXPORT_FILENAMES,
+    )
+
+    offered = set(EXPORTS.values()) | set(JSON_EXPORTS.values())
+    assert offered, "the interface offers nothing to download"
+    missing = offered - _EXPORT_FILENAMES
+    assert not missing, f"offered but not allowed to be served: {sorted(missing)}"
+
+
+def test_the_download_guard_still_refuses_anything_else():
+    """The guard is there so only a file this pipeline writes can leave the run
+    folder. Widening it to cover the menu must not have widened it to cover
+    everything."""
+    from pipeline.plan.intake import resolve_export_path
+
+    for name in ("source.pdf", "../../secrets.env", "plan_reading.json"):
+        assert resolve_export_path("any-run", name) is None

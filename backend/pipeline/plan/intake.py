@@ -1135,15 +1135,32 @@ def resolve_overlay_image_path(run_id: str, filename: str) -> Path | None:
         doc.close()
 
 
-_EXPORT_FILENAMES = {
-    "rooms.csv",
-    "dimensions.csv",
-    "schedule_rows.csv",
-    "walls.csv",
-    "openings.csv",
-    "accuracy_report.csv",
-    "ground_truth_template.csv",
+# **What the interface offers to download, and what may be served, are one
+# list.** They were two: the router named the files it offers, and this named
+# the files that may leave the run folder — a deliberate containment guard, so
+# only a file this pipeline writes can ever be sent. Two lists mean two lists
+# that drift, and they did: walls.json and wall_graph.json were offered on the
+# Download menu for two releases and returned "Not found" every time, because
+# adding them to the menu did not add them here. Naming them once means the
+# question cannot be answered two ways.
+EXPORTS = {
+    "rooms": "rooms.csv",
+    "dimensions": "dimensions.csv",
+    "schedule-rows": "schedule_rows.csv",
+    "walls": "walls.csv",
+    "openings": "openings.csv",
 }
+
+JSON_EXPORTS = {
+    "walls": "walls.json",
+    "wall-graph": "wall_graph.json",
+}
+
+_EXPORT_FILENAMES = (
+    set(EXPORTS.values())
+    | set(JSON_EXPORTS.values())
+    | {"accuracy_report.csv", "ground_truth_template.csv"}
+)
 
 
 def resolve_export_path(run_id: str, filename: str) -> Path | None:

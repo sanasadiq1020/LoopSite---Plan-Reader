@@ -17,6 +17,8 @@ from pipeline.model.build import (
 )
 from app.session import get_session_id
 from pipeline.plan.intake import (
+    EXPORTS,
+    JSON_EXPORTS,
     build_overlays_zip,
     draw_overlays_ahead,
     load_config,
@@ -231,13 +233,9 @@ async def get_overlay_image(
 
 # The extracted tables, downloadable as CSV so results can be checked in a
 # spreadsheet without going through the interface or writing any code.
-_EXPORTS = {
-    "rooms": "rooms.csv",
-    "dimensions": "dimensions.csv",
-    "schedule-rows": "schedule_rows.csv",
-    "walls": "walls.csv",
-    "openings": "openings.csv",
-}
+# Named once, in the module that also decides which files may leave the run
+# folder — see the note on EXPORTS there.
+_EXPORTS = EXPORTS
 
 
 @router.get("/{run_id}/export/{name}.csv")
@@ -262,10 +260,7 @@ async def get_export_csv(
 # measured from, the breaks in it, or the graph of which walls it is built into.
 # Those go out as JSON — the same files every later stage reads, so what a
 # reviewer downloads is what the model was built from (Critical Rule 2).
-_JSON_EXPORTS = {
-    "walls": "walls.json",
-    "wall-graph": "wall_graph.json",
-}
+_JSON_EXPORTS = JSON_EXPORTS
 
 
 @router.get("/{run_id}/export/{name}.json")
