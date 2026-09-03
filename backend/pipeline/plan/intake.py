@@ -583,6 +583,13 @@ def process_upload(
                 page_number,
                 page_count,
                 page_reading.get("sheet_id") or "",
+                # What this sheet gave the finishing work to write. Counted
+                # here so the bar's last stretch is sized from the document
+                # rather than from the number of its sheets.
+                records=sum(
+                    len(page_reading.get(key) or [])
+                    for key in ("rooms", "dimensions", "walls", "openings")
+                ),
             )
 
             has_native = readable_native_chars > 0
@@ -712,7 +719,30 @@ def process_upload(
 
     # Door and window schedules are printed on their own sheets, so marks can
     # only be matched to them once every page has been read.
-    progress.set_stage(progress_token, "Matching the doors and windows to their schedules", 87)
+    # **What is left, and how much of it there is.** The bar's last stretch is
+    # shared out by what each step actually has to get through on *this*
+    # document — the marks to match, the sheets to check against the index, the
+    # records to write — rather than by four numbers chosen in advance. A plan
+    # set with a large schedule gives its matching step a bigger slice than one
+    # with a small schedule, on the same bar.
+    records_to_write = sum(
+        len(page.get(key) or [])
+        for page in plan_reading_pages
+        for key in ("rooms", "dimensions", "walls", "openings", "unresolved_items")
+    )
+    marks_to_match = sum(
+        len(page.get("opening_marks") or []) for page in plan_reading_pages
+    )
+    progress.begin_finishing(
+        progress_token,
+        [
+            ("Matching the doors and windows to their schedules", marks_to_match + 1),
+            ("Checking each sheet against the drawing index", page_count),
+            ("Working out what was found", records_to_write),
+            ("Writing the tables and the issues log", records_to_write * 2),
+        ],
+    )
+    progress.finishing_step(progress_token, 0)
     try:
         opening_reconciliation = reconcile_openings_with_schedules(plan_reading_pages)
     except Exception as e:
@@ -740,7 +770,7 @@ def process_upload(
     except Exception as e:
         logger.exception(f"run={run_id} opening placement failed: {e}")
 
-    progress.set_stage(progress_token, "Checking each sheet against the drawing index", 90)
+    progress.finishing_step(progress_token, 1)
     try:
         cross_check = cross_check_pages(plan_reading_pages, sheet_index, config)
     except Exception as e:
@@ -754,7 +784,7 @@ def process_upload(
     # reader opens two or three. The address is fixed by the page number, so
     # it is given out now and the image is drawn the first time it is asked
     # for, which takes about a second.
-    progress.set_stage(progress_token, "Working out what was found", 92)
+    progress.finishing_step(progress_token, 2)
     (run_dir / "overlays").mkdir(parents=True, exist_ok=True)
     for reading in plan_reading_pages:
         if reading.get("error"):
@@ -861,7 +891,7 @@ def process_upload(
     (run_dir / "sheet_register.json").write_text(
         json.dumps(sheet_register, indent=2), encoding="utf-8"
     )
-    progress.set_stage(progress_token, "Writing the tables and the issues log", 96)
+    progress.finishing_step(progress_token, 3)
     _write_sheet_register_csv(run_dir / "sheet_register.csv", sheets)
     (run_dir / "raw_text.json").write_text(
         json.dumps({"run_id": run_id, "pages": raw_text_pages}, indent=2),
