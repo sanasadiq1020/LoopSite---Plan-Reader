@@ -47,6 +47,11 @@ def _hex_to_rgb(value: str):
     return tuple(int(value[i : i + 2], 16) for i in (0, 2, 4))
 
 
+# An opening's name, in points on the sheet, and how thick its outline is.
+_OPENING_LABEL_POINTS = 9
+_OPENING_BORDER = 2
+
+
 def _load_font(size: int):
     for name in ("arial.ttf", "DejaVuSans.ttf", "LiberationSans-Regular.ttf"):
         try:
@@ -68,7 +73,9 @@ _LABEL_HEIGHT = 11
 _LABEL_CHARACTER_WIDTH = 5.5
 
 
-def _room_for_a_label(text: str, box, already_drawn: list, image_size) -> tuple:
+def _room_for_a_label(
+    text: str, box, already_drawn: list, image_size, font=None, draw=None
+) -> tuple:
     """Somewhere clear to put this name, as near its own mark as possible.
 
     Tried in order: just above the mark, just below it, then to either side,
@@ -78,23 +85,34 @@ def _room_for_a_label(text: str, box, already_drawn: list, image_size) -> tuple:
     nuisance, a name missing altogether is a reader unable to find the row it
     belongs to.
     """
-    width = len(text) * _LABEL_CHARACTER_WIDTH + 4
+    # Measured where a font is given, so the white panel behind a name is the
+    # size of the name rather than a guess at it.
+    height = _LABEL_HEIGHT
+    if font is not None and draw is not None:
+        try:
+            left_x, top_y, right_x, bottom_y = draw.textbbox((0, 0), text, font=font)
+            width = (right_x - left_x) + 5
+            height = (bottom_y - top_y) + 4
+        except Exception:
+            width = len(text) * _LABEL_CHARACTER_WIDTH + 4
+    else:
+        width = len(text) * _LABEL_CHARACTER_WIDTH + 4
     page_width, page_height = image_size
     left = min(max(0.0, box[0]), max(0.0, page_width - width))
-    above, below = box[1] - _LABEL_HEIGHT, box[3] + 1
+    above, below = box[1] - height, box[3] + 1
 
     places = [(left, above), (left, below), (box[2] + 3, above), (left - width - 3, above)]
     for step in range(1, 7):
-        places.append((left, above - step * _LABEL_HEIGHT))
-        places.append((left, below + step * _LABEL_HEIGHT))
+        places.append((left, above - step * height))
+        places.append((left, below + step * height))
 
     for x, y in places:
-        if x < 0 or y < 0 or x + width > page_width or y + _LABEL_HEIGHT > page_height:
+        if x < 0 or y < 0 or x + width > page_width or y + height > page_height:
             continue
-        room = (x, y, x + width, y + _LABEL_HEIGHT)
+        room = (x, y, x + width, y + height)
         if not any(_overlaps(room, taken) for taken in already_drawn):
             return room
-    return (left, max(0.0, above), left + width, max(0.0, above) + _LABEL_HEIGHT)
+    return (left, max(0.0, above), left + width, max(0.0, above) + height)
 
 
 def _dashed_rectangle(draw, box, colour, width: int, dash: int = 6):
@@ -183,40 +201,34 @@ def _collect_marks(page_reading: dict) -> list:
             marks.append(("wall", wall["bbox"], label, confirmed, "line"))
 
     for opening in page_reading.get("openings", []):
-        # **Every opening is named on the sheet.** Where the drawing prints a
-        # mark that is the name; where it prints none — and a great many plans
-        # print none — a short one is made from what the opening is, so a row
-        # of the doors-and-windows table can always be found on the drawing.
-        name = opening.get("display_mark") or opening.get("mark") or "O?"
-        # **Every opening says its name and what is known of its size**, and
-        # says plainly when nothing is known. A blank label on the sheet reads
-        # as a reader's oversight; a question mark reads as the drawing not
-        # having stated it, which is what actually happened.
-        if opening.get("width_mm") and opening.get("height_mm"):
-            label = f"{name} {opening['width_mm']:.0f}×{opening['height_mm']:.0f}"
-        elif opening.get("width_mm"):
-            # An opening the drawing does not label still has a measured width,
-            # and that is what identifies it on the sheet.
-            label = f"{name} {opening['width_mm']:.0f}w"
-        else:
-            label = f"{name} ?"
+        # **Every opening is named on the sheet, and only named.** Where the
+        # drawing prints a mark that is the name; where it prints none — and a
+        # great many plans print none — a short one is made from what the
+        # opening is, so a row of the doors-and-windows table can always be
+        # found on the drawing.
+        #
+        # The size is deliberately not on it. Every opening used to carry its
+        # width and height here, which is a pair of numbers on a sheet that
+        # already prints its own dimensions, sitting over the drawing a
+        # reviewer is trying to read. The size is a column in the table; the
+        # sheet only has to say *which* opening this is.
+        label = opening.get("display_mark") or opening.get("mark") or "O?"
         confirmed = opening.get("confidence_band") == "high"
-        if opening.get("mark"):
-            marks.append(("opening", opening["source_bbox"], label, confirmed))
 
-        # **And where the opening itself was put.** The box above is where the
-        # mark is printed, which is beside the door rather than on it. A
-        # reviewer checking whether a hole is in the right place needs to see
-        # the hole, so the place the opening was given on its wall is drawn too
-        # — the same evidence the 3D model is cut from.
-        placed = _opening_on_its_wall(opening, walls_by_id)
-        if placed:
-            # The name goes on the opening itself. The mark's own box is beside
-            # the door, often inside the room on a leader, so a label there
-            # says where the *label* is rather than where the opening is.
-            marks.append(("opening", placed, label, confirmed))
-        elif not opening.get("mark"):
-            marks.append(("opening", opening["source_bbox"], label, confirmed))
+        # **Drawn where the opening is, not where its label is printed.** A
+        # mark is printed beside the door, often inside the room on a leader,
+        # so a box round the mark says where the lettering is. What a reviewer
+        # is checking is whether the hole is in the right place, so the box
+        # goes on the place the opening was given on its wall — the same
+        # evidence the 3D model is cut from — and falls back to the mark's own
+        # box only where it was never placed.
+        marks.append((
+            _what_kind_of_opening(opening),
+            _opening_on_its_wall(opening, walls_by_id) or opening["source_bbox"],
+            label,
+            confirmed,
+            "opening",
+        ))
 
     for table in page_reading.get("schedules", []):
         for row in table["rows"]:
@@ -279,6 +291,10 @@ def render_overlay(page, page_reading: dict, out_path, config: dict, page_pixmap
         draw = ImageDraw.Draw(image)
         label_font = _load_font(max(9, int(dpi / 16)))
         legend_font = _load_font(max(11, int(dpi / 12)))
+        # An opening's name is set at 9 point on the sheet — a real type size,
+        # so it reads the same whether the page is rendered at 150 dots an inch
+        # or at 300. The other names keep the size they had.
+        opening_font = _load_font(max(int(_OPENING_LABEL_POINTS * scale), 9))
 
         used_categories: dict = {}
         label_boxes: list = []
@@ -308,12 +324,36 @@ def render_overlay(page, page_reading: dict, out_path, config: dict, page_pixmap
                 else:
                     middle = (box[0] + box[2]) / 2
                     draw.line([(middle, box[1]), (middle, box[3])], fill=colour, width=stroke)
+            elif shape == "opening":
+                # The opening itself: an outline on the place it occupies, two
+                # pixels thick, never filled — a filled box would hide the very
+                # thing a reviewer opened the sheet to look at. Still dashed
+                # where the reading is not confirmed, which is what the key in
+                # the corner says a dashed outline means.
+                if confirmed:
+                    draw.rectangle(box, outline=colour, width=_OPENING_BORDER)
+                else:
+                    _dashed_rectangle(draw, box, colour, _OPENING_BORDER)
             elif confirmed:
                 draw.rectangle(box, outline=colour, width=line_width)
             else:
                 _dashed_rectangle(draw, box, colour, line_width)
             used_categories.setdefault(category, colour)
-            if label:
+            if label and shape == "opening":
+                # **Above the opening, on white.** A name in the drawing's own
+                # colours disappears into the line work under it; a name over a
+                # patch of white is legible on top of anything. It is still
+                # moved out of the way of a name already drawn, because on a
+                # busy plan the openings are close enough together that fixing
+                # every name directly above its own box printed them over one
+                # another into a smear.
+                where = _room_for_a_label(
+                    str(label), box, label_boxes, image.size, opening_font, draw
+                )
+                draw.rectangle(where, fill=(255, 255, 255))
+                draw.text((where[0] + 2, where[1]), str(label), fill=colour, font=opening_font)
+                label_boxes.append(where)
+            elif label:
                 # **Every name is drawn. A name that would land on one already
                 # there is moved, not dropped.** Marks cluster where a drawing
                 # is busiest, and their names were printing on top of one
@@ -366,6 +406,21 @@ def render_overlay(page, page_reading: dict, out_path, config: dict, page_pixmap
     except Exception as e:
         logger.exception(f"render_overlay failed for {out_path}: {e}")
         return False
+
+
+def _what_kind_of_opening(opening: dict) -> str:
+    """Which colour this opening is drawn in: a door, a window, or neither.
+
+    Read off the kind the reading already settled — nothing is decided here.
+    An opening the drawing never named keeps its own colour rather than being
+    coloured as a guess.
+    """
+    kind = (opening.get("element_type") or "").lower()
+    if "door" in kind and "window" not in kind:
+        return "door"
+    if "window" in kind:
+        return "window"
+    return "opening"
 
 
 def _opening_on_its_wall(opening: dict, walls_by_id: dict):

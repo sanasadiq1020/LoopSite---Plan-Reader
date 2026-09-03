@@ -1147,7 +1147,7 @@
     "max_entry_length": 120
   },
   "overlay": {
-    "_comment": "Colours used to draw detected items over the source page render, so a reviewer can see false positives and misses directly. Each category is drawn in a distinct colour and listed in the on-image legend. A structure standing apart from the house - a carport, a pergola, an outbuilding - is drawn in its own grey so it is not read as part of the building.",
+    "_comment": "Colours used to draw detected items over the source page render, so a reviewer can see false positives and misses directly. Each category is drawn in a distinct colour and listed in the on-image legend. A structure standing apart from the house - a carport, a pergola, an outbuilding - is drawn in its own grey so it is not read as part of the building. A door is drawn in yellow, a window in dark purple, and an opening the drawing never named in grey - so which is which can be seen without reading a single label.",
     "dpi": 150,
     "colors": {
       "title_block": "#2563eb",
@@ -1158,9 +1158,11 @@
       "legend": "#65a30d",
       "unresolved": "#dc2626",
       "wall": "#7c3aed",
-      "opening": "#db2777",
+      "opening": "#9CA3AF",
       "drawing index": "#0d9488",
-      "detached structure": "#64748b"
+      "detached structure": "#64748b",
+      "door": "#FFD700",
+      "window": "#6B21A8"
     },
     "line_width": 2
   },
