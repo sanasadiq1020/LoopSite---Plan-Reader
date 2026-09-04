@@ -1,0 +1,74 @@
+{
+  "_comment": "Everything the four-source opening reader uses. A break in a wall is a CANDIDATE, never an opening on its own: a wall's two faces also stop where another wall lands on it, where the tracing lost the line, where a cupboard is drawn against it and where a bulkhead is cut. So a gap is only reported as a door or a window when the drawing says so somewhere else as well. Four separate readings can say it, and every one of them is measured off the sheet rather than assumed. Change a value here to retune the reader for an office that drafts differently; nothing in this file is read by any other part of the pipeline, and no value taken from any particular drawing appears in it.",
+  "_candidate_note": "Which breaks in a wall are worth asking about at all. A break narrower than the smallest opening an office builds is the tracing losing the line; one wider than the largest is a stretch of wall that was never traced. An opening also has wall on both sides of it - a break running to the end of a wall is where that wall meets another, or where the tracing stopped.",
+  "candidate_gap": {
+    "min_width_mm": 300,
+    "max_width_mm": 6000,
+    "min_wall_each_side_mm": 300
+  },
+  "_source_1_note": "ARC GEOMETRY. A hinged door states its own width in its swing: the arc springs from the hinge, which is a jamb of the opening, and its radius is the leaf. So the question asked of the drawing is one with an answer - is there an arc centred on this gap's jamb whose radius is this gap's width? The centre is allowed a little slack because a wall traced from the drawing and the hinge the drafter drew are not the same point, and on a sheet stored as a picture being three pixels out breaks the arc into fragments.",
+  "arc_geometry": {
+    "enabled": true,
+    "centre_to_jamb_max_mm": 400,
+    "radius_tolerance_mm": 150,
+    "radius_tolerance_share": 0.2,
+    "min_arc_degrees": 55,
+    "read_from_the_page_when_the_drawing_has_none": true,
+    "page_render_dpi": 200,
+    "centre_search_px": 6,
+    "radius_search_px": 2,
+    "ink_darker_than": 200
+  },
+  "_source_2_note": "TEXT LABEL. A mark printed beside the gap - D12, W04, SD01 - names it and keys it to a schedule row. The mark is printed BESIDE the opening, commonly inside the room on a leader, so the distance allowed is generous; what keeps it honest is that the mark must match one of the patterns below exactly, and the prefix is what gives the type. Add an office's own marks here rather than in code.",
+  "text_label": {
+    "enabled": true,
+    "max_distance_mm": 2000,
+    "patterns": [
+      {
+        "pattern": "^(D|DR|GD|SD|SGD|BD|CD|CSD|RD|PD|FD|ED|ID)[0-9]+$",
+        "element_type": "door"
+      },
+      {
+        "pattern": "^(W|WD|FW|SW|AW|DW|HW|BW|CW|LW|SKY|SL)[0-9]+$",
+        "element_type": "window"
+      }
+    ]
+  },
+  "_source_3_note": "GLAZING SYMBOL. A wall is solid, so nothing is drawn inside one. A window is not solid, and the drawing says so by putting the glass and its frame between the wall's two faces over exactly the width of the opening - a pair of thin lines, thinner than the wall faces themselves. They are read in both directions: across the wall's thickness, and along it between the faces, which is how most Australian sets draw them. A run of lines wider than the gap, or covering the whole wall, is hatching rather than glazing.",
+  "glazing_symbol": {
+    "enabled": true,
+    "across_the_wall": true,
+    "along_the_wall": true,
+    "min_lines": 2,
+    "max_lines": 6,
+    "max_line_width_pt": 0.8,
+    "line_tolerance_pt": 0.12,
+    "face_inset_pt": 0.15,
+    "min_share_of_the_gap": 0.5,
+    "max_share_of_the_wall": 0.95
+  },
+  "_source_4_note": "SCHEDULE ENTRY. The mark read beside the gap is looked up in every schedule table in the whole document, because a door schedule is printed on its own sheet. A row that matches gives the width, the height and the type as the office stated them, and a schedule width that agrees with the width measured across the gap is the strongest agreement this reader can produce. A row whose width disagrees is kept and reported rather than either value being chosen silently.",
+  "schedule_entry": {
+    "enabled": true,
+    "width_tolerance_mm": 250,
+    "width_tolerance_share": 0.2
+  },
+  "_source_5_note": "PRINTED LEAF DIMENSION. An Australian residential plan commonly dimensions each door by printing its leaf width at the opening itself - 870, 920 - rather than only in a schedule. That figure is the drawing stating the opening's own size, and it is already in the reading, so it costs nothing to ask for. Two rules keep it from reading an ordinary dimension as a door. A leaf dimension is printed ACROSS the wall, between its two faces; a wall or setout dimension is printed clear of the building on a dimension string, so the figure's box must overlap the band between the wall's own faces and sit within reach of its line. And the figure must be a size a leaf is actually made in. It is a hint about the KIND as well: on these plans a leaf width printed at an opening is a door convention, so it names a door - but it is the weakest of the readings and never overrules a symbol drawn to size.",
+  "leaf_dimension": {
+    "enabled": true,
+    "leaf_dim_wall_reach_mm": 200,
+    "leaf_dim_min_mm": 500,
+    "leaf_dim_max_mm": 2500,
+    "must_sit_between_the_wall_faces": true,
+    "span_slack_mm": 200,
+    "confidence_bonus": 0.3,
+    "type_hint": "door"
+  },
+  "_confidence_note": "How many of the four sources spoke decides everything. None of them and it is not an opening - it is written to the issues log as an unresolved gap, with its wall, its width and where on the sheet to look, so a reviewer can see what was set aside rather than being told nothing. One source and it is an opening that a person should look at. Two or more and the drawing has said the same thing twice, which is as good as this reading gets.",
+  "confidence": {
+    "one_source": 0.7,
+    "two_or_more_sources": 0.9,
+    "unresolved_gap": 0.3,
+    "high_band_from": 0.75
+  }
+}

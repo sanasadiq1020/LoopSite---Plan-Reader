@@ -28,6 +28,7 @@ from pipeline.plan.intake import (
     load_sheet_register,
     plan_reading_is_outdated,
     process_upload,
+    resolve_detection_file_path,
     resolve_export_path,
     resolve_overlay_image_path,
     resolve_page_image_path,
@@ -229,6 +230,35 @@ async def get_overlay_image(
             path, media_type="image/png", filename=f"marked_up_{run_id}_{filename}"
         )
     return FileResponse(path, media_type="image/png")
+
+
+@router.get("/{run_id}/detection/{filename}")
+async def get_detection_file(
+    run_id: str,
+    filename: str,
+    download: bool = False,
+    session_id: str = Depends(get_session_id),
+):
+    """One sheet's detection overlay, the legend, or the summary of both.
+
+    These are what the wall and opening readers produced, drawn over the
+    drawing they came from - which is how a wrong wall or a missed door is seen
+    rather than inferred from a table. One is drawn for every sheet during the
+    upload, because every one of them is wanted.
+
+    Session-guarded like every other output; there is deliberately no blanket
+    static mount, so one session can never read another's plans.
+    """
+    if not run_belongs_to_session(run_id, session_id):
+        raise HTTPException(status_code=404, detail="Not found.")
+
+    path, media_type = resolve_detection_file_path(run_id, filename)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Not found.")
+
+    if download:
+        return FileResponse(path, media_type=media_type, filename=f"{run_id}_{filename}")
+    return FileResponse(path, media_type=media_type)
 
 
 # The extracted tables, downloadable as CSV so results can be checked in a

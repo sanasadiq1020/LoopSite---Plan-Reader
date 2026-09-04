@@ -210,7 +210,7 @@ def build_model(
                 "This wall is longer than any distance the sheet dimensions, so it may "
                 "be a boundary or an eave line rather than a wall."
             )
-        if wall.get("line_source") == "rendered_page":
+        if wall.get("line_source") not in (None, "", "vector"):
             assumptions.append(
                 "Measured from the sheet as a picture, because its drawing is stored as "
                 "an image rather than as lines."
@@ -251,7 +251,7 @@ def build_model(
                 "source_bbox": wall.get("bbox"),
                 "extraction_method": (
                     "paired_parallel_lines_"
-                    + ("rendered_page" if wall.get("line_source") == "rendered_page" else "vector")
+                    + (wall.get("line_source") or "vector")
                 ),
                 "confidence": wall.get("confidence", 0.5),
                 "confidence_band": wall.get("confidence_band", "review"),
@@ -315,7 +315,7 @@ def build_model(
                 "not_cut_because": reason,
                 "source_sheet": opening.get("source_sheet"),
                 "source_bbox": opening.get("source_bbox"),
-                "extraction_method": opening.get("found_by", "mark_on_the_drawing"),
+                "extraction_method": opening.get("found_by", "text_label"),
                 "confidence": opening.get("confidence", 0.5),
                 "confidence_band": opening.get("confidence_band", "review"),
                 "review_status": opening.get("review_status", "needs_review"),

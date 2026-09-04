@@ -36,6 +36,7 @@ from pipeline.plan.ocr import run_ocr_on_page, should_run_ocr, text_layer_is_usa
 from pipeline.plan.overlay import render_overlay
 from pipeline.plan.textmodel import release_page_cache
 from pipeline.plan.reading import (
+    _collect_unresolved,
     _empty_page,
     analyze_page,
     compute_metrics,
@@ -60,6 +61,7 @@ from pipeline.plan.openings import (
     score_openings,
     settle_opening_placement,
 )
+from pipeline.plan.detectionoverlay import write_detection_outputs
 from pipeline.plan.sheetindex import cross_check_pages
 
 logger = get_logger()
@@ -767,6 +769,18 @@ def process_upload(
         name_openings(plan_reading_pages, config)
         opening_reconciliation["readings_joined"] = joined
         opening_reconciliation.update(score_openings(plan_reading_pages))
+        # **The issues log is written from the settled reading, not the
+        # half-settled one.** Whether an opening needs a reviewer depends on
+        # how many of the four readings agree, and the fourth - the schedule
+        # row - is only known once every sheet has been read. Collecting the
+        # findings while the page was being read would report an opening as
+        # having one reading when the schedule two sheets later gives it two.
+        for page_reading in plan_reading_pages:
+            if page_reading.get("error"):
+                continue
+            page_reading["unresolved_items"] = _collect_unresolved(
+                page_reading, page_reading.get("text_evidence") or {}
+            )
     except Exception as e:
         logger.exception(f"run={run_id} opening placement failed: {e}")
 
@@ -879,6 +893,26 @@ def process_upload(
         logger.exception(f"run={run_id} metrics failed: {e}")
         metrics = {}
 
+    # --- The detection overlays -------------------------------------------
+    # **One picture per sheet, drawn now rather than on request.** These are
+    # not the marked-up sheet a reader opens - they are what the wall and
+    # opening readers produced, drawn over the drawing, which is how a wrong
+    # wall or a missed door is seen at all. They are wanted for every sheet
+    # rather than the two or three a reader opens, and the summary beside them
+    # is what the interface reads, so both are produced while the document is
+    # still open.
+    detection = {}
+    try:
+        detection = write_detection_outputs(doc, plan_reading_pages, run_dir, config)
+        for reading in plan_reading_pages:
+            if reading.get("error"):
+                continue
+            reading["detection_overlay_url"] = (
+                f"/api/plan/{run_id}/detection/overlay_page_{reading['page_number']}.png"
+            )
+    except Exception as e:
+        logger.exception(f"run={run_id} detection overlays failed: {e}")
+
     doc.close()
 
     sheet_register = {
@@ -928,6 +962,10 @@ def process_upload(
                     "opening_reconciliation": opening_reconciliation,
                     "accuracy": accuracy_report,
                     "metrics": metrics,
+                    # What the overlays show, counted. It is written to its own
+                    # file as well, and carried here so the interface needs no
+                    # second request to draw its headline figures.
+                    "detection_summary": detection,
                     "pages": plan_reading_pages,
                 },
                 indent=2,
@@ -985,7 +1023,7 @@ def process_upload(
 # rendering it would either fail or show a half-empty screen — so it is
 # detected here and the caller is told to run the file through again, rather
 # than the interface silently showing blanks.
-PLAN_READING_FORMAT = 11
+PLAN_READING_FORMAT = 12
 
 
 def load_plan_reading(run_id: str) -> dict | None:
@@ -1124,6 +1162,30 @@ def resolve_sheet_register_csv_path(run_id: str) -> Path | None:
 
 
 _OVERLAY_FILENAME_RE = re.compile(r"^overlay_\d{3}\.png$")
+
+
+# The detection overlays and the summary beside them. Named exactly, rather
+# than by a pattern, because these are the only files this route may ever hand
+# out - a filename arriving from a browser never gets to choose a path.
+_DETECTION_PAGE_RE = re.compile(r"^overlay_page_(\d+)\.png$")
+_DETECTION_FILES = {"overlay_legend.png": "image/png",
+                    "detection_summary.json": "application/json"}
+
+
+def resolve_detection_file_path(run_id: str, filename: str):
+    """One detection overlay, the legend, or the summary, and its media type.
+
+    Returns ``(path, media_type)`` or ``(None, None)``. Drawn during the upload
+    rather than on request - unlike the marked-up sheet, every one of these is
+    wanted, and the summary is computed from all of them together.
+    """
+    media_type = _DETECTION_FILES.get(filename)
+    if media_type is None:
+        if not _DETECTION_PAGE_RE.match(filename):
+            return None, None
+        media_type = "image/png"
+    path = run_plan_dir(run_id) / filename
+    return (path, media_type) if path.is_file() else (None, None)
 
 
 def resolve_overlay_image_path(run_id: str, filename: str) -> Path | None:

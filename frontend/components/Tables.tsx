@@ -23,6 +23,7 @@ import {
   type TitleBlockFieldName,
   TITLE_BLOCK_FIELDS,
   wallLineSourceLabel,
+  openingAgreementLabel,
   openingFoundByLabel,
   positionSourceLabel,
 } from "@/lib/api";
@@ -757,7 +758,7 @@ export function WallsTable({ walls, showSheet }: { walls: WallRow[]; showSheet?:
         <span
           className="text-xs text-slate-500"
           title={
-            row.line_source === "rendered_page"
+            row.line_source !== "vector"
               ? "This sheet stores its drawing as a picture, so its lines were read from the page as it prints rather than from the PDF's own line work."
               : "Read from the drawing's own line work, which is exact."
           }
@@ -844,14 +845,18 @@ export function OpeningsTable({
         row.element_type ? (
           <div>
             <span>{openingTypeLabel(row.element_type)}</span>
-            {row.evidence?.length > 1 && (
-              <span
-                className="mt-0.5 block text-[11px] text-slate-500"
-                title={row.how_it_was_decided ?? undefined}
-              >
-                {row.evidence.length} readings agree
-              </span>
-            )}
+            {/* How many of the four readings of the drawing agree. One is
+                ordinary and usable and says so; two or more is confirmed. */}
+            <span
+              className={
+                row.review_needed
+                  ? "mt-0.5 block text-[11px] text-amber-700"
+                  : "mt-0.5 block text-[11px] text-slate-500"
+              }
+              title={row.how_it_was_decided ?? undefined}
+            >
+              {openingAgreementLabel(row)}
+            </span>
           </div>
         ) : (
           <span className="text-slate-400">{NOT_AVAILABLE}</span>
@@ -866,12 +871,14 @@ export function OpeningsTable({
         <span
           className="text-xs text-slate-500"
           title={
-            row.found_by === "gap_in_the_wall"
-              ? "This drawing prints no code for its doors and windows, so the opening was measured where the wall stops and starts again. Its width is measured; its type and height are not stated because the drawing does not state them."
-              : "The drawing prints a code such as D1 or W12, which is matched to the schedule row of the same code."
+            row.how_it_was_decided ??
+            "A break in a wall is only reported as an opening where the drawing says so somewhere else as well: a door's swing about one of its jambs, a mark printed beside it, glazing drawn inside the wall, or a schedule row for that mark."
           }
         >
-          {openingFoundByLabel(row.found_by)}
+          {(row.evidence ?? [row.found_by])
+            .map((source) => openingFoundByLabel(source))
+            .filter(Boolean)
+            .join(", ")}
         </span>
       ),
       sortValue: (row) => row.found_by,

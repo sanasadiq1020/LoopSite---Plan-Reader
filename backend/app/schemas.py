@@ -343,7 +343,7 @@ class WallCandidate(BaseModel):
     start_point_pt: list[float]
     end_point_pt: list[float]
     face_positions_pt: list[float]
-    line_source: str  # "vector" or "rendered_page" — see CLAUDE.md 4D
+    line_source: str  # "vector" or "lsd_raster" — see CLAUDE.md 4D
     longer_than_sheet_measures: bool = False
     bbox: list[float]
     # The two drawn faces this wall was measured from, and the line down the
@@ -394,19 +394,47 @@ class Opening(BaseModel):
     schedule_sheet: Optional[str] = None
     schedule_row_id: Optional[str] = None
     in_schedule: bool = False
-    # "mark_on_the_drawing" or "gap_in_the_wall" — a reader must be able to see
-    # which openings were labelled and which were measured off the geometry.
-    found_by: str = "mark_on_the_drawing"
-    # Every way the drawing said this opening is here: the window drawn inside
-    # the wall, the door's swing, the mark printed beside it, the break in the
-    # wall. Two or more agreeing is what makes an opening confirmed.
+    # The strongest of the readings below — a reader must be able to see how
+    # each opening was established.
+    found_by: str = "text_label"
+    # **Every reading of the drawing that says this opening is here**, from the
+    # four there are: the door's arc, the mark printed beside it, the glazing
+    # drawn inside the wall, and the schedule row that mark names. A break in a
+    # wall is the candidate, never a reading — a gap none of the four confirmed
+    # is not an opening at all and never reaches this record.
     evidence: list[str] = []
+    evidence_count: int = 0
     how_it_was_decided: Optional[str] = None
+    # True where only one of the four spoke. Two or more agreeing is confirmed.
+    review_needed: bool = True
+    # Where the schedule's width and the width measured across the break
+    # disagree, both are kept and neither is assumed correct.
+    schedule_width_mm: Optional[float] = None
+    measured_width_mm: Optional[float] = None
+    schedule_width_agrees: Optional[bool] = None
     source_sheet: str
     source_bbox: list[float]
     confidence: float
     confidence_band: ConfidenceBand
     review_status: ReviewStatus = "needs_review"
+
+
+class UnresolvedGap(BaseModel):
+    """A break in a wall that none of the four readings confirmed.
+
+    **Not an opening**, and not thrown away either: it is a real break in a
+    real wall, so it carries its wall, its width and where on the sheet to look
+    and goes to the issues log. The screen shows what was read; the log says
+    what to check.
+    """
+
+    gap_id: str
+    wall_id: str
+    width_mm: float
+    source_sheet: str
+    source_bbox: list[float]
+    position_on_wall: Optional[dict] = None
+    reason: str
 
 
 class SheetIndexEntry(BaseModel):
@@ -457,10 +485,16 @@ class PageReading(BaseModel):
     # does not look like a building.
     walls_note: Optional[str] = None
     openings: list[Opening] = []
+    # Breaks in walls that none of the four readings confirmed. They are not
+    # shown on screen as openings; they go to the downloadable issues log.
+    unresolved_gaps: list[UnresolvedGap] = []
     sheet_index: Optional[SheetIndex] = None
     unresolved_items: list[UnresolvedItem]
     text_evidence: dict = {}
     overlay_url: Optional[str] = None
+    # The detection overlay: what the wall and opening readers produced, drawn
+    # over the drawing. Drawn for every sheet during the upload.
+    detection_overlay_url: Optional[str] = None
     error: Optional[str] = None
 
 

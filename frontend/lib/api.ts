@@ -366,8 +366,15 @@ export interface Opening {
   display_mark: string | null;
   display_mark_is_made_up: boolean;
   element_type: string | null;
-  /** Every way the drawing said this opening is here. */
+  /** **Every reading of the drawing that says this opening is here**, from the
+   *  four there are: the door's arc, the mark printed beside it, the glazing
+   *  drawn inside the wall, and the schedule row that mark names. A break in a
+   *  wall is the candidate, never a reading - a gap none of the four confirmed
+   *  is not an opening and never appears here. */
   evidence: string[];
+  evidence_count: number;
+  /** True where only one of the four spoke. Two or more agreeing is confirmed. */
+  review_needed: boolean;
   how_it_was_decided: string | null;
   wall_id: string | null;
   wall_note: string | null;
@@ -381,6 +388,11 @@ export interface Opening {
   schedule_row_id: string | null;
   in_schedule: boolean;
   found_by: string;
+  /** Where the schedule's width and the width measured across the break
+   *  disagree, both are kept and neither is assumed correct. */
+  schedule_width_mm: number | null;
+  measured_width_mm: number | null;
+  schedule_width_agrees: boolean | null;
   source_sheet: string;
   source_bbox: number[];
   confidence: number;
@@ -1076,17 +1088,37 @@ export function fieldLabel(name: string): string {
 
 /** Where a wall's two lines were measured from, in plain words. */
 export function wallLineSourceLabel(source: string): string {
-  if (source === "rendered_page") return "The sheet as a picture";
   if (source === "vector") return "The drawing's own lines";
+  // Anything else was read off the rendered page. Named rather than
+  // matched one value at a time, so a reading written by an earlier
+  // release still reads correctly here.
+  if (source) return "The sheet as a picture";
   return "UNKNOWN";
 }
 
-/** How an opening came to be known, in plain words. */
+/** How an opening came to be known, in plain words.
+ *
+ *  These are the four readings of the drawing. A break in a wall is not one of
+ *  them: it is the candidate the readings confirm, and a gap none of them
+ *  spoke for is not reported as an opening at all. */
 export function openingFoundByLabel(source: string): string {
-  if (source === "gap_in_the_wall") return "Measured from the break in the wall";
-  if (source === "window_symbol") return "The window drawn inside the wall";
-  if (source === "door_swing") return "The door's swing drawn on the plan";
-  return "Labelled on the drawing";
+  if (source === "arc_geometry") return "The door's swing drawn on the plan";
+  if (source === "glazing_symbol") return "The glazing drawn inside the wall";
+  if (source === "text_label") return "The mark printed beside it";
+  if (source === "schedule_entry") return "The schedule row for that mark";
+  if (source === "leaf_dimension") return "The leaf width printed at the opening";
+  return source || "";
+}
+
+/** How many of the four readings agreed, in a reader's words. */
+export function openingAgreementLabel(opening: {
+  evidence_count?: number;
+  review_needed?: boolean;
+}): string {
+  const count = opening.evidence_count ?? 0;
+  if (count >= 2) return `Confirmed - ${count} readings agree`;
+  if (count === 1) return "One reading only - worth checking";
+  return "";
 }
 
 /** What kind of opening it is, in the words a plan reader would use. */

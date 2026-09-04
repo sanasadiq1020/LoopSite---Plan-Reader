@@ -327,7 +327,7 @@ def _opening(**overrides):
         "height_mm": 2040.0,
         "sill_height_mm": 0.0,
         "head_height_mm": 2040.0,
-        "found_by": "mark_on_the_drawing",
+        "found_by": "text_label",
         "source_sheet": "A02",
         "source_bbox": [150.0, 195.0, 240.0, 205.0],
         "confidence": 0.9,
@@ -385,7 +385,7 @@ def test_an_opening_whose_kind_the_drawing_never_states_is_not_cut(config):
     whether this is a door or a window, no hole is invented."""
     unknown = _opening(
         mark="", element_type=None, height_mm=None, sill_height_mm=None,
-        head_height_mm=None, found_by="gap_in_the_wall", in_schedule=False,
+        head_height_mm=None, found_by="glazing_symbol", in_schedule=False,
     )
     model = build_model(
         _page(openings=[unknown]), _HEIGHT, config, "run", "plan.pdf", 800.0
@@ -401,7 +401,7 @@ def test_an_opening_with_no_schedule_uses_the_office_default_and_says_so(config)
     is used — and the opening carries it as an assumption, never silently."""
     described = _opening(
         mark="", height_mm=None, sill_height_mm=None, head_height_mm=None,
-        found_by="gap_in_the_wall", in_schedule=False,
+        found_by="glazing_symbol", in_schedule=False,
     )
     model = build_model(
         _page(openings=[described]), _HEIGHT, config, "run", "plan.pdf", 800.0

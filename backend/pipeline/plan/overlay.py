@@ -213,7 +213,11 @@ def _collect_marks(page_reading: dict) -> list:
         # reviewer is trying to read. The size is a column in the table; the
         # sheet only has to say *which* opening this is.
         label = opening.get("display_mark") or opening.get("mark") or "O?"
-        confirmed = opening.get("confidence_band") == "high"
+        # **Drawn solid where two of the four readings agree, dashed where only
+        # one did.** That is the same distinction the record carries, shown on
+        # the drawing so a reviewer can see at a glance which openings the plan
+        # stated twice and which rest on a single reading.
+        confirmed = not opening.get("review_needed", True)
 
         # **Drawn where the opening is, not where its label is printed.** A
         # mark is printed beside the door, often inside the room on a leader,

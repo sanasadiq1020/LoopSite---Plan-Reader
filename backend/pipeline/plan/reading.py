@@ -36,10 +36,9 @@ from pipeline.plan import dimensions as dimensions_module
 from pipeline.plan import rooms as rooms_module
 from pipeline.plan import schedules as schedules_module
 from pipeline.plan.layout import extract_rulings
+from pipeline.plan.openingevidence import read_openings_from_the_drawing
 from pipeline.plan.openings import (
-    confirm_doors_from_the_page,
     openings_from_symbols,
-    openings_from_wall_gaps,
     place_openings_on_walls,
 )
 from pipeline.plan.pagetype import detect_page_type
@@ -83,6 +82,13 @@ CONFIG_PATH = CONFIG_DIR / "plan_reading.json"
 # file is not an error - it means the office has not overridden anything.
 WALL_CONFIG_PATH = CONFIG_DIR / "wall_config.json"
 
+# The opening reader's own settings, for the same reason and merged the same
+# way over the "openings" section: what makes a break in a wall a door or a
+# window is the judgement an office is most likely to want to retune, and it is
+# now made from four separate readings of the drawing rather than from the
+# break alone.
+OPENING_CONFIG_PATH = CONFIG_DIR / "opening_config.json"
+
 # Used only if config/plan_reading.json is missing or unreadable, so a missing
 # config degrades to a logged warning and a reduced run rather than a crash
 # (Critical Rule 6). The file on disk is the source of truth.
@@ -113,7 +119,31 @@ def load_config() -> dict:
         logger.exception(f"Could not read {CONFIG_PATH}, running reduced: {e}")
         _config_cache = _MINIMAL_CONFIG
     _config_cache["walls"] = _merged_wall_settings(_config_cache.get("walls", {}))
+    _config_cache["openings"] = _merged_from(
+        _config_cache.get("openings", {}), OPENING_CONFIG_PATH, "opening"
+    )
     return _config_cache
+
+
+def _merged_from(existing: dict, path, what: str) -> dict:
+    """One settings section with its own file laid over it.
+
+    Kept separate from the file itself so that an unreadable override degrades
+    to the settings already in hand rather than taking the run down
+    (Critical Rule 6), and so a reader can see in the log which file a setting
+    came from.
+    """
+    merged = dict(existing)
+    try:
+        override = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return merged
+    except Exception as e:
+        logger.exception(f"Could not read {path}, using the settings already loaded: {e}")
+        return merged
+    merged.update(override)
+    logger.info(f"{what} settings: {len(override)} entries read from {path.name}")
+    return merged
 
 
 def _merged_wall_settings(existing: dict) -> dict:
@@ -181,6 +211,7 @@ def _empty_page(page_number: int, reason: str) -> dict:
         "walls": [],
         "walls_note": None,
         "openings": [],
+        "unresolved_gaps": [],
         "sheet_index": None,
         "unresolved_items": [
             {
@@ -194,6 +225,7 @@ def _empty_page(page_number: int, reason: str) -> dict:
         ],
         "text_evidence": {},
         "overlay_url": None,
+        "detection_overlay_url": None,
         "error": reason,
     }
 
@@ -380,21 +412,53 @@ def _collect_unresolved(page: dict, text_evidence: dict) -> list:
     elif calibration.get("result") == "not_checked" and calibration.get("note"):
         add("scale.not_checked", "P2", calibration["note"])
 
+    # **A break in a wall that nothing confirmed is not an opening**, and it is
+    # not thrown away either. It is a real break in a real wall, so it goes to
+    # the issues log with its width and where on the sheet to find it — the
+    # screen shows what was read, and the log says what to check.
+    for gap in page.get("unresolved_gaps", []):
+        add(
+            "opening.gap_with_nothing_to_confirm_it",
+            "P2",
+            gap["reason"],
+            gap["gap_id"],
+            gap["source_bbox"],
+        )
+
     for opening in page.get("openings", []):
-        if opening.get("found_by") == "gap_in_the_wall":
+        if opening.get("review_needed"):
             add(
-                "opening.read_from_the_drawing",
+                "opening.one_reading_only",
                 "P1",
                 (
-                    f"An opening {opening['width_mm']:.0f} mm wide was measured in "
-                    f"{opening['wall_id']}, where the wall stops and starts again. This "
-                    "drawing prints no door or window code, so whether it is a door or a "
-                    "window, and how tall it is, are not stated and have not been assumed."
+                    f"{opening.get('display_mark') or opening['opening_id']}: "
+                    f"{opening.get('how_it_was_decided') or opening.get('wall_note') or ''}"
                 ),
                 opening["opening_id"],
                 opening["source_bbox"],
             )
-        elif not opening["in_schedule"]:
+        if opening.get("schedule_width_agrees") is False or (
+            opening.get("measured_width_mm")
+            and opening.get("schedule_width_mm")
+            and opening["measured_width_mm"] != opening["schedule_width_mm"]
+        ):
+            # Both values are preserved and neither is assumed correct.
+            add(
+                "opening.width_disagrees_with_the_schedule",
+                "P1",
+                (
+                    f"{opening.get('mark') or opening['opening_id']} measures "
+                    f"{float(opening['measured_width_mm']):.0f} mm across the break in "
+                    f"the wall, and the schedule states "
+                    f"{float(opening['schedule_width_mm']):.0f} mm. Both are kept and "
+                    "neither has been assumed correct."
+                ),
+                opening.get("mark") or opening["opening_id"],
+                opening["source_bbox"],
+            )
+        if not opening.get("mark"):
+            continue
+        if not opening["in_schedule"]:
             add(
                 "opening.not_in_schedule",
                 "P1",
@@ -844,20 +908,19 @@ def analyze_page(
         detected_openings += openings_from_symbols(
             detected_walls, rulings, page, calibration, config, sheet_id
         )
-        detected_openings += openings_from_wall_gaps(
-            detected_walls, calibration, config, sheet_id, lines
+        # **A break in a wall is a candidate, not an opening.** Every gap is
+        # put to the drawing and kept only where the drawing says independently
+        # that something goes in it — a door's arc about one of its jambs, a
+        # mark printed beside it, or glazing drawn between the wall's faces. A
+        # gap none of those confirm is written to the issues log as a gap to
+        # check rather than reported as a door nobody can verify. The schedule,
+        # the fourth reading, is added once the whole document has been read,
+        # because it is printed on its own sheet.
+        gap_openings, unresolved_gaps = read_openings_from_the_drawing(
+            detected_walls, rulings, page, opening_marks, calibration, config, sheet_id,
+            detected_dimensions,
         )
-        # **A sheet whose drawing is stored as a picture keeps its doors in
-        # pixels.** Where the sheet's own geometry put no swing on any of its
-        # walls, the page is rendered and each opening of a door's width is
-        # asked whether an arc of that width springs from its jamb. The test
-        # is the outcome, not a count of curved paths: the picture-drawn set
-        # has 12 to 24 of those on every sheet — its border, its north point,
-        # its clouded revisions — so a count alone would never look at the one
-        # file that needs it.
-        confirm_doors_from_the_page(
-            page, detected_openings, detected_walls, calibration, config, sheet_id
-        )
+        detected_openings += gap_openings
         fields["discipline"] = resolve_discipline(
             fields, page_type["value"], lines, region, config
         )
@@ -881,10 +944,12 @@ def analyze_page(
             "walls": detected_walls,
             "walls_note": walls_note,
             "openings": detected_openings,
+            "unresolved_gaps": unresolved_gaps,
             "sheet_index": page_sheet_index,
             "unresolved_items": [],
             "text_evidence": text_evidence,
             "overlay_url": None,
+            "detection_overlay_url": None,
             "error": None,
         }
         # The several readings of one opening are joined together later, once
@@ -1326,7 +1391,8 @@ def write_plan_reading_csvs(run_dir: Path, run_id: str, pages: list) -> None:
             [
                 "run_id", "page_number", "sheet_id", "opening_id", "mark",
                 "shown_on_the_sheet_as", "name_was_made_up", "element_type",
-                "how_the_drawing_said_so", "how_it_was_decided",
+                "how_the_drawing_said_so", "how_many_readings_agree",
+                "a_reviewer_should_check_this", "how_it_was_decided",
                 "wall_id", "width_mm", "height_mm", "sill_height_mm", "head_height_mm",
                 "location_on_plan", "schedule_sheet", "schedule_row_id", "in_schedule",
                 "found_by", "position_along_the_wall_mm", "position_measured_from",
@@ -1343,6 +1409,8 @@ def write_plan_reading_csvs(run_dir: Path, run_id: str, pages: list) -> None:
                         bool(opening.get("display_mark_is_made_up")),
                         opening["element_type"] or "",
                         "; ".join(opening.get("evidence") or []),
+                        opening.get("evidence_count", 0),
+                        bool(opening.get("review_needed", True)),
                         opening.get("how_it_was_decided") or "",
                         opening["wall_id"] or "",
                         opening["width_mm"] if opening["width_mm"] is not None else "",
@@ -1351,7 +1419,7 @@ def write_plan_reading_csvs(run_dir: Path, run_id: str, pages: list) -> None:
                         opening["head_height_mm"] if opening["head_height_mm"] is not None else "",
                         opening["location_on_plan"] or "", opening["schedule_sheet"] or "",
                         opening["schedule_row_id"] or "", opening["in_schedule"],
-                        opening.get("found_by", "mark_on_the_drawing"),
+                        opening.get("found_by", ""),
                         (opening.get("position_on_wall") or {}).get("from_wall_start_mm", ""),
                         _plain_position_source(opening),
                         opening.get("wall_note") or "",

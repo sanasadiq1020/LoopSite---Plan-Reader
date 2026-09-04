@@ -868,7 +868,7 @@ def test_walls_are_recovered_from_a_sheet_drawn_as_an_image(tmp_path):
 
         walls = detect_walls(vector_rulings, _CALIBRATED, reading.load_config(), "P01", page=page)
         assert walls, "an image-drawn wall should still be measurable"
-        assert all(wall["line_source"] == "rendered_page" for wall in walls)
+        assert all(wall["line_source"] == "lsd_raster" for wall in walls)
         longest = max(walls, key=lambda wall: wall["length_mm"])
         # 400 pt at 1:100 is 14.1 m; measured off pixels, within a percent.
         assert 13900 < longest["length_mm"] < 14400
@@ -1137,6 +1137,11 @@ def test_a_section_is_never_promoted_to_a_plan_by_its_contents(config):
 # --- one wall, reported once ---------------------------------------------
 
 
+def _calibrated():
+    """A settled scale at the 10 mm per point the tests below run at."""
+    return {"measured_mm_per_point": 10.0, "usable_for_measurement": True}
+
+
 def _candidate(wall_id, axis, line, start, end, thickness, breaks=None, nominal=True):
     """A wall candidate as the pairing step produces one, in points."""
     half = thickness / 10.0 / 2.0  # the tests below run at 10 mm per point
@@ -1286,23 +1291,348 @@ def test_a_mark_with_no_break_is_placed_from_where_it_is_printed(config):
     assert "no break" in openings[0]["wall_note"]
 
 
-def test_the_words_beside_an_unmarked_opening_name_its_kind(config):
-    """A plan set that prints no marks still describes its openings in words,
-    and the kind is what makes a height possible at all."""
-    lines = [{"text": "Sliding door", "bbox": [300.0, 180.0, 360.0, 190.0]}]
-    kind, described = openings_module.kind_from_words_beside_it(
-        [300.0, 195.0, 340.0, 205.0], lines, 10.0, config["openings"]
+def test_a_gap_with_nothing_to_confirm_it_is_not_an_opening(config):
+    """**A gap is not an opening.** A wall's two faces stop together where a
+    partition lands, where a cupboard is drawn against it and where the tracing
+    lost the line. Reporting each of those as a door produced openings nobody
+    could check."""
+    from pipeline.plan.openingevidence import read_openings_from_the_drawing
+
+    wall = _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)
+    wall["gaps_pt"] = [(300.0, 382.0)]
+    openings, gaps = read_openings_from_the_drawing(
+        [wall], {}, None, [], _calibrated(), config, "A02"
     )
-    assert kind == "door"
-    assert described == "Sliding door"
+
+    assert openings == []
+    assert len(gaps) == 1
+    assert gaps[0]["wall_id"] == "W1"
+    assert gaps[0]["gap_id"] == "A02-GAP001"
 
 
-def test_a_word_too_far_from_the_opening_does_not_name_it(config):
-    lines = [{"text": "Sliding door", "bbox": [900.0, 900.0, 960.0, 910.0]}]
-    kind, _ = openings_module.kind_from_words_beside_it(
-        [300.0, 195.0, 340.0, 205.0], lines, 10.0, config["openings"]
+def test_an_unconfirmed_gap_still_reaches_the_issues_log(config):
+    """It is a real break in a real wall, so it is not thrown away either. The
+    screen shows what was read; the log says what to check."""
+    from pipeline.plan.openingevidence import unresolved_gap_from
+
+    gap = unresolved_gap_from({
+        "wall_id": "W1", "width_mm": 900.0, "sheet_id": "A02",
+        "bbox": [0.0, 0.0, 1.0, 1.0], "start_fraction": 0.3, "end_fraction": 0.5,
+    })
+
+    assert "W1" in gap["reason"] and "900" in gap["reason"]
+    assert gap["source_bbox"] == [0.0, 0.0, 1.0, 1.0]
+
+
+def test_a_mark_beside_a_gap_confirms_it_and_names_its_kind(config):
+    """The prefix says whether it is a door or a window, and the whole mark
+    keys it to a schedule row."""
+    from pipeline.plan.openingevidence import read_openings_from_the_drawing
+
+    wall = _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)
+    wall["gaps_pt"] = [(300.0, 382.0)]
+    marks = [{"mark_id": "M1", "mark": "W12", "bbox": [330.0, 205.0, 350.0, 215.0]}]
+    openings, gaps = read_openings_from_the_drawing(
+        [wall], {}, None, marks, _calibrated(), config, "A02"
     )
-    assert kind is None
+
+    assert gaps == []
+    assert len(openings) == 1
+    assert openings[0]["element_type"] == "window"
+    assert openings[0]["mark"] == "W12"
+    assert openings[0]["evidence"] == ["text_label"]
+
+
+def _wall_with_a_gap(low=300.0, high=382.0):
+    """A 4 m wall at 10 mm per point with one 820 mm break in the middle."""
+    wall = _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)
+    wall["gaps_pt"] = [(low, high)]
+    return wall
+
+
+def _gap(config, wall=None):
+    from pipeline.plan.openingevidence import gap_candidates
+
+    return gap_candidates([wall or _wall_with_a_gap()], _calibrated(), config, "A02")
+
+
+# --- source 1: the arc a hinged door is drawn with --------------------------
+
+
+def test_an_arc_about_a_jamb_of_the_gaps_own_width_is_a_door(config):
+    """**The radius is the leaf.** Both the place and the radius come from the
+    reading, so the drawing only has to confirm or deny — which is why this
+    works where searching the page for circles does not."""
+    from pipeline.plan.openingevidence import ARC_GEOMETRY, arc_evidence
+    import pipeline.plan.openingevidence as evidence
+
+    candidates = _gap(config)
+    # An arc springing from the left jamb, swept to the width of the gap.
+    arc = {"centre": (300.0, 200.0), "radius_pt": 82.0}
+    monkey = evidence._arcs_on
+    try:
+        evidence._arcs_on = lambda page: [arc]
+        assert arc_evidence(candidates, None, _calibrated(), config) == 1
+    finally:
+        evidence._arcs_on = monkey
+
+    assert candidates[0]["evidence"] == [ARC_GEOMETRY]
+    assert candidates[0]["arc_radius_mm"] == 820
+
+
+def test_an_arc_of_the_wrong_radius_is_not_this_doors_swing(config):
+    """A cloud, a fillet and a north point are curves too. The radius has to be
+    the width of the gap it is claimed to open."""
+    from pipeline.plan.openingevidence import arc_evidence
+    import pipeline.plan.openingevidence as evidence
+
+    candidates = _gap(config)
+    monkey = evidence._arcs_on
+    try:
+        evidence._arcs_on = lambda page: [{"centre": (300.0, 200.0), "radius_pt": 300.0}]
+        assert arc_evidence(candidates, None, _calibrated(), config) == 0
+    finally:
+        evidence._arcs_on = monkey
+    assert candidates[0]["evidence"] == []
+
+
+def test_an_arc_nowhere_near_the_jamb_is_not_this_doors_swing(config):
+    """A swing springs from the hinge, which is a jamb of the opening it opens.
+    One drawn across the room belongs to a different door."""
+    from pipeline.plan.openingevidence import arc_evidence
+    import pipeline.plan.openingevidence as evidence
+
+    candidates = _gap(config)
+    monkey = evidence._arcs_on
+    try:
+        evidence._arcs_on = lambda page: [{"centre": (520.0, 200.0), "radius_pt": 82.0}]
+        assert arc_evidence(candidates, None, _calibrated(), config) == 0
+    finally:
+        evidence._arcs_on = monkey
+
+
+# --- source 3: the glazing drawn inside the wall ----------------------------
+
+
+def test_two_thin_lines_inside_the_wall_over_the_gap_are_a_window(config):
+    """**A wall is solid, so nothing is drawn inside one.** What is drawn
+    between the two faces over the width of the gap is the glass and its
+    frame."""
+    from pipeline.plan.openingevidence import GLAZING_SYMBOL, glazing_evidence
+
+    candidates = _gap(config)
+    rulings = {
+        "h": [(198.5, 300.0, 382.0), (201.5, 300.0, 382.0)],
+        "h_widths": [0.25, 0.25], "v": [], "v_widths": [],
+    }
+    assert glazing_evidence(candidates, rulings, config) == 1
+    assert candidates[0]["evidence"] == [GLAZING_SYMBOL]
+    assert candidates[0]["glazing_lines"] == 2
+
+
+def test_a_line_drawn_as_heavily_as_a_wall_face_is_not_glazing(config):
+    """A wall's own face is plotted heavier than the glass inside it. Without
+    this the wall's linings read as a window in every gap."""
+    from pipeline.plan.openingevidence import glazing_evidence
+
+    candidates = _gap(config)
+    rulings = {
+        "h": [(198.5, 300.0, 382.0), (201.5, 300.0, 382.0)],
+        "h_widths": [1.5, 1.5], "v": [], "v_widths": [],
+    }
+    assert glazing_evidence(candidates, rulings, config) == 0
+
+
+def test_lines_that_do_not_run_the_gap_are_not_its_glazing(config):
+    """A hatch stroke crosses a wall anywhere along it. The glazing runs the
+    width of the opening, which is what separates the two."""
+    from pipeline.plan.openingevidence import glazing_evidence
+
+    candidates = _gap(config)
+    rulings = {
+        "h": [(198.5, 300.0, 310.0), (201.5, 300.0, 310.0)],
+        "h_widths": [0.25, 0.25], "v": [], "v_widths": [],
+    }
+    assert glazing_evidence(candidates, rulings, config) == 0
+
+
+def test_lines_crossing_the_walls_thickness_inside_the_gap_are_read_too(config):
+    """Offices draw the glazing both ways round. Both are the same reading."""
+    from pipeline.plan.openingevidence import GLAZING_SYMBOL, glazing_evidence
+
+    candidates = _gap(config)
+    rulings = {
+        "h": [], "h_widths": [],
+        "v": [(320.0, 194.0, 206.0), (340.0, 194.0, 206.0)],
+        "v_widths": [0.25, 0.25],
+    }
+    assert glazing_evidence(candidates, rulings, config) == 1
+    assert candidates[0]["evidence"] == [GLAZING_SYMBOL]
+
+
+# --- source 5: the leaf width printed at the opening ------------------------
+
+
+def _dimension(value, bbox, overall=False):
+    return {"dimension_id": "D", "text": f"{value:,}", "value_mm": float(value),
+            "bbox": list(bbox), "is_overall": overall}
+
+
+def test_a_leaf_width_printed_across_the_gap_confirms_it(config):
+    """**A plan commonly dimensions a door at the door.** That figure is the
+    drawing stating this opening's own size, in this opening's own place."""
+    from pipeline.plan.openingevidence import LEAF_DIMENSION, leaf_dimension_evidence
+
+    candidates = _gap(config)
+    # 870 printed across the wall, inside the gap's run.
+    dims = [_dimension(870, (330.0, 196.0, 352.0, 204.0))]
+    assert leaf_dimension_evidence(candidates, dims, _calibrated(), config) == 1
+    assert candidates[0]["evidence"] == [LEAF_DIMENSION]
+    assert candidates[0]["leaf_dimension_mm"] == 870.0
+
+
+def test_a_leaf_width_names_a_door_but_never_outranks_a_drawn_symbol(config):
+    """A printed width says a size; only a drafting convention says that size
+    is a door. The glazing drawn inside the wall is the opening itself."""
+    from pipeline.plan.openingevidence import (
+        GLAZING_SYMBOL, LEAF_DIMENSION, _element_type,
+    )
+
+    only_the_figure = {"evidence": [LEAF_DIMENSION]}
+    assert _element_type(only_the_figure) == ("door", LEAF_DIMENSION)
+
+    both = {"evidence": [LEAF_DIMENSION, GLAZING_SYMBOL]}
+    assert _element_type(both) == ("window", GLAZING_SYMBOL)
+
+
+def test_a_wall_dimension_printed_clear_of_the_building_is_not_a_leaf(config):
+    """**This is the rule the whole source rests on.** A setout string runs in
+    the margin on its own dimension line; a leaf width straddles the wall it
+    measures. Without it, every room setout figure would confirm a hole."""
+    from pipeline.plan.openingevidence import leaf_dimension_evidence
+
+    candidates = _gap(config)
+    # The same 870, printed 40 points clear of the wall — a dimension string.
+    dims = [_dimension(870, (330.0, 236.0, 352.0, 244.0))]
+    assert leaf_dimension_evidence(candidates, dims, _calibrated(), config) == 0
+    assert candidates[0]["evidence"] == []
+
+
+def test_an_overall_dimension_never_measures_one_leaf(config):
+    """19,920 OVERALL measures the building. It is excluded whatever it lands
+    on, because a total is never one opening."""
+    from pipeline.plan.openingevidence import leaf_dimension_evidence
+
+    candidates = _gap(config)
+    dims = [_dimension(2400, (330.0, 196.0, 352.0, 204.0), overall=True)]
+    assert leaf_dimension_evidence(candidates, dims, _calibrated(), config) == 0
+
+
+def test_a_figure_that_is_not_a_leaf_size_confirms_nothing(config):
+    """A room's setout, a level and a batten spacing are dimensions too."""
+    from pipeline.plan.openingevidence import leaf_dimension_evidence
+
+    for value in (120, 4500):
+        candidates = _gap(config)
+        dims = [_dimension(value, (330.0, 196.0, 352.0, 204.0))]
+        assert leaf_dimension_evidence(candidates, dims, _calibrated(), config) == 0
+
+
+def test_a_figure_outside_the_gaps_run_belongs_to_another_opening(config):
+    """The figure is printed across the opening it measures, not along the
+    wall somewhere else."""
+    from pipeline.plan.openingevidence import leaf_dimension_evidence
+
+    candidates = _gap(config)
+    dims = [_dimension(870, (520.0, 196.0, 542.0, 204.0))]
+    assert leaf_dimension_evidence(candidates, dims, _calibrated(), config) == 0
+
+
+def test_one_printed_width_confirms_one_gap_only(config):
+    """A figure printed between two doorways belongs to one of them. Two doors
+    cannot share one printed width."""
+    from pipeline.plan.openingevidence import LEAF_DIMENSION, gap_candidates
+
+    wall = _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)
+    wall["gaps_pt"] = [(300.0, 382.0), (400.0, 482.0)]
+    candidates = gap_candidates([wall], _calibrated(), config, "A02")
+    assert len(candidates) == 2
+
+    from pipeline.plan.openingevidence import leaf_dimension_evidence
+    dims = [_dimension(870, (378.0, 196.0, 400.0, 204.0))]
+    assert leaf_dimension_evidence(candidates, dims, _calibrated(), config) == 1
+    confirmed = [c for c in candidates if LEAF_DIMENSION in c["evidence"]]
+    assert len(confirmed) == 1
+
+
+def test_a_printed_leaf_width_alone_still_wants_a_reviewer(config):
+    """It raises the confidence, because it is the drawing stating this
+    opening's own size. It is still one reading."""
+    page = _page_with([_opening("leaf_dimension", "W1", 0.3, 0.5, "door", width=870)])
+    merge_opening_evidence(page, config)
+    kept = page["openings"][0]
+
+    assert kept["evidence_count"] == 1
+    assert kept["review_needed"] is True
+    # One reading is 0.7, the printed width adds 0.30, and the cap is 0.95.
+    one = float(config["openings"]["confidence"]["one_source"])
+    bonus = float(config["openings"]["leaf_dimension"]["confidence_bonus"])
+    assert kept["confidence"] == round(min(one + bonus, 0.95), 3)
+    assert kept["confidence"] > one, "a printed width is worth more than a bare reading"
+
+
+def test_the_leaf_width_and_a_second_reading_confirm_the_opening(config):
+    """Two readings agreeing is what settles the review, here as anywhere."""
+    page = _page_with([
+        _opening("leaf_dimension", "W1", 0.30, 0.50, "door", width=870),
+        _opening("arc_geometry", "W1", 0.31, 0.51, "door", width=880),
+    ])
+    merge_opening_evidence(page, config)
+    kept = page["openings"][0]
+
+    assert kept["evidence_count"] == 2
+    assert kept["review_needed"] is False
+
+
+# --- which breaks are even worth asking about -------------------------------
+
+
+def test_a_break_at_the_end_of_a_wall_is_not_a_candidate(config):
+    """A break running to the end of a wall is where that wall meets another,
+    or where the tracing stopped. Without this rule, 5.4 m "openings" appeared
+    that were really stretches of wall never traced."""
+    wall = _wall_with_a_gap(100.0, 182.0)
+    assert _gap(config, wall) == []
+
+
+def test_a_break_the_width_of_a_partition_is_a_junction_not_a_door(config):
+    """A 90 mm partition breaks a wall for 90 mm; a door breaks it for 820. The
+    two look identical until the width is measured."""
+    wall = _wall_with_a_gap(300.0, 302.0)
+    assert _gap(config, wall) == []
+
+
+def test_every_opening_threshold_comes_from_the_config(config):
+    """Critical Rule 1: an office retunes this by editing a file, never code."""
+    settings = config["openings"]
+    for section in ("candidate_gap", "arc_geometry", "text_label",
+                    "glazing_symbol", "schedule_entry", "leaf_dimension",
+                    "confidence"):
+        assert section in settings, section
+    assert settings["text_label"]["patterns"], "the marks an office prints are config"
+    for name in ("leaf_dim_wall_reach_mm", "leaf_dim_min_mm", "leaf_dim_max_mm"):
+        assert name in settings["leaf_dimension"], name
+
+
+def test_a_mark_that_is_not_a_door_or_window_code_confirms_nothing(config):
+    """A room name or a dimension printed beside a gap is not a mark, and the
+    patterns in the config are what decide it."""
+    from pipeline.plan.openingevidence import type_from_label
+
+    assert type_from_label("W12", config) == "window"
+    assert type_from_label("SD01", config) == "door"
+    assert type_from_label("KITCHEN", config) is None
+    assert type_from_label("1810", config) is None
 
 
 def test_a_plan_that_labels_nothing_still_reports_its_doors_and_windows():
@@ -1321,7 +1651,7 @@ def test_a_plan_that_labels_nothing_still_reports_its_doors_and_windows():
         "scale_calibration": {"result": "confirmed"},
         "openings": [
             {"opening_id": f"P01-OPG{n:03d}", "mark": "", "element_type": None,
-             "wall_id": None, "in_schedule": False, "found_by": "gap_in_the_wall",
+             "wall_id": None, "in_schedule": False, "found_by": "glazing_symbol",
              "source_bbox": [0, 0, 1, 1], "confidence": 0.6,
              "confidence_band": "review", "position_on_wall": None}
             for n in range(1, 11)
@@ -1351,14 +1681,14 @@ def test_marks_still_decide_the_count_where_a_plan_prints_them():
 
     marked = [
         {"opening_id": f"A02-OP{n:03d}", "mark": m, "element_type": "door",
-         "wall_id": None, "in_schedule": True, "found_by": "mark_on_the_drawing",
+         "wall_id": None, "in_schedule": True, "found_by": "text_label",
          "source_bbox": [0, 0, 1, 1], "confidence": 0.9, "confidence_band": "high",
          "position_on_wall": None}
         for n, m in enumerate(["D1", "D2", "D1"], start=1)  # D1 marked twice
     ]
     unmarked = [
         {"opening_id": "A05-OPG001", "mark": "", "element_type": None,
-         "wall_id": None, "in_schedule": False, "found_by": "gap_in_the_wall",
+         "wall_id": None, "in_schedule": False, "found_by": "glazing_symbol",
          "source_bbox": [0, 0, 1, 1], "confidence": 0.6, "confidence_band": "review",
          "position_on_wall": None}
     ]
@@ -2084,9 +2414,9 @@ def test_three_readings_of_one_opening_are_one_opening(config):
     """A plan states an opening in up to four ways and a good plan set states
     it twice or more. Three readings of the same window are one window."""
     page = _page_with([
-        _opening("mark_on_the_drawing", "W1", 0.3, 0.5, "window", mark="W4", width=1800),
-        _opening("window_symbol", "W1", 0.31, 0.51, "sliding_window", width=1804),
-        _opening("gap_in_the_wall", "W1", 0.3, 0.5, None, width=1790),
+        _opening("text_label", "W1", 0.3, 0.5, "window", mark="W4", width=1800),
+        _opening("glazing_symbol", "W1", 0.31, 0.51, "sliding_window", width=1804),
+        _opening("break_only", "W1", 0.3, 0.5, None, width=1790),
     ])
     result = merge_opening_evidence(page, config)
 
@@ -2102,8 +2432,8 @@ def test_a_drawn_symbol_outranks_a_printed_label(config):
     """The symbol is the thing itself, drawn to size; the label is a reference
     to a schedule row that may have been typed against the wrong mark."""
     page = _page_with([
-        _opening("mark_on_the_drawing", "W1", 0.3, 0.5, "window", mark="W4", width=1800),
-        _opening("window_symbol", "W1", 0.31, 0.51, "sliding_window", width=1804),
+        _opening("text_label", "W1", 0.3, 0.5, "window", mark="W4", width=1800),
+        _opening("glazing_symbol", "W1", 0.31, 0.51, "sliding_window", width=1804),
     ])
     merge_opening_evidence(page, config)
 
@@ -2113,36 +2443,66 @@ def test_a_drawn_symbol_outranks_a_printed_label(config):
 
 def test_two_openings_in_different_places_stay_separate(config):
     page = _page_with([
-        _opening("window_symbol", "W1", 0.05, 0.2, "fixed_window", width=800),
-        _opening("window_symbol", "W1", 0.6, 0.8, "sliding_window", width=1200),
+        _opening("glazing_symbol", "W1", 0.05, 0.2, "fixed_window", width=800),
+        _opening("glazing_symbol", "W1", 0.6, 0.8, "sliding_window", width=1200),
     ])
     assert merge_opening_evidence(page, config)["openings"] == 2
 
 
-def test_a_break_with_nothing_else_saying_what_it_is_is_an_opening_of_unknown_kind(config):
-    """Nothing is set aside for a person to decide. A gap the drawing never
-    explained is reported as what it is."""
-    page = _page_with([_opening("gap_in_the_wall", "W1", 0.3, 0.5, None, width=900)])
+def test_one_reading_alone_is_an_opening_a_reviewer_must_check(config):
+    """One of the four is ordinary and usable, and the record says which one it
+    was. It is reported, and it is flagged for a person to look at."""
+    page = _page_with([_opening("glazing_symbol", "W1", 0.3, 0.5, "fixed_window", width=900)])
     merge_opening_evidence(page, config)
     kept = page["openings"][0]
 
-    assert kept["element_type"] == "unknown_opening"
-    assert kept["confidence_band"] == "low"
-    assert kept["review_status"] == "auto_confirmed"
-    assert "unknown kind" in kept["how_it_was_decided"]
+    assert kept["evidence_count"] == 1
+    assert kept["review_needed"] is True
+    assert kept["review_status"] == "needs_review"
+    assert "the glazing drawn inside the wall" in kept["how_it_was_decided"]
+
+
+def test_two_readings_need_no_reviewer(config):
+    """Two separate readings of the drawing agreeing is as good as this gets."""
+    page = _page_with([
+        _opening("glazing_symbol", "W1", 0.30, 0.50, "sliding_window", width=1800),
+        _opening("text_label", "W1", 0.31, 0.51, "window", mark="W4", width=1804),
+    ])
+    merge_opening_evidence(page, config)
+    kept = page["openings"][0]
+
+    assert kept["evidence_count"] == 2
+    assert kept["review_needed"] is False
+    assert kept["confidence_band"] == "high"
+
+
+def test_the_same_reading_found_twice_is_still_one_reading(config):
+    """An arc read off the drawing's own curve and the same arc found against
+    the gap are one arc. Counting them twice would turn a reading into a
+    confirmation of itself, which is what the four-source rule exists to stop."""
+    page = _page_with([
+        _opening("arc_geometry", "W1", 0.30, 0.42, "door", width=820),
+        _opening("arc_geometry", "W1", 0.31, 0.43, "door", width=825),
+    ])
+    merge_opening_evidence(page, config)
+    kept = page["openings"][0]
+
+    assert kept["evidence_count"] == 1
+    assert kept["review_needed"] is True
 
 
 def test_nothing_is_left_waiting_for_a_person(config):
     """Every outcome is decided here. A reading that stops to ask is a reading
-    that cannot run on its own."""
+    that cannot run on its own — but an opening only one source spoke for still
+    says so, rather than being presented as settled."""
     page = _page_with([
-        _opening("gap_in_the_wall", "W1", 0.1, 0.2, None, width=900),
-        _opening("window_symbol", "W1", 0.6, 0.8, "sliding_window", width=1200),
+        _opening("arc_geometry", "W1", 0.1, 0.2, "door", width=900),
+        _opening("glazing_symbol", "W1", 0.6, 0.8, "sliding_window", width=1200),
     ])
     merge_opening_evidence(page, config)
 
-    assert all(o["review_status"] == "auto_confirmed" for o in page["openings"])
     assert all(o.get("how_it_was_decided") for o in page["openings"])
+    assert all(o["evidence_count"] >= 1 for o in page["openings"])
 
 
 def test_every_opening_is_named_even_where_the_drawing_names_none(config):
@@ -2151,9 +2511,9 @@ def test_every_opening_is_named_even_where_the_drawing_names_none(config):
     from pipeline.plan.openings import name_openings
 
     page = _page_with([
-        _opening("window_symbol", "W1", 0.1, 0.2, "sliding_window", width=1200),
-        _opening("door_swing", "W1", 0.6, 0.8, "door", width=820),
-        _opening("mark_on_the_drawing", "W1", 0.85, 0.95, "window", mark="W7", width=900),
+        _opening("glazing_symbol", "W1", 0.1, 0.2, "sliding_window", width=1200),
+        _opening("arc_geometry", "W1", 0.6, 0.8, "door", width=820),
+        _opening("text_label", "W1", 0.85, 0.95, "window", mark="W7", width=900),
     ])
     name_openings([page], config)
     names = [o["display_mark"] for o in page["openings"]]
@@ -2389,8 +2749,8 @@ def test_two_readings_alongside_each_other_on_one_wall_are_one_opening(config):
     the jambs, so the two sit alongside rather than on top of each other.
     Nearer than a door is wide, on one wall, there is not room for two."""
     page = _page_with([
-        _opening("door_swing", "W1", 0.30, 0.42, "door", width=820),
-        _opening("gap_in_the_wall", "W1", 0.44, 0.56, None, width=830),
+        _opening("arc_geometry", "W1", 0.30, 0.42, "door", width=820),
+        _opening("break_only", "W1", 0.44, 0.56, None, width=830),
     ])
     result = merge_opening_evidence(page, config)
 
@@ -2403,8 +2763,8 @@ def test_a_swing_outranks_the_window_drawn_inside_the_wall(config):
     window drawn inside a wall is the opening, but its width is read off the
     ends rather than swept."""
     page = _page_with([
-        _opening("window_symbol", "W1", 0.30, 0.45, "sliding_window", width=900),
-        _opening("door_swing", "W1", 0.31, 0.46, "door", width=820),
+        _opening("glazing_symbol", "W1", 0.30, 0.45, "sliding_window", width=900),
+        _opening("arc_geometry", "W1", 0.31, 0.46, "door", width=820),
     ])
     merge_opening_evidence(page, config)
 
@@ -2414,8 +2774,8 @@ def test_a_swing_outranks_the_window_drawn_inside_the_wall(config):
 def test_two_openings_a_room_apart_stay_two(config):
     """The rule is a door's width, not a room's."""
     page = _page_with([
-        _opening("window_symbol", "W1", 0.05, 0.18, "fixed_window", width=800),
-        _opening("window_symbol", "W1", 0.70, 0.85, "sliding_window", width=900),
+        _opening("glazing_symbol", "W1", 0.05, 0.18, "fixed_window", width=800),
+        _opening("glazing_symbol", "W1", 0.70, 0.85, "sliding_window", width=900),
     ])
     assert merge_opening_evidence(page, config)["openings"] == 2
 
@@ -2427,8 +2787,8 @@ def test_an_opening_with_no_mark_is_never_an_unmatched_mark(config):
     from pipeline.plan.openings import reconcile_openings_with_schedules
 
     page = _page_with([
-        _opening("window_symbol", "W1", 0.30, 0.45, "sliding_window", width=900),
-        _opening("door_swing", "W1", 0.60, 0.72, "door", width=820),
+        _opening("glazing_symbol", "W1", 0.30, 0.45, "sliding_window", width=900),
+        _opening("arc_geometry", "W1", 0.60, 0.72, "door", width=820),
     ])
     page["schedules"] = []
     result = reconcile_openings_with_schedules([page])
@@ -2453,7 +2813,7 @@ def _drawn_arc(centre, radius, from_degrees, to_degrees, size=400):
 
 def _arc_reader():
     numpy = pytest.importorskip("numpy")
-    from pipeline.plan.symbols import _widest_arc_near
+    from pipeline.plan.openingevidence import _widest_arc_near
 
     angles = numpy.arange(0, 360, 1.0)
     around = (numpy.cos(numpy.radians(angles)), numpy.sin(numpy.radians(angles)))
@@ -2503,21 +2863,33 @@ def test_a_straight_corner_is_not_a_swing():
 
 def test_the_drawings_own_curves_are_never_displaced_by_the_page(config):
     """Exact geometry beats anything recovered from pixels, so the page is only
-    read where the sheet's own curves put no swing on a wall."""
-    from pipeline.plan.openings import confirm_doors_from_the_page
+    read where the sheet's own curves confirmed no gap."""
+    from pipeline.plan import openingevidence
 
-    already = [{"found_by": "door_swing", "wall_id": "W1", "position_on_wall": {}}]
-    assert confirm_doors_from_the_page(
-        None, already, [], {"usable_for_measurement": True,
-                           "measured_mm_per_point": 10.0}, config, "A02"
-    ) == 0
+    asked = []
+    monkey = openingevidence._arcs_on_the_page
+    try:
+        openingevidence._arcs_on_the_page = lambda *a, **k: asked.append(1) or 0
+        confirmed = [{
+            "evidence": ["arc_geometry"], "width_mm": 820.0, "jambs": [(0.0, 0.0)],
+            "start_pt": 0.0, "end_pt": 82.0,
+        }]
+        openingevidence.arc_evidence(confirmed, None, _calibrated(), config)
+    finally:
+        openingevidence._arcs_on_the_page = monkey
+
+    assert asked == [], "a gap the drawing already answered is never re-read as pixels"
 
 
 def test_nothing_is_read_from_a_page_whose_scale_was_never_settled(config):
     """A radius in millimetres needs a scale. Without one there is nothing to
     ask the image for."""
-    from pipeline.plan.openings import confirm_doors_from_the_page
+    from pipeline.plan.openingevidence import arc_evidence, gap_candidates
 
-    assert confirm_doors_from_the_page(
-        None, [], [], {"usable_for_measurement": False}, config, "A02"
-    ) == 0
+    wall = _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)
+    wall["gaps_pt"] = [(300.0, 382.0)]
+
+    assert gap_candidates([wall], {"usable_for_measurement": False}, config, "A02") == []
+    assert arc_evidence([], None, {"usable_for_measurement": False}, config) == 0
+
+

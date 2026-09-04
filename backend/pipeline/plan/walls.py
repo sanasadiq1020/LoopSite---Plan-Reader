@@ -602,7 +602,14 @@ def detect_walls(
     # floor plan came back as a single 0.7 m wall. The fuller of the two
     # readings wins, so exact line work is never displaced by pixels that found
     # less.
-    enough_to_be_a_building = int(settings.get("min_walls_for_an_unnamed_plan", 4))
+    enough_to_be_a_building = int(
+        _setting(
+            settings,
+            "min_walls_for_vector",
+            "min_walls_for_an_unnamed_plan",
+            default=4,
+        )
+    )
 
     line_source = "vector"
     walls = build(rulings)
@@ -612,7 +619,7 @@ def detect_walls(
             from_picture = build(recovered)
             if len(from_picture) > len(walls):
                 walls = from_picture
-                line_source = "rendered_page"
+                line_source = "lsd_raster"
 
     # A building's walls meet each other. A pair of parallel lines touching
     # nothing else is an eave, a roof extent, a fence or a bench.
