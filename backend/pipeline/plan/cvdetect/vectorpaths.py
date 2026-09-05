@@ -73,6 +73,9 @@ _SAME_LINE_TOLERANCE_PT = 0.6
 # Below this a "segment" is a plotting artefact rather than a drawn line.
 _SHORTEST_SEGMENT_PT = 0.5
 
+# One PDF point is 1/72 inch of paper. A unit definition, not a tuning value.
+MM_PER_POINT = 25.4 / 72.0
+
 
 @dataclass
 class Segment:
@@ -349,11 +352,20 @@ def _mark_thin(paths: VectorPaths, settings: dict) -> None:
     """
     mode = str(setting(settings, "noise.stroke_weight_split", "dominant") or "off").lower()
     absolute = number(settings, "noise.thin_line_absolute_pt", 0.0)
+    # **AS 1100 states line widths in millimetres of paper**, so an office
+    # thinking in those terms sets the figure that way and it is converted
+    # here. One point is 1/72 inch, which is 0.3528 mm.
+    in_mm = number(settings, "noise.thin_line_min_mm", 0.0)
+    if in_mm > 0:
+        absolute = max(absolute, in_mm / MM_PER_POINT)
 
     threshold = 0.0
     if absolute > 0:
         threshold = absolute
-        paths.notes.append(f"Lines lighter than {absolute} pt are set aside, as configured.")
+        paths.notes.append(
+            f"Lines lighter than {absolute:.2f} pt "
+            f"({absolute * MM_PER_POINT:.2f} mm on the paper) are set aside, as configured."
+        )
     elif mode == "dominant":
         threshold = _dominant_weight_split(paths)
     elif mode == "otsu":

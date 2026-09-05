@@ -187,6 +187,38 @@ A bare `GROUND FLOOR` matched a site-coverage *table* on the real site plan —
 rescued the very sheet the rule exists to stop. `FLOOR PLAN` already covers
 `GROUND FLOOR PLAN` as a substring, so requiring the word `PLAN` loses nothing.
 
+### Text and door swings never reach the wall tracing
+
+Two things are stripped from the mask before any morphology, because once they
+are pixels they look exactly like a wall:
+
+* **Printed text.** A room name set in capitals is a continuous run of dark
+  pixels, so the top and bottom of the word are two parallel lines a plausible
+  wall thickness apart — measured on one floor plan, **32 of its 157 "walls"
+  were printed words** lying across their own rooms. The boxes come from the
+  sheet's own text lines, so they are exact rather than guessed at.
+* **Door swings.** The arc is drawn *inside* the doorway, so closing joins the
+  wall to the arc and the arc to the far jamb — welding the opening shut before
+  a break can form. Only the arc is removed, never the opening: where the
+  doorway is and how wide is Step 3's answer.
+
+*Measured: it also made every sheet faster, because less ink means smaller
+bands — a 17-sheet set went from 35 s to 26 s and a 23-sheet set from 40 s to
+34 s.*
+
+### An Australian wall is not thicker than 300 mm
+
+A brick-veneer external wall is 230–270 mm and a cavity wall about 290, so
+anything wider is a band the closing joined to something else. *Measured on the
+23-sheet set, tightening 320 to 300 took openings from 115 to 119 and cut the
+candidates set aside as outside the building from 36 to 20* — the over-wide
+bands were the ones sprawling past the footprint.
+
+The footprint test itself is the orchestrator's, applied to whichever reader
+ran: the largest group of walls that reach each other **is** the building, and
+anything outside its extent is an eave, a boundary or a roof extent. It is not
+deleted but set aside with that reason, so a reader can see what was rejected.
+
 ### Stroke weight does not separate structure from annotation
 
 AS 1100.301 has offices plot a structural outline heavier than an annotation
@@ -307,11 +339,15 @@ angles and stay two walls, which is right.
 
 Every sheet of all three plan sets, end to end through the CLI:
 
-| plan set | sheets | scale established | walls | openings | placed on a wall |
-|---|---|---|---|---|---|
-| published as pictures | 6 | **6 of 6** | 431 | 8 | 6 |
-| vector, 23 sheets | 23 | **21 of 23** | 549 | 222 | 117 |
-| unseen office, 17 sheets | 17 | 8 of 17 | 125 | 39 | 19 |
+| plan set | legacy openings | cvdetect openings | legacy breaks | cvdetect breaks |
+|---|---|---|---|---|
+| published as pictures | 11 | **12** | 29 | **33** |
+| vector, 23 sheets | 133 | 119 | 87 | 64 |
+| unseen office, 17 sheets | 15 | 2 | 28 | 2 |
+
+cvdetect now exceeds the face-pairing reader on the picture-published set. On
+the third set it does not, and the reason is not tuning: its traced runs and its
+paired faces describe different geometry there.
 
 Every sheet without a scale is a cover, a notes page, an engineering report
 page bound into the set, or a details sheet whose drawings are marked NTS.
@@ -425,7 +461,7 @@ is never cropped, because cropping loses part of the drawing silently.
 
 ## Tests
 
-`backend/tests/test_cvdetect.py` — 79 tests, each naming the mistake it
+`backend/tests/test_cvdetect.py` — 90 tests, each naming the mistake it
 prevents rather than restating what the code does. They include an end-to-end
 run against a **building drawn for the purpose**: a 12 m × 8 m rectangle in
 230 mm wall at 1:100, read back and compared with what was drawn. Scoring a

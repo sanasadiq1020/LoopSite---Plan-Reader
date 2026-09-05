@@ -1145,3 +1145,62 @@ def test_the_detection_settings_reload_too(tmp_path):
     finally:
         cv.CONFIG_PATH.write_text(original, encoding="utf-8")
         cv.load_settings()
+
+
+# --------------------------------------------------------------------------
+# Pre-processing: what never reaches the wall tracing
+# --------------------------------------------------------------------------
+
+def test_printed_text_is_kept_out_of_the_wall_tracing(tmp_path, config):
+    """A room name set in capitals is a continuous run of dark pixels, so the
+    top and bottom of the word are two parallel lines a plausible wall
+    thickness apart - 32 of one floor plan's 157 walls were printed words."""
+    from pipeline.plan.cvdetect import vectorpaths as vp
+    from pipeline.plan.cvdetect import wallgeometry as wg
+
+    path = _sheet_with(tmp_path, [(200, 400, "KITCHEN", 14), (200, 500, "BED 2", 14)])
+    document = fitz.open(str(path))
+    try:
+        page = document[0]
+        scale = Scale(mm_per_point=AT_1_TO_100, dpi=150.0, origin=(page.rect.x0, page.rect.y0))
+        mask = wg._noise_to_strip(page, scale, vp.parse_paths(page, config), config)
+        assert mask is not None, "the sheet's own words must be masked out"
+        assert mask.any(), "and the mask must actually cover them"
+    finally:
+        document.close()
+
+
+def test_stripping_can_be_switched_off(tmp_path, config):
+    from pipeline.plan.cvdetect import vectorpaths as vp
+    from pipeline.plan.cvdetect import wallgeometry as wg
+
+    off = cv_settings._deep_merge(config, {"noise": {"strip_text_and_swings": False}})
+    path = _sheet_with(tmp_path, [(200, 400, "KITCHEN", 14)])
+    document = fitz.open(str(path))
+    try:
+        page = document[0]
+        scale = Scale(mm_per_point=AT_1_TO_100, dpi=150.0, origin=(page.rect.x0, page.rect.y0))
+        assert wg._noise_to_strip(page, scale, vp.parse_paths(page, off), off) is None
+    finally:
+        document.close()
+
+
+def test_a_thin_line_threshold_can_be_stated_in_paper_millimetres(config):
+    """AS 1100 states line widths in millimetres of paper, so an office
+    thinking in those terms sets the figure that way."""
+    paths = vectorpaths.VectorPaths()
+    # 0.25 mm on the paper is 0.71 pt. A 0.5 pt line is under it; a 1.0 pt line is not.
+    for index in range(20):
+        paths.segments.append(vectorpaths.Segment(0, index, 900, index, 0.50, False, index))
+    for index in range(20):
+        paths.segments.append(vectorpaths.Segment(0, 100 + index, 900, 100 + index, 1.00, False, index))
+    in_mm = cv_settings._deep_merge(config, {"noise": {"thin_line_min_mm": 0.25}})
+    vectorpaths._mark_thin(paths, in_mm)
+    assert all(s.role == "thin" for s in paths.segments if s.width == 0.50)
+    assert all(s.role == "structural" for s in paths.segments if s.width == 1.00)
+
+
+def test_an_australian_wall_is_not_thicker_than_three_hundred(config):
+    """A brick-veneer external wall is 230 to 270 mm and a cavity wall about
+    290; anything wider is a band the closing joined to something else."""
+    assert cv_settings.number(config, "wall.max_thickness_mm", 0.0) == 300.0

@@ -225,7 +225,7 @@ def page_line_work(page, scale) -> dict:
     return rulings
 
 
-def ink_from_rulings(page, scale, rulings: dict) -> np.ndarray:
+def ink_from_rulings(page, scale, rulings: dict, settings: dict = None) -> np.ndarray:
     """A binary image drawn from axis-aligned line segments in page space.
 
     ``h`` entries are ``(y, x0, x1)`` and ``v`` entries ``(x, y0, y1)``, with
@@ -237,7 +237,15 @@ def ink_from_rulings(page, scale, rulings: dict) -> np.ndarray:
     height, width = image_size(page, scale)
     canvas = np.zeros((height, width), dtype=np.uint8)
     zoom = scale.pixels_per_point
+    # A line recovered from a picture carries the width the detector measured
+    # for it, so the same paper threshold applies here as to a drawn path.
+    thinnest_pt = 0.0
+    if settings is not None:
+        in_mm = number(settings, "noise.thin_line_min_mm", 0.0)
+        if in_mm > 0:
+            thinnest_pt = in_mm / (25.4 / 72.0)
 
+    dropped = 0
     for key, widths_key, horizontal in (("h", "h_widths", True), ("v", "v_widths", False)):
         lines = rulings.get(key) or []
         widths = rulings.get(widths_key) or []
@@ -245,6 +253,9 @@ def ink_from_rulings(page, scale, rulings: dict) -> np.ndarray:
             try:
                 position, start, end = float(line[0]), float(line[1]), float(line[2])
                 stroke = float(widths[index]) if index < len(widths) else 0.0
+                if thinnest_pt > 0 and 0 < stroke < thinnest_pt:
+                    dropped += 1
+                    continue
                 if horizontal:
                     first = scale.point_to_pixel(start, position)
                     second = scale.point_to_pixel(end, position)
@@ -261,6 +272,8 @@ def ink_from_rulings(page, scale, rulings: dict) -> np.ndarray:
                 )
             except Exception:
                 continue
+    if dropped:
+        logger.info(f"{dropped} recovered line(s) were lighter than the office plots a wall")
     return canvas
 
 

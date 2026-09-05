@@ -268,8 +268,9 @@ def detect_walls(
             page, scale, paths, settings, openings_mask, None
         )
         diagnostics["face_pairs"] = vector_breaks
+        strip = _noise_to_strip(page, scale, paths, settings)
         walls, components = _measure(
-            page, scale, ink, source, settings, mask, sheet_name, vector_breaks
+            page, scale, ink, source, settings, mask, sheet_name, vector_breaks, strip
         )
 
         # **The switch is decided on what the reading produced, not on how much
@@ -298,8 +299,9 @@ def detect_walls(
                 page, scale, paths, settings, openings_mask, page_rulings
             )
             from_page, page_components = _measure(
-                page, scale, imaging.ink_from_rulings(page, scale, page_rulings),
-                "page_image", settings, page_mask, sheet_name, page_breaks,
+                page, scale,
+                imaging.ink_from_rulings(page, scale, page_rulings, settings),
+                "page_image", settings, page_mask, sheet_name, page_breaks, strip,
             )
             if len(from_page) > len(walls):
                 walls, components, source = from_page, page_components, "page_image"
@@ -323,6 +325,62 @@ def detect_walls(
         f"({source}) on {sheet_name or 'this sheet'}"
     )
     return walls, diagnostics
+
+
+def _noise_to_strip(page, scale, paths, settings: dict):
+    """Everything that must never reach the wall tracing, as one mask.
+
+    Two things, and both are ink that looks exactly like a wall once it is
+    pixels:
+
+    *   **Printed text.** A word set in capitals is a continuous run of dark
+        pixels, and its top and bottom are two parallel lines a plausible wall
+        thickness apart. The box is taken from the sheet's own text lines, so
+        it is exact rather than guessed at.
+    *   **Door swings.** The arc is drawn inside the doorway, so closing joins
+        the wall to the arc and the arc to the far jamb - the opening is welded
+        shut before a break can form. Only the arc itself is removed, not the
+        opening: where the doorway is, and how wide, is Step 3's answer.
+
+    Never raises, and returns None where there is nothing to strip, so a sheet
+    whose text cannot be read is traced exactly as it was before.
+    """
+    if not setting(settings, "noise.strip_text_and_swings", True):
+        return None
+    boxes = []
+    try:
+        from pipeline.plan import textmodel
+
+        pad = scale.px_from_pt(number(settings, "noise.text_padding_pt", 1.0))
+        for line in textmodel.extract_native_lines(page) or []:
+            box = line.get("bbox")
+            if box and len(box) == 4:
+                boxes.append([float(v) for v in box])
+    except Exception as e:
+        logger.exception(f"the printed text could not be read off this sheet: {e}")
+        pad = 0.0
+
+    try:
+        squareness = number(settings, "openings.arc_squareness", 1.6)
+        smallest = number(settings, "openings.door_min_width_mm", 600.0)
+        largest = number(settings, "openings.door_max_width_mm", 2400.0)
+        for curve in getattr(paths, "curves", []) or []:
+            x0, y0, x1, y1 = curve["bbox"]
+            across, down = abs(x1 - x0), abs(y1 - y0)
+            if across <= 0 or down <= 0:
+                continue
+            if max(across / down, down / across) > squareness:
+                continue
+            leaf_mm = max(across, down) * scale.mm_per_point
+            if smallest <= leaf_mm <= largest:
+                boxes.append([x0, y0, x1, y1])
+    except Exception as e:
+        logger.exception(f"the door swings could not be read off this sheet: {e}")
+
+    if not boxes:
+        return None
+    logger.info(f"{len(boxes)} text box(es) and door swing(s) kept out of the wall tracing")
+    return imaging.draw_mask(page, scale, boxes, pad)
 
 
 def _mask_with_the_breaks(page, scale, paths, settings, openings_mask, rulings):
@@ -357,7 +415,10 @@ def _mask_with_the_breaks(page, scale, paths, settings, openings_mask, rulings):
         return punched, pairs
 
 
-def _measure(page, scale, ink, source, settings, openings_mask, sheet_name, face_pairs=None):
+def _measure(
+    page, scale, ink, source, settings, openings_mask, sheet_name,
+    face_pairs=None, strip_mask=None,
+):
     """Closing, distance transform, contours and centrelines, over one image."""
     import cv2
     import numpy as np
@@ -370,6 +431,16 @@ def _measure(page, scale, ink, source, settings, openings_mask, sheet_name, face
     # wall, and a door gap is exactly that size.
     if openings_mask is not None:
         ink = cv2.bitwise_and(ink, cv2.bitwise_not(openings_mask))
+
+    # **Lettering and door swings never reach the tracing.** A room name set in
+    # capitals is a continuous run of dark pixels, so the top and bottom of the
+    # word are two parallel lines a plausible wall thickness apart - measured on
+    # one floor plan, 32 of its 157 "walls" were printed words lying across
+    # their own rooms. A swing arc is worse than useless here: it is ink drawn
+    # *inside* the doorway, and closing joins the wall to it and it to the far
+    # side, welding the opening shut before any break can form.
+    if strip_mask is not None:
+        ink = cv2.bitwise_and(ink, cv2.bitwise_not(strip_mask))
 
     thinnest_px = max(
         2, int(round(scale.px_from_mm(number(settings, "wall.min_thickness_mm", 70.0))))

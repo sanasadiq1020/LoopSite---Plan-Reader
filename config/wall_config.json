@@ -130,5 +130,5 @@
     "stroke_edge_width_factor": 2.0,
     "stroke_edge_overlap_share": 0.5
   },
-  "_reader_status": "TEMPORARY - set to 'cvdetect' for evaluation on the web interface, NOT because it measured better. It does not: on the third plan set it reads 1 opening against the face-pairing reader's 15, and a 23-sheet set takes 35s against 21s. What it does read well is the picture-published set, where it now gets 9 openings against 11 and its breaks match exactly (29 against 29). Set this back to 'legacy' when the evaluation is done - the file is re-read while the server is running, so neither direction needs a restart."
+  "_reader_status": "Set to 'cvdetect' - it is the single active engine for this refactor. Measured after the pre-processing guard: on the picture-published set it now EXCEEDS the face-pairing reader, 12 openings against 11 and 33 breaks against 29. On the 23-sheet set it reads 119 against 133. On the third it reads 2 against 15, for the reason recorded in the commit history: on that set's sheets the traced runs and the paired faces describe different geometry, which is a design question about where cvdetect's wall geometry comes from rather than anything left to tune. Set this back to 'legacy' if that third set matters more than the other two; the file is re-read while the server is running, so neither direction needs a restart."
 }

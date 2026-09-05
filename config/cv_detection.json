@@ -15,6 +15,10 @@
     "_weight_note": "AS 1100.301 has offices plot a structural outline heavier than an annotation line, so separating them by weight is sound in principle. In practice no fixed number of points can do it. Measured by drawn length, one office's floor plan carries 0.28 pt (48%), 0.37 pt (24%), 0.51 pt (18%) and 0.71 pt (10%) and draws its walls at the lightest of those; another carries 0.17 pt (66%), 0.42 pt (2%) and 1.36 pt (29%), where the heaviest lines are the drawing frame and the building itself is the lightest. A 0.35 pt rule deletes half the first sheet; an Otsu split deletes the whole building on the second. So 'dominant' is the default: the weight class carrying the most drawn length IS the drawing, and only what is plotted lighter than the drawing is an annotation line - a rule that cannot delete the drawing, because the drawing sets the threshold. Measured, it removes nothing on any of the three plan sets in use, which is the honest finding: on these drawings stroke weight does not separate structure from annotation, and the thickness of the two paired faces does. Options: 'dominant', 'otsu', 'off'. Setting thin_line_absolute_pt above zero overrides both with a fixed weight; check the wall count before and after if you do.",
     "stroke_weight_split": "dominant",
     "thin_line_absolute_pt": 0.0,
+    "thin_line_min_mm": 0.0,
+    "_strip_note": "Printed text and door swings never reach the wall tracing. A room name set in capitals is a continuous run of dark pixels, so the top and bottom of the word are two parallel lines a plausible wall thickness apart - measured on one floor plan, 32 of its 157 'walls' were printed words lying across their own rooms. A swing arc is worse: it is ink drawn INSIDE the doorway, so closing joins the wall to the arc and the arc to the far jamb, welding the opening shut before a break can form. Only the arc is removed, never the opening - where the doorway is and how wide is Step 3's answer.",
+    "strip_text_and_swings": true,
+    "text_padding_pt": 1.0,
     "min_heavy_share_of_length": 0.15
   },
   "scale": {
@@ -81,7 +85,8 @@
   "wall": {
     "_thickness_note": "A wall band is this thick, measured by distance transform: every pixel is labelled with how far it is from the nearest paper, so on the centre of a wall that value is exactly half its thickness. Below the minimum the band is a lining, a hatch boundary or a dimension line; above the maximum it is a filled panel rather than a wall.",
     "min_thickness_mm": 70.0,
-    "max_thickness_mm": 320.0,
+    "_max_thickness_note": "300 mm, not 320. An Australian residential wall is not built thicker than this - a brick-veneer external wall is 230 to 270 mm and a cavity wall about 290 - so anything wider is a band the closing joined to something else. Measured on a 23-sheet set, tightening 320 to 300 took openings from 115 to 119 and cut the candidates set aside as outside the building from 36 to 20, because the over-wide bands were the ones sprawling past the footprint. It changed nothing on the other two sets.",
+    "max_thickness_mm": 300.0,
     "_length_note": "Anything shorter than the floor is furniture, hatching, a door swing or a fragment - never a wall. The slenderness rule sits beside it and is worth having, because it holds at any scale and on any size of building where a length floor cannot: two lines 230 mm apart that run together for 230 mm are a square, and a square is a column, a symbol or a fragment.",
     "min_length_mm": 600.0,
     "min_length_to_thickness": 1.5,

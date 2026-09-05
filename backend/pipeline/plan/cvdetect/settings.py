@@ -49,6 +49,9 @@ _DEFAULTS = {
         "dash_gap_regularity": 0.6,
         "stroke_weight_split": "dominant",
         "thin_line_absolute_pt": 0.0,
+        "thin_line_min_mm": 0.0,
+        "strip_text_and_swings": True,
+        "text_padding_pt": 1.0,
         "min_heavy_share_of_length": 0.15,
     },
     "scale": {
@@ -88,7 +91,7 @@ _DEFAULTS = {
     },
     "wall": {
         "min_thickness_mm": 70.0,
-        "max_thickness_mm": 320.0,
+        "max_thickness_mm": 300.0,
         "min_length_mm": 600.0,
         "spur_mm": 600.0,
         "carry_on_angle_degrees": 25.0,
