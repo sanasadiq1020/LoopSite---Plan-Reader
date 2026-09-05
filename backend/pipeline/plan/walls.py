@@ -1956,8 +1956,24 @@ def _outside(wall: dict, low: float, high: float, inside, horizontal: bool) -> b
 
 
 def _set_aside(wall: dict) -> None:
-    """Keeps a candidate in the list but out of the drawing and the model."""
+    """Keeps a candidate in the list but out of the drawing and the model.
+
+    **The reason is written here, not left for the wording pass to derive.**
+    ``describe_walls`` turns a wall's flags into the sentence a reader sees, and
+    it has already run by the time the sheet's own plan area is known - the
+    region is worked out from the rooms and dimension strings after the walls
+    are read. So a candidate set aside here kept ``not_used_because`` empty, and
+    an empty reason is drawn as a wall in full colour: measured, the drawing
+    frame and the title-block rules of one sheet were reported as four external
+    walls of the house, one of them 38.5 m long right across the top margin.
+    """
     wall["meets_another_wall"] = False
+    wall["inside_the_drawing"] = False
+    wall["not_used_because"] = (
+        "This is outside the part of the sheet the plan is drawn on, so it is a "
+        "dimension line, a drawing frame or a title-block rule rather than a wall."
+    )
+    wall["review_needed"] = True
     wall["confidence"] = round(min(wall["confidence"], 0.35), 3)
     wall["confidence_band"] = "review"
 

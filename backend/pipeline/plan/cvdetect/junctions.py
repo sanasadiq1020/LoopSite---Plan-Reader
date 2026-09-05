@@ -63,6 +63,110 @@ def snap_endpoints(walls: list, mm_per_point: float, config: dict) -> int:
     return snapped
 
 
+def cast_rays_from_free_ends(walls: list, mm_per_point: float, config: dict) -> int:
+    """Extends a wall end that points at another wall's body, up to the reach.
+
+    Snapping moves an end onto a wall it is already beside. This is the other
+    case: an end that stops short **along its own line** of a wall it is
+    plainly running into, which is what a partition traced a little shy of the
+    wall it lands on looks like. The ray is cast along the wall's own axis - a
+    wall is never moved sideways, because its position across its thickness is
+    a measurement - and it stops at the first wall body it meets.
+
+    **Measured, and the measurement is the point.** On one real floor plan the
+    free ends sit a median of 877 mm from the nearest other wall, and only 2 of
+    29 are within 250 mm. So this closes a real but small share of the gap: the
+    rest are not imprecision, they are wall the tracing never found, and no ray
+    can extend a centreline to a wall that was never traced.
+    """
+    reach = number(config, "wall.ray_reach_mm", 250.0) / mm_per_point
+    if reach <= 0 or len(walls) < 2:
+        return 0
+
+    extended = 0
+    try:
+        for wall in walls:
+            along = 0 if wall["runs_along"] == "x" else 1
+            across = 1 - along
+            position = wall["start_point_pt"][across]
+            low = min(wall["start_point_pt"][along], wall["end_point_pt"][along])
+            high = max(wall["start_point_pt"][along], wall["end_point_pt"][along])
+
+            for which in ("low", "high"):
+                where = low if which == "low" else high
+                if _has_a_junction_at(wall, along, where):
+                    continue
+                hit = _ray_hits(wall, walls, along, across, position, where,
+                                reach, outward=(which == "high"))
+                if hit is None:
+                    continue
+                if which == "low" and hit < low:
+                    low = hit
+                elif which == "high" and hit > high:
+                    high = hit
+                else:
+                    continue
+                extended += 1
+
+            if along == 0:
+                wall["start_point_pt"] = [round(low, 2), position]
+                wall["end_point_pt"] = [round(high, 2), position]
+            else:
+                wall["start_point_pt"] = [position, round(low, 2)]
+                wall["end_point_pt"] = [position, round(high, 2)]
+            face_low, face_high = sorted(wall["face_positions_pt"])
+            if along == 0:
+                wall["bbox"] = [round(low, 2), round(face_low, 2),
+                                round(high, 2), round(face_high, 2)]
+            else:
+                wall["bbox"] = [round(face_low, 2), round(low, 2),
+                                round(face_high, 2), round(high, 2)]
+    except Exception as e:
+        logger.exception(f"the free wall ends could not be extended: {e}")
+
+    if extended:
+        logger.info(f"walls: {extended} free end(s) extended onto the wall they point at")
+    return extended
+
+
+def _has_a_junction_at(wall: dict, along: int, where: float, slack: float = 10.0) -> bool:
+    for junction in wall.get("junctions") or []:
+        point = junction.get("at_pt")
+        if point and len(point) > along and abs(point[along] - where) <= slack:
+            return True
+    return False
+
+
+def _ray_hits(wall, walls, along, across, position, where, reach, outward):
+    """The nearest wall body the ray meets, or None."""
+    best = None
+    for other in walls:
+        if other is wall:
+            continue
+        other_along = 0 if other["runs_along"] == "x" else 1
+        if other_along == along:
+            continue
+        other_across = 1 - other_along
+        body = other["start_point_pt"][other_across]
+        span_low = min(other["start_point_pt"][other_along],
+                       other["end_point_pt"][other_along])
+        span_high = max(other["start_point_pt"][other_along],
+                        other["end_point_pt"][other_along])
+        # The other wall has to actually cross this one's line.
+        if not (span_low <= position <= span_high):
+            continue
+        step = body - where
+        if outward and step <= 0:
+            continue
+        if not outward and step >= 0:
+            continue
+        if abs(step) > reach:
+            continue
+        if best is None or abs(step) < abs(best - where):
+            best = body
+    return best
+
+
 def _snap_one(wall: dict, walls: list, reach: float) -> int:
     """Both ends of one wall, offered to everything near them."""
     along = 0 if wall["runs_along"] == "x" else 1

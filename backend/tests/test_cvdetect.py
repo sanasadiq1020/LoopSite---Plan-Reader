@@ -1302,10 +1302,15 @@ def _walled(wall_id, runs_along, start, end, across, junctions):
     along = 0 if runs_along == "x" else 1
     first = [start, across] if along == 0 else [across, start]
     last = [end, across] if along == 0 else [across, end]
+    box = (
+        [start, across - 3.0, end, across + 3.0] if along == 0
+        else [across - 3.0, start, across + 3.0, end]
+    )
     return {
         "wall_id": wall_id, "runs_along": runs_along, "thickness_mm": 230.0,
         "start_point_pt": first, "end_point_pt": last,
         "face_positions_pt": [across - 3.0, across + 3.0],
+        "bbox": box, "length_mm": abs(end - start) * AT_1_TO_100,
         "gaps_pt": [], "junctions": junctions,
     }
 
@@ -1434,3 +1439,294 @@ def test_severing_a_wall_keeps_a_stretch_either_side(config):
     assert all(p["terminates_at_an_opening"] for p in pieces)
     # The reading itself is untouched: the parent keeps its gap.
     assert wall["gaps_pt"] == [[380.0, 420.0]]
+
+
+# --------------------------------------------------------------------------
+# Severing at every opening, and reading the picture back
+# --------------------------------------------------------------------------
+
+def test_an_opening_cuts_every_wall_it_passes_through(config):
+    """A doorway is a hole in that place, not a hole in one record.
+
+    An opening is placed on the one wall it was matched to, and a plan commonly
+    traces more than one candidate along the same line. Cutting only the wall an
+    opening names left a second candidate drawn straight across its own doorway
+    - on one sheet a candidate lying entirely inside a doorway, which is a
+    sliding door's leaf and not a wall.
+    """
+    from pipeline.plan import cvwalls
+
+    wall = _walled("W1", "x", 0.0, 800.0, 100.0, [])
+    lining = _walled("W2", "x", 0.0, 800.0, 101.0, [])
+    opening = {
+        "opening_id": "O1", "wall_id": "W1",
+        "source_bbox": [380.0, 97.0, 420.0, 103.0],
+    }
+    pieces = cvwalls.sever_at_openings([wall, lining], AT_1_TO_100, config, [opening])
+    for wall_id in ("W1", "W2"):
+        stretches = [p for p in pieces if p["wall_id"] == wall_id]
+        assert len(stretches) == 2, f"{wall_id} was drawn through its own doorway"
+
+
+def test_an_opening_never_cuts_a_wall_crossing_it(config):
+    """A partition landing on a door's far jamb crosses the opening and is not
+    broken by it - it is not running the opening's way."""
+    from pipeline.plan import cvwalls
+
+    wall = _walled("W1", "x", 0.0, 800.0, 100.0, [])
+    partition = _walled("W2", "y", 100.0, 400.0, 420.0, [])
+    opening = {
+        "opening_id": "O1", "wall_id": "W1",
+        "source_bbox": [380.0, 97.0, 420.0, 103.0],
+    }
+    pieces = cvwalls.sever_at_openings([wall, partition], AT_1_TO_100, config, [opening])
+    assert len([p for p in pieces if p["wall_id"] == "W2"]) == 1
+
+
+def test_an_opening_is_cut_where_it_sits_not_where_its_mark_is_printed(config):
+    """A mark is printed beside its door, often inside the room on a leader.
+
+    Cutting at the mark's own box put the doorway a centimetre off the wall it
+    is a hole in, and the wall itself ran unbroken behind it - measured, five
+    doors on one floor plan.
+    """
+    from pipeline.plan import cvwalls
+
+    wall = _walled("W1", "x", 0.0, 800.0, 100.0, [])
+    opening = {
+        "opening_id": "O1", "wall_id": "W1",
+        # The mark is printed 20 points below the wall, clear of it.
+        "source_bbox": [300.0, 120.0, 307.0, 127.0],
+        "position_on_wall": {"start_fraction": 0.475, "end_fraction": 0.525},
+    }
+    span = cvwalls.opening_span(opening, wall)
+    assert span[0] == pytest.approx(380.0) and span[2] == pytest.approx(420.0)
+    assert span[1] < 100.0 < span[3], "the hole must sit in the wall's own band"
+    pieces = cvwalls.sever_at_openings([wall], AT_1_TO_100, config, [opening])
+    assert len(pieces) == 2
+
+
+def test_two_readings_of_one_doorway_do_not_cut_a_sliver_between_them(config):
+    """A door's swing and the break it sits in are one doorway. Cutting each
+    separately leaves a scrap of wall between them that was never there."""
+    from pipeline.plan import cvwalls
+
+    wall = _walled("W1", "x", 0.0, 800.0, 100.0, [])
+    wall["gaps_pt"] = [[380.0, 415.0]]
+    opening = {
+        "opening_id": "O1", "wall_id": "W1",
+        "source_bbox": [385.0, 97.0, 420.0, 103.0],
+    }
+    pieces = cvwalls.sever_at_openings([wall], AT_1_TO_100, config, [opening])
+    assert len(pieces) == 2
+
+
+def test_a_candidate_outside_the_plan_area_carries_its_reason():
+    """A candidate set aside for lying outside the part of the sheet the plan is
+    drawn on kept an empty reason, and an empty reason is drawn in full colour:
+    one sheet's drawing frame and title-block rules were reported as four
+    external walls, one of them 38.5 m across the top margin."""
+    from pipeline.plan import walls as legacy
+
+    frame = _walled("W1", "x", 16.0, 826.0, 16.8, [])
+    frame["length_mm"] = 38565.0
+    frame["bbox"] = [16.0, 13.8, 826.0, 19.8]
+    frame["confidence"] = 0.6
+    inside = _walled("W2", "x", 500.0, 700.0, 300.0, [])
+    inside["length_mm"] = 7000.0
+    inside["bbox"] = [500.0, 297.0, 700.0, 303.0]
+    inside["confidence"] = 0.9
+
+    config = {"walls": {"require_walls_inside_the_plan": True,
+                        "min_wall_length_mm": 200}}
+    trimmed, dropped = legacy.trim_walls_to_the_drawing(
+        [frame, inside], (478.0, 117.0, 842.0, 595.0), AT_1_TO_100, config
+    )
+    assert dropped == 1 and trimmed == 0
+    assert frame["not_used_because"], "a wall set aside must say why"
+    assert inside.get("not_used_because") is None
+
+
+def _painted(width=400, height=300):
+    """A blank sheet to draw overlay colours on."""
+    return np.full((height, width, 3), 255, dtype=int)
+
+
+def test_the_picture_check_reads_a_wall_line_in_the_margin():
+    """The whole point of looking at the picture: a run of wall colour out where
+    the plan is not drawn is a rafter, a boundary or a drawing frame."""
+    from pipeline.plan.cvdetect import overlaycheck
+
+    image = _painted()
+    image[10:13, 20:200] = list(overlaycheck._rgb(overlaycheck.WALL_COLOURS[0]))
+    ink = overlaycheck._wall_ink(image, None, np)
+    runs = overlaycheck._runs_outside(ink, (50.0, 50.0, 350.0, 250.0),
+                                      (0.0, 0.0), 1.0, 30.0, np)
+    assert len(runs) == 1
+    assert runs[0]["run_pt"] == pytest.approx(180.0, abs=2)
+
+
+def test_the_picture_check_does_not_read_a_label_as_a_wall():
+    """Every wall is labelled in its own colour, and a label that would not fit
+    is moved clear of the drawing. Counting coloured pixels called 118 runs of
+    lettering a failure on one sheet."""
+    from pipeline.plan.cvdetect import overlaycheck
+
+    image = _painted()
+    colour = list(overlaycheck._rgb(overlaycheck.WALL_COLOURS[0]))
+    for x in range(20, 90, 8):          # a word's worth of glyph strokes
+        image[10:18, x:x + 2] = colour
+    ink = overlaycheck._wall_ink(image, None, np)
+    runs = overlaycheck._runs_outside(ink, (50.0, 50.0, 350.0, 250.0),
+                                      (0.0, 0.0), 1.0, 30.0, np)
+    assert runs == []
+
+
+def test_the_picture_check_does_not_read_the_sheets_own_ink_as_a_wall():
+    """A drawing is not printed in black. One plan set rules its frame in a blue
+    close to the outer-wall colour, and reading it put four walls in the margin
+    of a sheet that had none."""
+    from pipeline.plan.cvdetect import overlaycheck
+
+    printed = _painted()
+    printed[10:13, 20:200] = list(overlaycheck._rgb(overlaycheck.WALL_COLOURS[0]))
+    overlay = printed.copy()            # the overlay added nothing here
+    ink = overlaycheck._wall_ink(overlay, printed, np)
+    assert not ink.any()
+
+
+def test_the_picture_check_sees_a_wall_drawn_through_its_own_doorway():
+    """A door is where the wall stops and starts again. A centreline drawn
+    straight through is exactly what the picture is inspected for."""
+    from pipeline.plan.cvdetect import overlaycheck
+
+    colour = list(overlaycheck._rgb(overlaycheck.WALL_COLOURS[0]))
+    wall = {"wall_id": "W1", "source_bbox": [20.0, 100.0, 300.0, 106.0]}
+    opening = {"opening_id": "O1", "wall_id": "W1",
+               "source_bbox": [150.0, 100.0, 200.0, 106.0]}
+    reading = {"walls": [wall], "openings": [opening]}
+
+    through = _painted()
+    through[100:107, 20:300] = colour           # drawn straight past the door
+    ink = overlaycheck._wall_ink(through, None, np)
+    _checked, drawn_through, _where = overlaycheck._openings_drawn_through(
+        ink, reading, (0.0, 0.0), 1.0, np
+    )
+    assert drawn_through == 1
+
+    severed = _painted()
+    severed[100:107, 20:150] = colour
+    severed[100:107, 200:300] = colour
+    ink = overlaycheck._wall_ink(severed, None, np)
+    checked, drawn_through, _where = overlaycheck._openings_drawn_through(
+        ink, reading, (0.0, 0.0), 1.0, np
+    )
+    assert (checked, drawn_through) == (1, 0)
+
+
+def test_the_picture_check_ignores_a_partition_crossing_a_doorway():
+    """A partition landing on a door's far jamb draws a stripe across the
+    opening. Reading any coloured pixel there as a failure called three
+    correctly severed openings on one sheet a fault."""
+    from pipeline.plan.cvdetect import overlaycheck
+
+    colour = list(overlaycheck._rgb(overlaycheck.WALL_COLOURS[1]))
+    wall = {"wall_id": "W1", "source_bbox": [20.0, 100.0, 300.0, 106.0]}
+    opening = {"opening_id": "O1", "wall_id": "W1",
+               "source_bbox": [150.0, 100.0, 200.0, 106.0]}
+    reading = {"walls": [wall], "openings": [opening]}
+
+    image = _painted()
+    image[100:107, 20:150] = colour
+    image[100:107, 200:300] = colour
+    image[60:140, 172:178] = colour             # a partition crossing the door
+    ink = overlaycheck._wall_ink(image, None, np)
+    checked, drawn_through, _where = overlaycheck._openings_drawn_through(
+        ink, reading, (0.0, 0.0), 1.0, np
+    )
+    assert (checked, drawn_through) == (1, 0)
+
+
+def test_the_picture_check_says_so_when_a_sheet_cannot_be_judged():
+    """Where the building is drawn comes from the sheet's own room labels and
+    dimension strings. A sheet printing none of those cannot be checked, and
+    saying so is a result - reporting it as a pass would not be."""
+    from pipeline.plan.cvdetect import overlaycheck
+
+    region, note = overlaycheck._where_the_building_is_drawn(
+        {"rooms": [], "dimension_chains": []}, (0.0, 0.0, 842.0, 595.0)
+    )
+    assert region is None and note
+
+
+def test_a_free_end_inside_the_building_is_a_doorway_not_a_rafter(config):
+    """A partition stops free at a doorway, at a nib and at a return, and so
+    does every wall whose neighbour the tracing missed. On a free end alone the
+    invariant set aside 34, 44 and 7 walls on the three plan sets - 13 per cent
+    retention on one sheet, which is deleting a house rather than pruning a
+    roof."""
+    from pipeline.plan import cvwalls
+
+    cv_settings._cache = cv_settings._deep_merge(
+        config, {"wall": {"require_enclosure": True}}
+    )
+    try:
+        room = [
+            _walled("W1", "x", 0.0, 400.0, 0.0,
+                    [{"with_wall_id": "W4", "at_pt": [0.0, 0.0]},
+                     {"with_wall_id": "W2", "at_pt": [400.0, 0.0]}]),
+            _walled("W2", "y", 0.0, 300.0, 400.0,
+                    [{"with_wall_id": "W1", "at_pt": [400.0, 0.0]},
+                     {"with_wall_id": "W3", "at_pt": [400.0, 300.0]}]),
+            _walled("W3", "x", 0.0, 400.0, 300.0,
+                    [{"with_wall_id": "W2", "at_pt": [400.0, 300.0]},
+                     {"with_wall_id": "W4", "at_pt": [0.0, 300.0]}]),
+            _walled("W4", "y", 0.0, 300.0, 0.0,
+                    [{"with_wall_id": "W3", "at_pt": [0.0, 300.0]},
+                     {"with_wall_id": "W1", "at_pt": [0.0, 0.0]}]),
+            # A partition landing on the north wall and stopping at a doorway,
+            # well inside the house.
+            _walled("W5", "y", 0.0, 120.0, 200.0,
+                    [{"with_wall_id": "W1", "at_pt": [200.0, 0.0]}]),
+        ]
+        assert cvwalls._keep_what_encloses_something(room, AT_1_TO_100, {}) == 0
+        assert all(not w.get("not_used_because") for w in room)
+    finally:
+        cv_settings.forget_settings()
+
+
+def test_the_shell_leaves_out_the_wall_it_is_judging(config):
+    """An eave running three metres out from a corner extends the very outline
+    meant to judge it, so a shell that includes the candidate can never set it
+    aside - the test would be circular and would never fire."""
+    from pipeline.plan import cvwalls
+
+    walls = [
+        _walled("W1", "x", 0.0, 400.0, 0.0, []),
+        _walled("W2", "y", 0.0, 300.0, 400.0, []),
+        _walled("W3", "x", 0.0, 400.0, 300.0, []),
+        _walled("W4", "y", 0.0, 300.0, 0.0, []),
+        _walled("W5", "x", 400.0, 700.0, 0.0, []),
+    ]
+    shell = cvwalls._Shell(walls)
+    without_the_eave = shell.without("W5")
+    assert without_the_eave[2] <= 410.0, "the eave must not widen its own shell"
+    assert shell.without("W1")[2] >= 700.0
+
+
+def test_the_outermost_wall_of_a_house_is_level_with_it_not_beyond_it(config):
+    """Across its thickness the outermost wall sits ON the edge of the building.
+    Allowing only the junction slack there counted both ends of an 8.76 m
+    external wall as outside and set it aside, though it runs the length of the
+    building it belongs to."""
+    from pipeline.plan import cvwalls
+
+    # A wall lying just outside the shell across its thickness, running right
+    # alongside the building.
+    wall = _walled("W9", "x", 60.0, 340.0, 306.0, [])
+    assert not cvwalls._runs_out_into_open_paper(
+        wall, (0.0, 0.0, 400.0, 300.0)
+    )
+    # And one that genuinely runs out past the end of the building.
+    rafter = _walled("W8", "x", 400.0, 700.0, 150.0, [])
+    assert cvwalls._runs_out_into_open_paper(rafter, (0.0, 0.0, 400.0, 300.0))

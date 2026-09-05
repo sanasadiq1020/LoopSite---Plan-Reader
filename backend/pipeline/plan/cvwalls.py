@@ -400,7 +400,8 @@ def _one_wall(run: list, mm_per_point: float, narrowest_break_mm: float) -> dict
     }
 
 
-def sever_at_openings(walls: list, mm_per_point: float, config: dict) -> list:
+def sever_at_openings(walls: list, mm_per_point: float, config: dict,
+                      openings: list = None) -> list:
     """Cuts every wall at the openings it carries, into the stretches either side.
 
     **This is a rendering and export step, not a reading step**, and that
@@ -429,22 +430,34 @@ def sever_at_openings(walls: list, mm_per_point: float, config: dict) -> list:
 
     A stretch shorter than the office's own shortest wall is not kept: a nib
     between two doors is real, a two-millimetre sliver is the tracing.
+
+    **Every opening, not only the ones the faces disagreed about.** ``gaps_pt``
+    holds the breaks the wall's own two faces were measured to have. That is one
+    of four ways this reader finds an opening: a door's swing, a window drawn
+    inside the wall and a printed mark reconciled against a schedule all place
+    an opening on a wall that has no measured gap there - a vector sheet finds
+    most of its openings that way. Severing on ``gaps_pt`` alone therefore drew
+    the centreline straight through 13 of 53 openings, and every one of them was
+    a door or a window the reading had already found and placed. So the openings
+    placed on each wall are cut as well, at the very span the picture draws them
+    at, which is what makes the drawing and the reading say the same thing.
     """
     settings = config.get("walls", {})
     shortest = float(settings.get("min_wall_length_mm", 900)) / mm_per_point
+    placed = _opening_spans(openings, walls)
 
     severed, cut = [], 0
     for wall in walls:
-        gaps = wall.get("gaps_pt") or []
-        if not gaps:
-            severed.append(wall)
-            continue
         along = 0 if wall["runs_along"] == "x" else 1
         run_low = min(wall["start_point_pt"][along], wall["end_point_pt"][along])
         run_high = max(wall["start_point_pt"][along], wall["end_point_pt"][along])
+        gaps = _spans_to_cut(wall, placed, along, run_low, run_high)
+        if not gaps:
+            severed.append(wall)
+            continue
 
         edges = [run_low]
-        for low, high in sorted(gaps):
+        for low, high in gaps:
             edges.extend([low, high])
         edges.append(run_high)
 
@@ -462,6 +475,121 @@ def sever_at_openings(walls: list, mm_per_point: float, config: dict) -> list:
     if cut:
         logger.info(f"walls: {cut} centreline(s) severed at an opening jamb")
     return severed
+
+
+def _opening_spans(openings, walls: list) -> list:
+    """Every opening on the sheet as (axis, box), ready to cut whatever it crosses.
+
+    The axis is the host wall's, where the opening was placed on one, and
+    otherwise the longer side of the opening's own box - a door is drawn wider
+    across the wall than through it.
+    """
+    hosts = {wall.get("wall_id"): wall for wall in walls if wall.get("wall_id")}
+    spans = []
+    for opening in openings or []:
+        host = hosts.get(opening.get("wall_id"))
+        box = opening_span(opening, host)
+        if box is None:
+            continue
+        if host is not None and host.get("runs_along") in ("x", "y"):
+            along = 0 if host["runs_along"] == "x" else 1
+        else:
+            along = 0 if (box[2] - box[0]) >= (box[3] - box[1]) else 1
+        spans.append((along, box))
+    return spans
+
+
+def opening_span(opening: dict, host) -> list:
+    """The stretch of wall one opening occupies, in points, or None.
+
+    **Where it sits on its wall, not where its mark is printed.** A mark is
+    printed beside its opening - commonly inside the room on a leader - so an
+    opening read from one carries the mark's own little box as its
+    ``source_bbox``, seven points square and clear of the wall. Cutting or
+    drawing there puts the doorway where the label is: measured, five doors on
+    one floor plan were drawn as holes floating below the wall they belong to,
+    with the wall itself running unbroken behind them.
+
+    So the placement the reader worked out is used first - the fractions of the
+    way along its wall that the opening starts and ends, which is the same
+    record the 3D model is cut from (Critical Rule 2) - and the box is used only
+    where there is no placement, which is the case for an opening measured
+    directly from the break in the wall.
+    """
+    where = opening.get("position_on_wall") or {}
+    start, end = where.get("start_fraction"), where.get("end_fraction")
+    if host is not None and start is not None and end is not None:
+        try:
+            along = 0 if host["runs_along"] == "x" else 1
+            run_low = min(host["start_point_pt"][along], host["end_point_pt"][along])
+            run_high = max(host["start_point_pt"][along], host["end_point_pt"][along])
+            stretch = run_high - run_low
+            low = run_low + float(start) * stretch
+            high = run_low + float(end) * stretch
+            band_low, band_high = sorted(host.get("face_positions_pt") or [0.0, 0.0])
+            if high > low and band_high > band_low:
+                if along == 0:
+                    return [low, band_low, high, band_high]
+                return [band_low, low, band_high, high]
+        except (KeyError, TypeError, ValueError, IndexError):
+            pass
+
+    box = opening.get("source_bbox")
+    if box and len(box) == 4:
+        return [float(value) for value in box]
+    return None
+
+
+def _spans_to_cut(wall: dict, openings: list, along: int,
+                  run_low: float, run_high: float) -> list:
+    """Where this wall is to be cut: its measured gaps, and every opening it passes through.
+
+    An opening's span is taken from the box the overlay draws it at, so the cut
+    and the magenta rectangle over it are the same stretch of paper - a hole
+    drawn in one place and cut in another would be worse than either.
+
+    **A doorway is a hole in that place, not a hole in one record.** An opening
+    is placed on the one wall it was matched to, and a plan commonly traces more
+    than one candidate along the same line - a brick skin and a frame, or the
+    sashes drawn inside the opening itself. Cutting only the wall an opening
+    names left the others drawn straight across their own doorway: measured, two
+    openings on two sheets, one of them a candidate lying *entirely* inside a
+    doorway, which is a sliding door's own leaf and not a wall at all. So an
+    opening cuts everything running its way whose thickness band it overlaps.
+    Nothing perpendicular is touched, because such a wall is not running the
+    opening's way.
+
+    Overlapping spans are merged, because two readings of one door - the swing
+    and the break it sits in - are one doorway and must not cut a sliver of wall
+    out between them.
+    """
+    across = 1 - along
+    band_low, band_high = sorted(wall.get("face_positions_pt") or [0.0, 0.0])
+
+    spans = [(float(low), float(high)) for low, high in wall.get("gaps_pt") or []]
+
+    for opening_along, box in openings:
+        if opening_along != along:
+            continue
+        if box[across + 2] <= band_low or box[across] >= band_high:
+            continue
+        low, high = box[along], box[along + 2]
+        if high <= run_low or low >= run_high:
+            continue
+        spans.append((max(low, run_low), min(high, run_high)))
+
+    if not spans:
+        return []
+
+    merged = []
+    for low, high in sorted(spans):
+        if high <= low:
+            continue
+        if merged and low <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], high))
+        else:
+            merged.append((low, high))
+    return merged
 
 
 def _stretch_of(wall: dict, start: float, end: float, mm_per_point: float) -> dict:
@@ -570,9 +698,24 @@ def _keep_what_encloses_something(walls: list, mm_per_point: float, config: dict
     for index in live_edges:
         on_a_circuit.add(edges[index][2])
 
+    # **Off the circuit is not enough on its own, and this is the difference
+    # between pruning a rafter and deleting a building.** A rafter, a carport
+    # joist, a grid tick and a boundary all have a genuinely FREE end - they
+    # run out into open paper. A real wall that the tracing failed to connect
+    # usually has a junction at each end and is merely off the circuit because
+    # a neighbour of its neighbour is missing. Measured, the free ends on one
+    # floor plan sit a median of 877 mm from the nearest wall, so what is
+    # missing there is wall, not precision - and setting those walls aside on
+    # the circuit test alone removed 80% of a floor plan.
+    #
+    # So both must hold: on no circuit, AND running out into open paper.
+    shell = _Shell(list(live.values()))
+
     set_aside = 0
     for wall_id, wall in live.items():
         if wall_id in on_a_circuit or wall.get("terminates_at_an_opening"):
+            continue
+        if not _runs_out_into_open_paper(wall, shell.without(wall_id)):
             continue
         wall["not_used_because"] = (
             "This line is on no closed circuit of walls, so it bounds no room and is no "
@@ -588,6 +731,108 @@ def _keep_what_encloses_something(walls: list, mm_per_point: float, config: dict
             f"aside; {len(live) - set_aside} bound a room or the outside of the building"
         )
     return set_aside
+
+
+class _Shell:
+    """Where the building is, as seen by every wall except the one being judged.
+
+    **Leave-one-out, and that is the whole of it.** The box has to say where the
+    building is *without* the candidate under test, or the test is circular: an
+    eave running three metres out from a corner extends the very outline meant
+    to judge it, so it is always inside and never set aside. Two narrower
+    definitions were tried first and both were wrong in an instructive way:
+
+    *   *The walls that closed a circuit.* Far too small - measured on one floor
+        plan, walls lying plainly inside the house, a 9.5 m one and a 5.9 m
+        external wall among them, fell outside that box and were set aside.
+        Deleting the middle of a house is a worse fault than the one guarded
+        against.
+    *   *The walls held at both ends.* Better, but on a sparsely traced sheet it
+        still left an 8.76 m external wall outside the building it runs the
+        length of.
+
+    Every other live wall is in it, so the box is the building as this sheet
+    actually traced it. Each bound therefore keeps its two most extreme values,
+    so leaving one wall out costs nothing to work out.
+    """
+
+    def __init__(self, walls):
+        self._ends = []
+        for side, sign in ((0, 1), (1, 1), (2, -1), (3, -1)):
+            best = []
+            for wall in walls:
+                box = wall.get("bbox")
+                if not box or len(box) != 4:
+                    continue
+                best.append((sign * box[side], wall.get("wall_id")))
+            best.sort()
+            self._ends.append([(sign * value, wall_id) for value, wall_id in best[:2]])
+        self._enough = len([w for w in walls if w.get("bbox")]) >= 4
+
+    def without(self, wall_id):
+        """The four bounds with this wall left out, or None if too few remain."""
+        if not self._enough:
+            return None
+        bounds = []
+        for side in range(4):
+            values = [value for value, owner in self._ends[side] if owner != wall_id]
+            if not values:
+                return None
+            bounds.append(values[0])
+        return tuple(bounds)
+
+
+def _runs_out_into_open_paper(wall: dict, shell, slack: float = 10.0) -> bool:
+    """Whether this wall has an end that meets nothing, out beyond the building.
+
+    **Two things, and the second is what keeps the building.** A free end is
+    what a rafter, a joist, an eave, a boundary and a setting-out tick have in
+    common - but a partition also stops free at a doorway, at a nib and at a
+    return, and so does every wall whose neighbour the tracing missed. On a free
+    end alone the invariant set aside 34, 44 and 7 walls on the three plan sets,
+    taking retention down to 13 per cent on one sheet: that is not pruning a
+    roof, it is deleting a house.
+
+    So the free end also has to lie **outside the shell** - the box every other
+    wall on the sheet occupies, which is the building as this sheet traced it. A partition's free end is inside the house; a rafter running out
+    over the carport, a joist above the roof line and a boundary down the block
+    have an end that is not.
+
+    **How far outside is allowed differs along the wall and across it**, and
+    that is a fact about walls rather than a tolerance to tune. Along its own
+    run, an end beyond the building is exactly the thing being looked for, so
+    only the junction slack is allowed. Across its thickness, a wall sitting on
+    the edge of the shell is the outermost wall of the house and is *level* with
+    it, not beyond it - so its own thickness is allowed. Without that, an 8.76 m
+    external wall lying half a point below the shell's own edge had *both* its
+    ends counted as outside and was set aside, though it runs the length of the
+    building it belongs to.
+    """
+    if shell is None:
+        return False
+    along = 0 if wall["runs_along"] == "x" else 1
+    across = 1 - along
+    position = wall["start_point_pt"][across]
+    faces = sorted(wall.get("face_positions_pt") or [position, position])
+    sideways = max(slack, faces[1] - faces[0])
+    if not (shell[across] - sideways <= position <= shell[across + 2] + sideways):
+        # It does not run alongside the building at all, which the outline rule
+        # in the reader proper is what judges - not this one.
+        return False
+
+    low = min(wall["start_point_pt"][along], wall["end_point_pt"][along])
+    high = max(wall["start_point_pt"][along], wall["end_point_pt"][along])
+    at = [
+        junction["at_pt"][along]
+        for junction in (wall.get("junctions") or [])
+        if junction.get("at_pt") and len(junction["at_pt"]) > along
+    ]
+    for end in (low, high):
+        if any(abs(point - end) <= slack for point in at):
+            continue
+        if not (shell[along] - slack <= end <= shell[along + 2] + slack):
+            return True
+    return False
 
 
 class _JunctionPoints:
@@ -829,6 +1074,9 @@ def _through_the_same_post_processing(
     # thickness short of its centreline, so without this the junction graph is
     # far too sparse for any circuit to close.
     cv_junctions.snap_endpoints(walls, mm_per_point, cv_settings.load_settings())
+    cv_junctions.cast_rays_from_free_ends(
+        walls, mm_per_point, cv_settings.load_settings()
+    )
 
     alone = legacy.mark_walls_that_stand_alone(walls, mm_per_point, config)
     if alone:

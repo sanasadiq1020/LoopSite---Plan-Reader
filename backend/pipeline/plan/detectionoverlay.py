@@ -187,6 +187,28 @@ def _opening_label(opening: dict) -> str:
     return f"{name}  {'+'.join(ordered)}" if ordered else str(name)
 
 
+def _walls_by_id(page_reading: dict) -> dict:
+    return {
+        wall.get("wall_id"): wall
+        for wall in (page_reading.get("walls") or [])
+        if wall.get("wall_id")
+    }
+
+
+def _where_the_opening_sits(opening: dict, hosts: dict):
+    """The stretch of wall an opening occupies, falling back to its own box."""
+    try:
+        from pipeline.plan.cvwalls import opening_span
+
+        box = opening_span(opening, hosts.get(opening.get("wall_id")))
+        if box and len(box) == 4:
+            return box
+    except Exception as e:
+        logger.exception(f"an opening's place on its wall could not be read: {e}")
+    box = opening.get("source_bbox")
+    return box if box and len(box) == 4 else None
+
+
 def _as_drawn(page_reading: dict, config: dict) -> list:
     """The walls of one sheet in the shape the picture should show them.
 
@@ -212,7 +234,8 @@ def _as_drawn(page_reading: dict, config: dict) -> list:
         if not mm_per_point:
             return walls
         return cvwalls.sever_at_openings(
-            [dict(w) for w in walls], float(mm_per_point), config
+            [dict(w) for w in walls], float(mm_per_point), config,
+            page_reading.get("openings") or [],
         )
     except Exception as e:
         logger.exception(f"the walls could not be severed for the overlay: {e}")
@@ -304,10 +327,17 @@ def render_detection_overlay(page, page_reading: dict, out_path, config: dict) -
             label(text, drawn, colour)
 
         # --- the openings the drawing confirmed ----------------------------
+        # **Drawn where the opening sits on its wall, not where its mark is
+        # printed.** A mark is printed beside its door, often inside the room on
+        # a leader, so drawing an opening at its mark's box puts the hole a
+        # centimetre off the wall it is a hole in - and a reviewer checking
+        # whether a door is in the right place then sees the wall running
+        # unbroken behind a floating box.
         opening_colour = _rgb(colours.get("confirmed_opening", "#C026D3"))
+        hosts = _walls_by_id(page_reading)
         for opening in page_reading.get("openings") or []:
-            box = opening.get("source_bbox")
-            if not box or len(box) != 4:
+            box = _where_the_opening_sits(opening, hosts)
+            if not box:
                 continue
             drawn = to_pixels(box)
             pad = width + 1
@@ -620,6 +650,20 @@ def write_detection_outputs(doc, pages: list, out_dir, config: dict) -> dict:
 
     summary = detection_summary(pages, config)
     summary["overlays_drawn"] = drawn
+    # **The pictures are read back off the paper.** Every figure in this summary
+    # is computed from the same records the pictures are drawn from, so a figure
+    # and its drawing can never disagree - which is exactly why the figures
+    # cannot check the drawing. Two things only the picture can answer are asked
+    # of it here: whether anything was drawn as a wall out where the plan is not,
+    # and whether every opening is really broken through.
+    try:
+        from pipeline.plan.cvdetect import overlaycheck
+
+        summary["overlay_check"] = overlaycheck.check_pages(
+            doc, out_dir, pages, config
+        )
+    except Exception as e:
+        logger.exception(f"the overlays could not be read back: {e}")
     try:
         (out_dir / "detection_summary.json").write_text(
             json.dumps(summary, indent=2), encoding="utf-8"
