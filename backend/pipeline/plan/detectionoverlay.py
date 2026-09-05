@@ -187,6 +187,38 @@ def _opening_label(opening: dict) -> str:
     return f"{name}  {'+'.join(ordered)}" if ordered else str(name)
 
 
+def _as_drawn(page_reading: dict, config: dict) -> list:
+    """The walls of one sheet in the shape the picture should show them.
+
+    Severed at their openings where the reader asks for it, and returned exactly
+    as read otherwise. Never raises: a sheet whose walls cannot be severed is
+    drawn whole, which is what the overlay did before this existed.
+    """
+    walls = page_reading.get("walls") or []
+    try:
+        from pipeline.plan import cvwalls
+        from pipeline.plan.cvdetect import settings as cv_settings
+
+        if not cv_settings.setting(cv_settings.load_settings(), "wall.sever_at_openings", False):
+            return walls
+        mm_per_point = page_reading.get("mm_per_point") or 0.0
+        if not mm_per_point:
+            calibration = page_reading.get("scale_calibration") or {}
+            mm_per_point = (
+                calibration.get("measured_mm_per_point")
+                or calibration.get("printed_mm_per_point")
+                or 0.0
+            )
+        if not mm_per_point:
+            return walls
+        return cvwalls.sever_at_openings(
+            [dict(w) for w in walls], float(mm_per_point), config
+        )
+    except Exception as e:
+        logger.exception(f"the walls could not be severed for the overlay: {e}")
+        return walls
+
+
 def render_detection_overlay(page, page_reading: dict, out_path, config: dict) -> bool:
     """Draws one sheet's walls, openings, gaps and junctions over the sheet.
 
@@ -248,7 +280,11 @@ def render_detection_overlay(page, page_reading: dict, out_path, config: dict) -
             draw.text((where[0] + 2, where[1] + 1), str(text), fill=colour, font=font)
 
         # --- the walls -----------------------------------------------------
-        for wall in page_reading.get("walls") or []:
+        # **A wall with a door in it is drawn as two stretches.** The reading
+        # keeps the parent wall whole, because the opening reader and the
+        # take-off read its gaps; a picture of it should show what a builder
+        # would see, which is wall, opening, wall.
+        for wall in _as_drawn(page_reading, config):
             box = wall.get("source_bbox") or wall.get("bbox")
             if not box or len(box) != 4:
                 continue

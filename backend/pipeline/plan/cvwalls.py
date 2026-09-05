@@ -41,6 +41,7 @@ import math
 
 from app.logging_setup import get_logger
 from pipeline.plan import walls as legacy
+from pipeline.plan.cvdetect import junctions as cv_junctions
 from pipeline.plan.cvdetect import openings as cv_openings
 from pipeline.plan.cvdetect import settings as cv_settings
 from pipeline.plan.cvdetect import vectorpaths, wallgeometry
@@ -141,11 +142,6 @@ def detect_walls(
     # it is; waiting for the closing to leave a hole there throws that away.
     _punch_openings_onto_walls(walls, found_openings, scale, mm_per_point, config)
     _fill_in_thickness_context(walls, config)
-
-    # **Severed at the jambs, not holed afterwards.** Where this is on, a wall
-    # carrying an opening is cut into the two stretches either side of it, so
-    # the centreline terminates at the jamb rather than running through it.
-    walls = _sever_at_openings(walls, mm_per_point, config)
 
     line_source = (
         "cv_vector" if diagnostics.get("line_source") == "vector_paths" else "cv_raster"
@@ -404,8 +400,18 @@ def _one_wall(run: list, mm_per_point: float, narrowest_break_mm: float) -> dict
     }
 
 
-def _sever_at_openings(walls: list, mm_per_point: float, config: dict) -> list:
+def sever_at_openings(walls: list, mm_per_point: float, config: dict) -> list:
     """Cuts every wall at the openings it carries, into the stretches either side.
+
+    **This is a rendering and export step, not a reading step**, and that
+    separation is the point. The record the pipeline carries keeps each parent
+    wall whole with its ``gaps_pt``, because the opening reader, the schedule
+    reconciliation and the take-off all read exactly that list - severing
+    during extraction removed it and openings fell from 121 to 102 on one plan
+    set and from 9 to 0 on another. What a *drawing* should show is different:
+    a wall with a door in it is two stretches, not one line with a hole
+    annotated on it. So the severing happens here, on the way to the picture
+    and to the vector export, and the reading is untouched.
 
     **A door is not a hole in a wall; it is where the wall stops and starts
     again.** Tracing a wall straight through its own doorway and cutting a hole
@@ -424,8 +430,6 @@ def _sever_at_openings(walls: list, mm_per_point: float, config: dict) -> list:
     A stretch shorter than the office's own shortest wall is not kept: a nib
     between two doors is real, a two-millimetre sliver is the tracing.
     """
-    if not setting(cv_settings.load_settings(), "wall.sever_at_openings", False):
-        return walls
     settings = config.get("walls", {})
     shortest = float(settings.get("min_wall_length_mm", 900)) / mm_per_point
 
@@ -487,34 +491,32 @@ def _stretch_of(wall: dict, start: float, end: float, mm_per_point: float) -> di
 def _keep_what_encloses_something(walls: list, mm_per_point: float, config: dict) -> int:
     """Sets aside every candidate that neither closes a room nor holds the outside.
 
-    **The invariant, and it is a fact about buildings rather than a threshold.**
-    A wall of a building bounds a room or forms part of the shell around the
-    outside. Either way it lies on a **closed circuit** of walls: you can set
-    off along it, keep turning at the walls it meets, and arrive back where you
-    started. That is what encloses a space. A roof overhang, a carport rafter, a
-    site boundary, a grid tick and a dimension extension line enclose nothing,
-    and none of them lies on such a circuit.
+    **The invariant is a fact about buildings, not a threshold.** A wall bounds
+    a room or forms part of the shell, so it lies on a **closed circuit** of
+    walls: set off along it, keep turning at the walls it meets, and you arrive
+    back where you started. A roof overhang, a carport rafter, a site boundary,
+    a grid tick and a dimension extension line lie on no such circuit.
 
-    So the walls are reduced to the part of the graph that carries circuits -
-    junction points are the nodes, walls the edges, and any node with fewer than
-    two walls at it is repeatedly removed along with the walls hanging off it.
-    What survives is exactly what lies on a cycle. Nothing here has a number to
-    tune, and it does not care whose plan set it is given.
+    **The graph is built on junction points, and a wall is a path through them
+    rather than a single edge.** That distinction is the whole thing, and
+    getting it wrong destroyed the building: with one edge per wall, an
+    external wall crossed by five partitions *mid-span* has neither of its own
+    ends attached to anything, so it is dropped - and then all five partitions
+    lose an end and go with it. The collapse cascades and every wall on the
+    sheet is set aside. Measured: 61 of 61 on one floor plan, and it stayed at
+    zero survivors however far the endpoints were snapped, which is what showed
+    the fault was in the formulation rather than in the tolerance.
 
-    **Why "both ends meet a wall" is not enough**, and this was measured: the
-    free-tail trimming that runs before this already cuts a dangling wall back
-    to the last junction on it, so by then almost every candidate has a junction
-    at both ends and that test finds nothing. Two overhang lines crossing each
-    other hold each other's ends perfectly well and still enclose nothing. Only
-    the circuit test separates them.
+    So each wall contributes an edge between each *consecutive pair* of
+    junctions along it. The external wall above becomes four edges, each
+    partition one, and the circuits round the rooms close properly.
 
-    **An opening jamb is a legitimate end.** A wall that stops at a doorway has
-    not run out into open paper; where the walls have been severed at their
-    openings, each stretch is held by the opening it stops at.
+    A wall carrying fewer than two junctions is on no circuit by definition:
+    it is joined to the building at one point at most, which is what a rafter
+    and an eave look like.
 
-    Candidates are set aside **with the reason**, never deleted: they keep their
-    row in the table and their place in the issues log, and the marked-up sheet
-    draws them dashed rather than as walls (Critical Rule 5).
+    Candidates are set aside **with the reason**, never deleted (Critical
+    Rule 5).
     """
     if not setting(cv_settings.load_settings(), "wall.require_enclosure", True):
         return 0
@@ -524,49 +526,58 @@ def _keep_what_encloses_something(walls: list, mm_per_point: float, config: dict
         if not wall.get("not_used_because")
     }
     if len(live) < 3:
-        # Fewer walls than it takes to enclose anything: there is no circuit to
-        # look for, and judging them this way would set aside the lot.
         return 0
 
     slack = max(float(config.get("walls", {}).get("junction_tolerance_points", 10)), 1.0)
-    ends = _nodes_for(live, slack)
+    nodes = _JunctionPoints(slack)
+    edges = []          # (node_a, node_b, wall_id)
+    on_a_circuit = set()
 
-    # Junction points are the nodes; a wall is an edge between the node at each
-    # of its ends. A wall whose two ends land on the same node is a loop, which
-    # encloses something all by itself.
-    at_node = {}
-    for wall_id, (first, second) in ends.items():
-        at_node.setdefault(first, set()).add(wall_id)
-        at_node.setdefault(second, set()).add(wall_id)
+    for wall_id, wall in live.items():
+        along = 0 if wall["runs_along"] == "x" else 1
+        points = []
+        for junction in wall.get("junctions") or []:
+            point = junction.get("at_pt")
+            if point and len(point) >= 2:
+                points.append((float(point[along]), nodes.id_for(point)))
+        if len(points) < 2:
+            continue
+        points.sort()
+        for (_first_at, first), (_second_at, second) in zip(points, points[1:]):
+            if first != second:
+                edges.append((first, second, wall_id))
 
-    standing = set(live)
+    if not edges:
+        return 0
+
+    # Repeatedly drop any point with fewer than two edges still on it, and the
+    # edges hanging off it. What survives is what lies on a cycle.
+    live_edges = set(range(len(edges)))
     while True:
-        loose = [
-            node for node, on_it in at_node.items()
-            if len(on_it & standing) < 2
-        ]
-        if not loose:
-            break
+        at_point = {}
+        for index in live_edges:
+            first, second, _ = edges[index]
+            at_point.setdefault(first, set()).add(index)
+            at_point.setdefault(second, set()).add(index)
         going = set()
-        for node in loose:
-            going |= at_node[node] & standing
-        # A wall held by an opening at one end is not dangling there.
-        going = {
-            wall_id for wall_id in going
-            if not live[wall_id].get("terminates_at_an_opening")
-        }
+        for point, on_it in at_point.items():
+            if len(on_it) < 2:
+                going |= on_it
         if not going:
             break
-        standing -= going
+        live_edges -= going
+
+    for index in live_edges:
+        on_a_circuit.add(edges[index][2])
 
     set_aside = 0
     for wall_id, wall in live.items():
-        if wall_id in standing:
+        if wall_id in on_a_circuit or wall.get("terminates_at_an_opening"):
             continue
         wall["not_used_because"] = (
-            "This line encloses nothing - it is on no closed circuit of walls, so it "
-            "bounds no room and is no part of the outside of the building. A roof line, "
-            "an eave, a rafter, a boundary or a setting-out line looks like this."
+            "This line is on no closed circuit of walls, so it bounds no room and is no "
+            "part of the outside of the building. A roof line, an eave, a rafter, a "
+            "boundary or a setting-out line looks like this."
         )
         wall["review_needed"] = True
         set_aside += 1
@@ -574,62 +585,33 @@ def _keep_what_encloses_something(walls: list, mm_per_point: float, config: dict
     if set_aside:
         logger.info(
             f"walls: {set_aside} candidate(s) lie on no closed circuit and were set "
-            f"aside; {len(standing)} bound a room or the outside of the building"
+            f"aside; {len(live) - set_aside} bound a room or the outside of the building"
         )
     return set_aside
 
 
-def _nodes_for(live: dict, slack: float) -> dict:
-    """Which junction point each wall's two ends sit on, as cluster ids.
+class _JunctionPoints:
+    """Junction points, grouped by proximity rather than rounded onto a grid.
 
-    **Clustered, not rounded onto a grid**, and the difference is the whole
-    test. Two walls meeting at a corner report the meeting at very nearly - not
-    exactly - the same point, and rounding those onto a grid of the tolerance
-    puts them in different cells whenever they straddle a line: 4.9 and 5.1
-    round to 0 and 1 though they are 0.2 apart. Then no two walls ever agree on
-    the node they met at, no circuit ever closes, and the invariant sets aside
-    the entire building. Measured: it did exactly that - 61 of 61 candidates on
-    one floor plan. The same mistake is recorded twice already in this project's
-    history, once for wall merging and once for break placement.
-
-    So the points are grouped by proximity: each is joined to the first cluster
-    already within the tolerance of it.
+    Two walls meeting at a corner report the meeting at very nearly - not
+    exactly - the same point. Rounding those onto a grid of the tolerance puts
+    them in different cells whenever they straddle a line: 4.9 and 5.1 round to
+    0 and 1 though they are 0.2 apart. Then no two walls agree on the node they
+    met at and no circuit ever closes. This project has recorded that mistake
+    three times now, so it is a class rather than a line of code.
     """
-    centres = []
-    assigned = {}
 
-    def cluster_for(point):
-        for index, centre in enumerate(centres):
-            if abs(point[0] - centre[0]) <= slack and abs(point[1] - centre[1]) <= slack:
+    def __init__(self, slack: float):
+        self._slack = slack
+        self._centres = []
+
+    def id_for(self, point) -> int:
+        x, y = float(point[0]), float(point[1])
+        for index, (cx, cy) in enumerate(self._centres):
+            if abs(x - cx) <= self._slack and abs(y - cy) <= self._slack:
                 return index
-        centres.append((point[0], point[1]))
-        return len(centres) - 1
-
-    for wall_id, wall in live.items():
-        along = 0 if wall["runs_along"] == "x" else 1
-        start_at = min(wall["start_point_pt"][along], wall["end_point_pt"][along])
-        end_at = max(wall["start_point_pt"][along], wall["end_point_pt"][along])
-        across = wall["start_point_pt"][1 - along]
-
-        first = second = None
-        for junction in wall.get("junctions") or []:
-            point = junction.get("at_pt")
-            if not point or len(point) < 2:
-                continue
-            where = point[along]
-            if first is None and abs(where - start_at) <= slack:
-                first = cluster_for(point)
-            if abs(where - end_at) <= slack:
-                second = cluster_for(point)
-
-        # An end nothing was recorded at still gets a node of its own, so two
-        # walls that happen to stop at the same place are joined there.
-        if first is None:
-            first = cluster_for([start_at, across] if along == 0 else [across, start_at])
-        if second is None:
-            second = cluster_for([end_at, across] if along == 0 else [across, end_at])
-        assigned[wall_id] = (first, second)
-    return assigned
+        self._centres.append((x, y))
+        return len(self._centres) - 1
 
 
 def _punch_openings_onto_walls(walls, openings, scale, mm_per_point: float, config: dict):
@@ -842,6 +824,12 @@ def _through_the_same_post_processing(
     A second copy of this sequence would be a second truth about what a
     junction is (Critical Rule 2).
     """
+    # **The walls have to meet each other before anything can ask whether they
+    # do.** A centreline stops at the face of the wall it runs into, half a
+    # thickness short of its centreline, so without this the junction graph is
+    # far too sparse for any circuit to close.
+    cv_junctions.snap_endpoints(walls, mm_per_point, cv_settings.load_settings())
+
     alone = legacy.mark_walls_that_stand_alone(walls, mm_per_point, config)
     if alone:
         logger.info(

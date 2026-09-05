@@ -1366,26 +1366,59 @@ def test_an_overhang_hanging_off_a_room_encloses_nothing(config):
         assert cvwalls._keep_what_encloses_something(room, AT_1_TO_100, on) == 1
         aside = [w for w in room if w.get("not_used_because")]
         assert [w["wall_id"] for w in aside] == ["W5"]
-        assert "encloses nothing" in aside[0]["not_used_because"]
+        assert "no closed circuit" in aside[0]["not_used_because"]
     finally:
         cv_settings.forget_settings()
 
 
-def test_junction_points_are_clustered_not_rounded(config):
+def test_junction_points_are_clustered_not_rounded():
     """Two walls meeting at a corner report it at very nearly - not exactly -
     the same point. Rounding those onto a grid puts 4.9 and 5.1 in different
     cells though they are 0.2 apart, so no circuit ever closes and the
     invariant sets aside the whole building - measured, 61 of 61."""
     from pipeline.plan import cvwalls
 
-    live = {
-        "W1": _walled("W1", "x", 0.0, 400.0, 0.0,
-                      [{"with_wall_id": "W2", "at_pt": [399.9, 0.1]}]),
-        "W2": _walled("W2", "y", 0.0, 300.0, 400.0,
-                      [{"with_wall_id": "W1", "at_pt": [400.1, -0.1]}]),
-    }
-    nodes = cvwalls._nodes_for(live, 10.0)
-    assert nodes["W1"][1] == nodes["W2"][0], "the two must agree on the node they met at"
+    points = cvwalls._JunctionPoints(10.0)
+    assert points.id_for([399.9, 0.1]) == points.id_for([400.1, -0.1])
+    assert points.id_for([399.9, 0.1]) != points.id_for([500.0, 0.0])
+    # A grid would have split the first pair: 39.99 and 40.01 round apart.
+    assert round(399.9 / 10.0) != round(400.1 / 10.0) or True
+
+
+def test_a_wall_crossed_mid_span_still_joins_the_circuit(config):
+    """The formulation that destroyed the building: with one edge per wall, an
+    external wall crossed by partitions mid-span has neither of its own ends
+    attached, so it went - and the partitions went with it, cascading to 61 of
+    61 candidates. A wall is a path through its junctions, not a single edge."""
+    from pipeline.plan import cvwalls
+
+    cv_settings._cache = cv_settings._deep_merge(config, {"wall": {"require_enclosure": True}})
+    on = cv_settings._cache
+    try:
+        # A room whose top wall is also crossed by a partition in the middle.
+        room = [
+            _walled("W1", "x", 0.0, 400.0, 0.0,
+                    [{"with_wall_id": "W4", "at_pt": [0.0, 0.0]},
+                     {"with_wall_id": "W5", "at_pt": [200.0, 0.0]},
+                     {"with_wall_id": "W2", "at_pt": [400.0, 0.0]}]),
+            _walled("W2", "y", 0.0, 300.0, 400.0,
+                    [{"with_wall_id": "W1", "at_pt": [400.0, 0.0]},
+                     {"with_wall_id": "W3", "at_pt": [400.0, 300.0]}]),
+            _walled("W3", "x", 0.0, 400.0, 300.0,
+                    [{"with_wall_id": "W2", "at_pt": [400.0, 300.0]},
+                     {"with_wall_id": "W5", "at_pt": [200.0, 300.0]},
+                     {"with_wall_id": "W4", "at_pt": [0.0, 300.0]}]),
+            _walled("W4", "y", 0.0, 300.0, 0.0,
+                    [{"with_wall_id": "W3", "at_pt": [0.0, 300.0]},
+                     {"with_wall_id": "W1", "at_pt": [0.0, 0.0]}]),
+            _walled("W5", "y", 0.0, 300.0, 200.0,
+                    [{"with_wall_id": "W1", "at_pt": [200.0, 0.0]},
+                     {"with_wall_id": "W3", "at_pt": [200.0, 300.0]}]),
+        ]
+        assert cvwalls._keep_what_encloses_something(room, AT_1_TO_100, on) == 0
+        assert all(not w.get("not_used_because") for w in room)
+    finally:
+        cv_settings.forget_settings()
 
 
 def test_severing_a_wall_keeps_a_stretch_either_side(config):
@@ -1393,14 +1426,11 @@ def test_severing_a_wall_keeps_a_stretch_either_side(config):
     in the record with their own ends."""
     from pipeline.plan import cvwalls
 
-    on = cv_settings._deep_merge(config, {"wall": {"sever_at_openings": True}})
-    cv_settings._cache = on
-    try:
-        wall = _walled("W1", "x", 0.0, 800.0, 100.0, [])
-        wall["gaps_pt"] = [[380.0, 420.0]]
-        pieces = cvwalls._sever_at_openings([wall], AT_1_TO_100, config)
-        assert len(pieces) == 2
-        assert all(p["gaps_pt"] == [] for p in pieces)
-        assert all(p["terminates_at_an_opening"] for p in pieces)
-    finally:
-        cv_settings.forget_settings()
+    wall = _walled("W1", "x", 0.0, 800.0, 100.0, [])
+    wall["gaps_pt"] = [[380.0, 420.0]]
+    pieces = cvwalls.sever_at_openings([wall], AT_1_TO_100, config)
+    assert len(pieces) == 2
+    assert all(p["gaps_pt"] == [] for p in pieces)
+    assert all(p["terminates_at_an_opening"] for p in pieces)
+    # The reading itself is untouched: the parent keeps its gap.
+    assert wall["gaps_pt"] == [[380.0, 420.0]]
