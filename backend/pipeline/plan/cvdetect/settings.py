@@ -137,6 +137,20 @@ _DEFAULTS = {
 }
 
 _cache = None
+_stamp = None
+
+
+def _file_stamp():
+    """What ``cv_detection.json`` looks like now: modified time and size.
+
+    So a setting can be changed on a server that is already running - the same
+    reason ``reading.load_config`` watches its own files.
+    """
+    try:
+        state = CONFIG_PATH.stat()
+        return (state.st_mtime_ns, state.st_size)
+    except OSError:
+        return None
 
 
 def load_settings(overrides: dict = None) -> dict:
@@ -146,8 +160,11 @@ def load_settings(overrides: dict = None) -> dict:
     reads a plan slightly less well is worth more than a run that does not
     happen at all (Critical Rule 6).
     """
-    global _cache
-    if _cache is None:
+    global _cache, _stamp
+    stamp = _file_stamp()
+    if _cache is None or stamp != _stamp:
+        if _cache is not None:
+            logger.info(f"{CONFIG_PATH.name} changed on disk; the settings are being re-read")
         merged = _deep_merge(_DEFAULTS, {})
         try:
             on_disk = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
@@ -159,7 +176,7 @@ def load_settings(overrides: dict = None) -> dict:
             )
         except Exception as e:
             logger.exception(f"Could not read {CONFIG_PATH}, using the built-in settings: {e}")
-        _cache = merged
+        _cache, _stamp = merged, stamp
     if not overrides:
         return _cache
     return _deep_merge(_cache, overrides)
@@ -167,8 +184,8 @@ def load_settings(overrides: dict = None) -> dict:
 
 def forget_settings() -> None:
     """Drops the cached settings, so a test can change the file and re-read it."""
-    global _cache
-    _cache = None
+    global _cache, _stamp
+    _cache, _stamp = None, None
 
 
 def _deep_merge(base: dict, over: dict) -> dict:

@@ -22,6 +22,7 @@ import {
   type WallCandidate,
   type TitleBlockFieldName,
   TITLE_BLOCK_FIELDS,
+  measuredFromTheDrawing,
   wallLineSourceLabel,
   openingAgreementLabel,
   openingFoundByLabel,
@@ -758,7 +759,7 @@ export function WallsTable({ walls, showSheet }: { walls: WallRow[]; showSheet?:
         <span
           className="text-xs text-slate-500"
           title={
-            row.line_source !== "vector"
+            !measuredFromTheDrawing(row.line_source)
               ? "This sheet stores its drawing as a picture, so its lines were read from the page as it prints rather than from the PDF's own line work."
               : "Read from the drawing's own line work, which is exact."
           }

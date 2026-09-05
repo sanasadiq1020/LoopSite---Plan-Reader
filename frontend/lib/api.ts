@@ -1087,8 +1087,21 @@ export function fieldLabel(name: string): string {
 }
 
 /** Where a wall's two lines were measured from, in plain words. */
+/** Whether a wall was measured from the drawing's own line work.
+ *
+ *  Both wall readers say so in their own words - the face-pairing one writes
+ *  "vector", the computer-vision one "cv_vector" - and the difference between
+ *  reading exact geometry and reading pixels is what this column exists to
+ *  show. Matching only the first spelling labelled every wall the second
+ *  reader measured from the PDF's own paths as having been read off a
+ *  picture, which is the opposite of what happened.
+ */
+export function measuredFromTheDrawing(source: string): boolean {
+  return source === "vector" || source === "cv_vector";
+}
+
 export function wallLineSourceLabel(source: string): string {
-  if (source === "vector") return "The drawing's own lines";
+  if (measuredFromTheDrawing(source)) return "The drawing's own lines";
   // Anything else was read off the rendered page. Named rather than
   // matched one value at a time, so a reading written by an earlier
   // release still reads correctly here.

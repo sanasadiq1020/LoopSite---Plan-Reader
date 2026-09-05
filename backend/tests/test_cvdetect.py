@@ -1091,3 +1091,57 @@ def test_no_pair_means_the_band_keeps_its_own_measurement(config, scale):
     }]
     assert wallgeometry._thickness_from_the_faces(run, far, scale, config) is None
     assert wallgeometry._thickness_from_the_faces(run, [], scale, config) is None
+
+
+# --------------------------------------------------------------------------
+# A setting has to be changeable on a server that is already running
+# --------------------------------------------------------------------------
+
+def test_the_wall_reader_can_be_changed_without_a_restart(tmp_path, monkeypatch):
+    """The config was read once and cached for the life of the process, so
+    switching the wall reader meant restarting - and on a hosted Space a restart
+    wipes the disk and every plan being read."""
+    import json
+
+    from pipeline.plan import cvwalls, reading
+
+    original = reading.WALL_CONFIG_PATH.read_text(encoding="utf-8")
+    try:
+        assert cvwalls.reader_name(reading.load_config()) in ("legacy", "cvdetect")
+        for wanted in ("cvdetect", "legacy", "cvdetect"):
+            settings = json.loads(reading.WALL_CONFIG_PATH.read_text(encoding="utf-8"))
+            settings["reader"] = wanted
+            reading.WALL_CONFIG_PATH.write_text(
+                json.dumps(settings, indent=2) + "\n", encoding="utf-8"
+            )
+            assert cvwalls.reader_name(reading.load_config()) == wanted
+    finally:
+        reading.WALL_CONFIG_PATH.write_text(original, encoding="utf-8")
+        reading.load_config()
+
+
+def test_an_untouched_config_is_not_re_read(tmp_path):
+    """It is called once per sheet, so re-reading three JSON files every time
+    would be real work. The same dict comes back while nothing has changed, so
+    anything holding a reference to it keeps working."""
+    from pipeline.plan import reading
+
+    first = reading.load_config()
+    assert reading.load_config() is first
+
+
+def test_the_detection_settings_reload_too(tmp_path):
+    import json
+
+    from pipeline.plan.cvdetect import settings as cv
+
+    original = cv.CONFIG_PATH.read_text(encoding="utf-8")
+    try:
+        before = cv.number(cv.load_settings(), "wall.min_length_mm", 600.0)
+        changed = json.loads(original)
+        changed.setdefault("wall", {})["min_length_mm"] = before + 123.0
+        cv.CONFIG_PATH.write_text(json.dumps(changed, indent=2) + "\n", encoding="utf-8")
+        assert cv.number(cv.load_settings(), "wall.min_length_mm", 0.0) == before + 123.0
+    finally:
+        cv.CONFIG_PATH.write_text(original, encoding="utf-8")
+        cv.load_settings()

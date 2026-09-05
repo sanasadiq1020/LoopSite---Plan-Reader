@@ -107,22 +107,68 @@ _MINIMAL_CONFIG = {
     "overlay": {"colors": {}},
 }
 
+# The three files the plan config is built from, and what they looked like when
+# it was last built. See ``load_config``.
+_CONFIG_FILES = (CONFIG_PATH, WALL_CONFIG_PATH, OPENING_CONFIG_PATH)
 _config_cache = None
+_config_stamp = None
+
+
+def _config_files_stamp() -> tuple:
+    """What the config files look like right now: name, modified time, size.
+
+    Size as well as modified time, because two edits within the same clock tick
+    are not impossible and a settings file is exactly the sort of thing that
+    gets edited twice in a second.
+    """
+    stamp = []
+    for path in _CONFIG_FILES:
+        try:
+            state = path.stat()
+            stamp.append((path.name, state.st_mtime_ns, state.st_size))
+        except OSError:
+            stamp.append((path.name, None, None))
+    return tuple(stamp)
 
 
 def load_config() -> dict:
-    global _config_cache
-    if _config_cache is not None:
+    """The plan-reading config, rebuilt whenever one of its files changes.
+
+    **A setting has to be changeable on a server that is already running.** The
+    config was read once and cached for the life of the process, so changing
+    which wall reader runs, or a tolerance, or a room name, meant a restart -
+    and on a hosted Space a restart wipes the disk and every plan being read.
+    That is the same reason ``OCR_ENABLED`` is read from the environment rather
+    than baked into the image (CLAUDE.md 4AJ): the thing you want to change is
+    usually discovered *after* deploying.
+
+    The cache is kept - this is called once per sheet and a few times per run,
+    and re-reading three JSON files each time would be real work - but it is
+    dropped as soon as any of the files is touched. Checking costs three
+    ``stat`` calls, which is nothing beside reading a page.
+
+    The same dict is returned while the files are untouched, so anything
+    holding a reference to it keeps working.
+    """
+    global _config_cache, _config_stamp
+    stamp = _config_files_stamp()
+    if _config_cache is not None and stamp == _config_stamp:
         return _config_cache
+
+    if _config_cache is not None:
+        logger.info("a config file changed on disk; the settings are being re-read")
     try:
-        _config_cache = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except Exception as e:
         logger.exception(f"Could not read {CONFIG_PATH}, running reduced: {e}")
-        _config_cache = _MINIMAL_CONFIG
-    _config_cache["walls"] = _merged_wall_settings(_config_cache.get("walls", {}))
-    _config_cache["openings"] = _merged_from(
-        _config_cache.get("openings", {}), OPENING_CONFIG_PATH, "opening"
+        config = dict(_MINIMAL_CONFIG)
+    config["walls"] = _merged_wall_settings(config.get("walls", {}))
+    config["openings"] = _merged_from(
+        config.get("openings", {}), OPENING_CONFIG_PATH, "opening"
     )
+    # Only published once it is complete, so a reader that arrives mid-rebuild
+    # never sees a half-merged config.
+    _config_cache, _config_stamp = config, stamp
     return _config_cache
 
 
