@@ -44,7 +44,7 @@ from pipeline.plan import walls as legacy
 from pipeline.plan.cvdetect import openings as cv_openings
 from pipeline.plan.cvdetect import settings as cv_settings
 from pipeline.plan.cvdetect import vectorpaths, wallgeometry
-from pipeline.plan.cvdetect.settings import Scale
+from pipeline.plan.cvdetect.settings import Scale, setting
 
 logger = get_logger()
 
@@ -141,6 +141,11 @@ def detect_walls(
     # it is; waiting for the closing to leave a hole there throws that away.
     _punch_openings_onto_walls(walls, found_openings, scale, mm_per_point, config)
     _fill_in_thickness_context(walls, config)
+
+    # **Severed at the jambs, not holed afterwards.** Where this is on, a wall
+    # carrying an opening is cut into the two stretches either side of it, so
+    # the centreline terminates at the jamb rather than running through it.
+    walls = _sever_at_openings(walls, mm_per_point, config)
 
     line_source = (
         "cv_vector" if diagnostics.get("line_source") == "vector_paths" else "cv_raster"
@@ -399,6 +404,234 @@ def _one_wall(run: list, mm_per_point: float, narrowest_break_mm: float) -> dict
     }
 
 
+def _sever_at_openings(walls: list, mm_per_point: float, config: dict) -> list:
+    """Cuts every wall at the openings it carries, into the stretches either side.
+
+    **A door is not a hole in a wall; it is where the wall stops and starts
+    again.** Tracing a wall straight through its own doorway and cutting a hole
+    afterwards asks the morphology to leave a gap it has every reason to close -
+    it joins the wall to the jambs, the leaf and the swing arc drawn inside the
+    opening. Treating the opening as a boundary instead makes the wall's own
+    geometry say where it ends.
+
+    Each severed stretch keeps the thickness, the faces and the band of the
+    wall it came from, and records that it terminates at an opening. What is
+    lost is the wall record's ``gaps_pt``, and that matters: the opening reader
+    downstream reads exactly that list to find candidates. So this is a real
+    trade and it is measured rather than assumed - see the note in
+    ``config/cv_detection.json``.
+
+    A stretch shorter than the office's own shortest wall is not kept: a nib
+    between two doors is real, a two-millimetre sliver is the tracing.
+    """
+    if not setting(cv_settings.load_settings(), "wall.sever_at_openings", False):
+        return walls
+    settings = config.get("walls", {})
+    shortest = float(settings.get("min_wall_length_mm", 900)) / mm_per_point
+
+    severed, cut = [], 0
+    for wall in walls:
+        gaps = wall.get("gaps_pt") or []
+        if not gaps:
+            severed.append(wall)
+            continue
+        along = 0 if wall["runs_along"] == "x" else 1
+        run_low = min(wall["start_point_pt"][along], wall["end_point_pt"][along])
+        run_high = max(wall["start_point_pt"][along], wall["end_point_pt"][along])
+
+        edges = [run_low]
+        for low, high in sorted(gaps):
+            edges.extend([low, high])
+        edges.append(run_high)
+
+        pieces = []
+        for start, end in zip(edges[0::2], edges[1::2]):
+            if end - start < shortest:
+                continue
+            pieces.append(_stretch_of(wall, start, end, mm_per_point))
+        if not pieces:
+            # Every stretch was too short to be a wall, so nothing here was one.
+            continue
+        cut += len(pieces) - 1
+        severed.extend(pieces)
+
+    if cut:
+        logger.info(f"walls: {cut} centreline(s) severed at an opening jamb")
+    return severed
+
+
+def _stretch_of(wall: dict, start: float, end: float, mm_per_point: float) -> dict:
+    """One stretch of a severed wall, keeping everything but the run."""
+    piece = dict(wall)
+    along = 0 if wall["runs_along"] == "x" else 1
+    across = wall["start_point_pt"][1 - along]
+    low, high = sorted(wall["face_positions_pt"])
+
+    if along == 0:
+        piece["start_point_pt"] = [round(start, 2), across]
+        piece["end_point_pt"] = [round(end, 2), across]
+        piece["bbox"] = [round(start, 2), round(low, 2), round(end, 2), round(high, 2)]
+    else:
+        piece["start_point_pt"] = [across, round(start, 2)]
+        piece["end_point_pt"] = [across, round(end, 2)]
+        piece["bbox"] = [round(low, 2), round(start, 2), round(high, 2), round(end, 2)]
+
+    piece["length_mm"] = (end - start) * mm_per_point
+    piece["gaps_pt"] = []
+    piece["terminates_at_an_opening"] = True
+    piece["connects_to"] = []
+    piece["junctions"] = []
+    return piece
+
+
+def _keep_what_encloses_something(walls: list, mm_per_point: float, config: dict) -> int:
+    """Sets aside every candidate that neither closes a room nor holds the outside.
+
+    **The invariant, and it is a fact about buildings rather than a threshold.**
+    A wall of a building bounds a room or forms part of the shell around the
+    outside. Either way it lies on a **closed circuit** of walls: you can set
+    off along it, keep turning at the walls it meets, and arrive back where you
+    started. That is what encloses a space. A roof overhang, a carport rafter, a
+    site boundary, a grid tick and a dimension extension line enclose nothing,
+    and none of them lies on such a circuit.
+
+    So the walls are reduced to the part of the graph that carries circuits -
+    junction points are the nodes, walls the edges, and any node with fewer than
+    two walls at it is repeatedly removed along with the walls hanging off it.
+    What survives is exactly what lies on a cycle. Nothing here has a number to
+    tune, and it does not care whose plan set it is given.
+
+    **Why "both ends meet a wall" is not enough**, and this was measured: the
+    free-tail trimming that runs before this already cuts a dangling wall back
+    to the last junction on it, so by then almost every candidate has a junction
+    at both ends and that test finds nothing. Two overhang lines crossing each
+    other hold each other's ends perfectly well and still enclose nothing. Only
+    the circuit test separates them.
+
+    **An opening jamb is a legitimate end.** A wall that stops at a doorway has
+    not run out into open paper; where the walls have been severed at their
+    openings, each stretch is held by the opening it stops at.
+
+    Candidates are set aside **with the reason**, never deleted: they keep their
+    row in the table and their place in the issues log, and the marked-up sheet
+    draws them dashed rather than as walls (Critical Rule 5).
+    """
+    if not setting(cv_settings.load_settings(), "wall.require_enclosure", True):
+        return 0
+    live = {
+        wall["wall_id"]: wall
+        for wall in walls
+        if not wall.get("not_used_because")
+    }
+    if len(live) < 3:
+        # Fewer walls than it takes to enclose anything: there is no circuit to
+        # look for, and judging them this way would set aside the lot.
+        return 0
+
+    slack = max(float(config.get("walls", {}).get("junction_tolerance_points", 10)), 1.0)
+    ends = _nodes_for(live, slack)
+
+    # Junction points are the nodes; a wall is an edge between the node at each
+    # of its ends. A wall whose two ends land on the same node is a loop, which
+    # encloses something all by itself.
+    at_node = {}
+    for wall_id, (first, second) in ends.items():
+        at_node.setdefault(first, set()).add(wall_id)
+        at_node.setdefault(second, set()).add(wall_id)
+
+    standing = set(live)
+    while True:
+        loose = [
+            node for node, on_it in at_node.items()
+            if len(on_it & standing) < 2
+        ]
+        if not loose:
+            break
+        going = set()
+        for node in loose:
+            going |= at_node[node] & standing
+        # A wall held by an opening at one end is not dangling there.
+        going = {
+            wall_id for wall_id in going
+            if not live[wall_id].get("terminates_at_an_opening")
+        }
+        if not going:
+            break
+        standing -= going
+
+    set_aside = 0
+    for wall_id, wall in live.items():
+        if wall_id in standing:
+            continue
+        wall["not_used_because"] = (
+            "This line encloses nothing - it is on no closed circuit of walls, so it "
+            "bounds no room and is no part of the outside of the building. A roof line, "
+            "an eave, a rafter, a boundary or a setting-out line looks like this."
+        )
+        wall["review_needed"] = True
+        set_aside += 1
+
+    if set_aside:
+        logger.info(
+            f"walls: {set_aside} candidate(s) lie on no closed circuit and were set "
+            f"aside; {len(standing)} bound a room or the outside of the building"
+        )
+    return set_aside
+
+
+def _nodes_for(live: dict, slack: float) -> dict:
+    """Which junction point each wall's two ends sit on, as cluster ids.
+
+    **Clustered, not rounded onto a grid**, and the difference is the whole
+    test. Two walls meeting at a corner report the meeting at very nearly - not
+    exactly - the same point, and rounding those onto a grid of the tolerance
+    puts them in different cells whenever they straddle a line: 4.9 and 5.1
+    round to 0 and 1 though they are 0.2 apart. Then no two walls ever agree on
+    the node they met at, no circuit ever closes, and the invariant sets aside
+    the entire building. Measured: it did exactly that - 61 of 61 candidates on
+    one floor plan. The same mistake is recorded twice already in this project's
+    history, once for wall merging and once for break placement.
+
+    So the points are grouped by proximity: each is joined to the first cluster
+    already within the tolerance of it.
+    """
+    centres = []
+    assigned = {}
+
+    def cluster_for(point):
+        for index, centre in enumerate(centres):
+            if abs(point[0] - centre[0]) <= slack and abs(point[1] - centre[1]) <= slack:
+                return index
+        centres.append((point[0], point[1]))
+        return len(centres) - 1
+
+    for wall_id, wall in live.items():
+        along = 0 if wall["runs_along"] == "x" else 1
+        start_at = min(wall["start_point_pt"][along], wall["end_point_pt"][along])
+        end_at = max(wall["start_point_pt"][along], wall["end_point_pt"][along])
+        across = wall["start_point_pt"][1 - along]
+
+        first = second = None
+        for junction in wall.get("junctions") or []:
+            point = junction.get("at_pt")
+            if not point or len(point) < 2:
+                continue
+            where = point[along]
+            if first is None and abs(where - start_at) <= slack:
+                first = cluster_for(point)
+            if abs(where - end_at) <= slack:
+                second = cluster_for(point)
+
+        # An end nothing was recorded at still gets a node of its own, so two
+        # walls that happen to stop at the same place are joined there.
+        if first is None:
+            first = cluster_for([start_at, across] if along == 0 else [across, start_at])
+        if second is None:
+            second = cluster_for([end_at, across] if along == 0 else [across, end_at])
+        assigned[wall_id] = (first, second)
+    return assigned
+
+
 def _punch_openings_onto_walls(walls, openings, scale, mm_per_point: float, config: dict):
     """Cuts each opening the drawing states into the wall centreline it sits on.
 
@@ -637,3 +870,9 @@ def _through_the_same_post_processing(
         )
     legacy.classify_outer_inner(walls, config)
     legacy.describe_walls(walls, mm_per_point, config, sheet_id, page_number)
+    # **A wall either closes a room or holds up the outside of the building.**
+    # Last, and that is not arbitrary: ``describe_walls`` rewrites each record
+    # from the geometry, ``not_used_because`` included, so a reason written
+    # before it is silently thrown away - measured, the invariant set aside 61
+    # candidates and 61 of them came back.
+    _keep_what_encloses_something(walls, mm_per_point, config)

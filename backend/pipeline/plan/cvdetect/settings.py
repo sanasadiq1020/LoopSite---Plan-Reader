@@ -99,6 +99,8 @@ _DEFAULTS = {
         "merge_collinear_runs": True,
         "thickness_from_the_faces": True,
         "require_paired_faces": False,
+        "require_enclosure": False,
+        "sever_at_openings": False,
         "twin_min_mm": 90.0,
         "twin_max_mm": 300.0,
         "collinear_lateral_tolerance_pt": 3.5,

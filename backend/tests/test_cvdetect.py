@@ -1292,3 +1292,115 @@ def test_an_opening_at_the_end_of_a_wall_is_not_cut(config):
         [wall], [door], Scale(mm_per_point=mm_per_point, dpi=300.0), mm_per_point, config
     )
     assert wall["gaps_pt"] == []
+
+
+# --------------------------------------------------------------------------
+# Topological invariants
+# --------------------------------------------------------------------------
+
+def _walled(wall_id, runs_along, start, end, across, junctions):
+    along = 0 if runs_along == "x" else 1
+    first = [start, across] if along == 0 else [across, start]
+    last = [end, across] if along == 0 else [across, end]
+    return {
+        "wall_id": wall_id, "runs_along": runs_along, "thickness_mm": 230.0,
+        "start_point_pt": first, "end_point_pt": last,
+        "face_positions_pt": [across - 3.0, across + 3.0],
+        "gaps_pt": [], "junctions": junctions,
+    }
+
+
+def test_a_closed_circuit_of_walls_encloses_something(config):
+    """A wall bounds a room or forms part of the shell, so it lies on a circuit
+    you can walk round and arrive back where you started."""
+    from pipeline.plan import cvwalls
+
+    cv_settings._cache = cv_settings._deep_merge(config, {"wall": {"require_enclosure": True}})
+    on = cv_settings._cache
+    room = [
+        _walled("W1", "x", 0.0, 400.0, 0.0,
+                [{"with_wall_id": "W4", "at_pt": [0.0, 0.0]},
+                 {"with_wall_id": "W2", "at_pt": [400.0, 0.0]}]),
+        _walled("W2", "y", 0.0, 300.0, 400.0,
+                [{"with_wall_id": "W1", "at_pt": [400.0, 0.0]},
+                 {"with_wall_id": "W3", "at_pt": [400.0, 300.0]}]),
+        _walled("W3", "x", 0.0, 400.0, 300.0,
+                [{"with_wall_id": "W2", "at_pt": [400.0, 300.0]},
+                 {"with_wall_id": "W4", "at_pt": [0.0, 300.0]}]),
+        _walled("W4", "y", 0.0, 300.0, 0.0,
+                [{"with_wall_id": "W3", "at_pt": [0.0, 300.0]},
+                 {"with_wall_id": "W1", "at_pt": [0.0, 0.0]}]),
+    ]
+    try:
+        assert cvwalls._keep_what_encloses_something(room, AT_1_TO_100, on) == 0
+        assert all(not w.get("not_used_because") for w in room)
+    finally:
+        cv_settings.forget_settings()
+
+
+def test_an_overhang_hanging_off_a_room_encloses_nothing(config):
+    """A roof line, an eave, a rafter and a boundary all look like this: joined
+    to the building at one end and running out into open paper at the other."""
+    from pipeline.plan import cvwalls
+
+    cv_settings._cache = cv_settings._deep_merge(config, {"wall": {"require_enclosure": True}})
+    on = cv_settings._cache
+    room = [
+        _walled("W1", "x", 0.0, 400.0, 0.0,
+                [{"with_wall_id": "W4", "at_pt": [0.0, 0.0]},
+                 {"with_wall_id": "W2", "at_pt": [400.0, 0.0]}]),
+        _walled("W2", "y", 0.0, 300.0, 400.0,
+                [{"with_wall_id": "W1", "at_pt": [400.0, 0.0]},
+                 {"with_wall_id": "W3", "at_pt": [400.0, 300.0]}]),
+        _walled("W3", "x", 0.0, 400.0, 300.0,
+                [{"with_wall_id": "W2", "at_pt": [400.0, 300.0]},
+                 {"with_wall_id": "W4", "at_pt": [0.0, 300.0]}]),
+        _walled("W4", "y", 0.0, 300.0, 0.0,
+                [{"with_wall_id": "W3", "at_pt": [0.0, 300.0]},
+                 {"with_wall_id": "W1", "at_pt": [0.0, 0.0]}]),
+        # An eave running away from the corner into open paper.
+        _walled("W5", "x", 400.0, 700.0, 0.0,
+                [{"with_wall_id": "W2", "at_pt": [400.0, 0.0]}]),
+    ]
+    try:
+        assert cvwalls._keep_what_encloses_something(room, AT_1_TO_100, on) == 1
+        aside = [w for w in room if w.get("not_used_because")]
+        assert [w["wall_id"] for w in aside] == ["W5"]
+        assert "encloses nothing" in aside[0]["not_used_because"]
+    finally:
+        cv_settings.forget_settings()
+
+
+def test_junction_points_are_clustered_not_rounded(config):
+    """Two walls meeting at a corner report it at very nearly - not exactly -
+    the same point. Rounding those onto a grid puts 4.9 and 5.1 in different
+    cells though they are 0.2 apart, so no circuit ever closes and the
+    invariant sets aside the whole building - measured, 61 of 61."""
+    from pipeline.plan import cvwalls
+
+    live = {
+        "W1": _walled("W1", "x", 0.0, 400.0, 0.0,
+                      [{"with_wall_id": "W2", "at_pt": [399.9, 0.1]}]),
+        "W2": _walled("W2", "y", 0.0, 300.0, 400.0,
+                      [{"with_wall_id": "W1", "at_pt": [400.1, -0.1]}]),
+    }
+    nodes = cvwalls._nodes_for(live, 10.0)
+    assert nodes["W1"][1] == nodes["W2"][0], "the two must agree on the node they met at"
+
+
+def test_severing_a_wall_keeps_a_stretch_either_side(config):
+    """A door is where the wall stops and starts again, so both stretches stay
+    in the record with their own ends."""
+    from pipeline.plan import cvwalls
+
+    on = cv_settings._deep_merge(config, {"wall": {"sever_at_openings": True}})
+    cv_settings._cache = on
+    try:
+        wall = _walled("W1", "x", 0.0, 800.0, 100.0, [])
+        wall["gaps_pt"] = [[380.0, 420.0]]
+        pieces = cvwalls._sever_at_openings([wall], AT_1_TO_100, config)
+        assert len(pieces) == 2
+        assert all(p["gaps_pt"] == [] for p in pieces)
+        assert all(p["terminates_at_an_opening"] for p in pieces)
+    finally:
+        cv_settings.forget_settings()
