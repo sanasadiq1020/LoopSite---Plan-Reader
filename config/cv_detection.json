@@ -28,7 +28,14 @@
     "consensus_share": 0.5,
     "min_samples_to_contradict_printed": 12,
     "contradiction_agreement_share": 0.9,
-    "fall_back_to_printed_scale": true
+    "fall_back_to_printed_scale": true,
+    "_title_block_note": "The fallback, used only where the drawing could not measure itself - which is not an unusual sheet: a plan set published as pictures has no dimension lines to measure against at all. The four edge strips are searched first, because a title block sits on an edge (AS 1100 puts it bottom-right, and the bottom, right, left and top have all been seen on real sets). That ordering is what separates THIS sheet's scale from the scales printed beside its details: on one real detail sheet the title block says '1:50 @ A3' while '1:50' is also set in large type under a drawing and a drawing index elsewhere lists 1:200, 1:100 and 1:50. The band depth is a share of the sheet, so it means the same on A4 and A0.",
+    "title_block_band_share": 0.25,
+    "_label_note": "A title block sets a cell out as a label with its value beside it or directly beneath it, and one real plan set prints 'SCALE:' and '1 : 200' as two separate text lines. The allowance is measured in the LABEL'S OWN printed type size, so it means the same on an A4 sheet and an A0 one - and using the box height alone would make it five times too generous on a sideways title block, where a label's box is as tall as the label is long.",
+    "label_reach_text_heights": 6.0,
+    "_sheet_size_note": "'1:50 @ A3' says the ratio holds when the drawing is printed at A3. If the page really is A3 the ratio stands; if the page is A4, the drawing was reduced and every length taken from the printed ratio is out by the ratio of the two sheets' long edges - 1.414 between one A size and the next, which is a 3 metre wall reported as 2.1. This is exactly why offices print the sheet size next to the scale, and it is only possible because ISO sizes are a standard and the page states its own size. The tolerance covers a trimmed edge and a rounded mediabox; it does not cover the 41% gap between one A size and the next.",
+    "correct_for_stated_sheet_size": true,
+    "sheet_size_tolerance_pct": 2.0
   },
   "openings": {
     "_note": "A door or window is found before any wall gap is closed, because closing bridges a gap the width of the thinnest wall and a door gap is exactly that size. Bridge it and the wall reads as continuous, the door is gone, and nothing downstream can know it was there.",
@@ -102,5 +109,35 @@
     "max_offset_mm": 200.0,
     "_mark_note": "A mark is printed BESIDE its opening and a symbol is drawn ON it, which is a drafting convention rather than a tuning value: a D12 commonly sits inside the room on a leader, while the swing it labels is drawn in the wall itself. Measuring both to the same allowance reported real, marked doors as having no wall near them.",
     "mark_reach_mm": 1000.0
+  },
+  "page": {
+    "_note": "A site plan draws the block, not the building, and a roof plan draws what is over it. Their parallel lines are boundaries, setbacks, easements, fences, driveways, kerbs and contours on the one, and battens, ridges, valleys and gutter lines on the other - none of them a wall. And the thickness test cannot separate them: at 1:200 the band that means 'a 70 to 320 mm wall' is 1 to 4.5 points of paper, and on a site plan almost every pair of lines is that far apart. Measured on a real site-plan-and-roof-plan sheet, tracing it produced 124 walls and 400 metres of them, every one a boundary or a batten.",
+    "_wording_note": "The sheet's own title is the evidence, and the wording is configuration rather than a list in code, because what one office calls a stormwater plan another calls a drainage plan. A sheet naming BOTH a kind with walls and a kind without - a floor plan with a small roof plan inset beside it - is traced: the safe direction is to read it and let the geometry decide.",
+    "never_trace_walls_on": [
+      "SITE PLAN",
+      "ROOF PLAN",
+      "LANDSCAPE PLAN",
+      "DRAINAGE PLAN",
+      "STORMWATER PLAN",
+      "SEDIMENT CONTROL",
+      "EROSION CONTROL",
+      "LOCALITY PLAN",
+      "SURVEY PLAN",
+      "SHADOW DIAGRAM",
+      "SITE ANALYSIS",
+      "DEMOLITION PLAN",
+      "LOCATION PLAN"
+    ],
+    "traces_walls_on": [
+      "FLOOR PLAN",
+      "SLAB PLAN",
+      "SLAB SETOUT",
+      "SETOUT PLAN",
+      "FRAMING PLAN",
+      "LAYOUT PLAN",
+      "REFLECTED CEILING",
+      "ELECTRICAL PLAN"
+    ],
+    "_title_note": "Every entry here names a DRAWING, and that is not a style choice. A bare 'GROUND FLOOR' matched a site-coverage table on a real site plan - 'BUILDING SITE COVERAGE (AREA M2) | GROUND FLOOR | HOUSE: 182.66 M2' - and rescued the very sheet the rule exists to stop. 'FLOOR PLAN' already covers 'GROUND FLOOR PLAN' and 'FIRST FLOOR PLAN' as a substring, so nothing is lost by requiring the word PLAN."
   }
 }

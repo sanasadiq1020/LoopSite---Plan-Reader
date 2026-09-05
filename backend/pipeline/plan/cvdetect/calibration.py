@@ -43,6 +43,7 @@ from statistics import median
 
 from app.logging_setup import get_logger
 from pipeline.plan import layout, textmodel
+from pipeline.plan.cvdetect import titleblockscale
 from pipeline.plan.cvdetect.settings import Scale, load_settings, number, setting
 from pipeline.plan.validators import scale_ratio_denominator
 
@@ -74,10 +75,14 @@ _ROTATED_ASPECT = 1.6
 # skew; it is not a licence to accept a diagonal.
 _AXIS_TOLERANCE_PT = 0.35
 
-# A scale printed as a ratio: "1:100", "1 : 50", "1/200". Read only as the
-# fallback in ``printed_ratio_on``, and only where the sheet prints one.
-_PRINTED_RATIO = re.compile(r"\b1\s*[:/]\s*(\d{1,4})\b")
-
+# How firmly a printed scale is tied to this sheet - the tiers are defined on
+# ``titleblockscale.PrintedScale.rank``. A statement printed in the bottom or
+# right strip against the word SCALE scores 4: that is the sheet speaking about
+# itself, and it is the only tier allowed to stand against a measurement. A
+# scale the caller located and handed in outranks even that, because nothing in
+# this module knows better than a properly read title block.
+_STATES_ITS_OWN_SCALE = 4
+_AUTHORITATIVE = 5
 
 def dimension_value_mm(text: str, settings: dict):
     """The millimetres a printed figure states, or None if it states none.
@@ -109,28 +114,6 @@ def dimension_value_mm(text: str, settings: dict):
     if not (low <= value <= high):
         return None
     return (value, note)
-
-
-def printed_ratio_on(page) -> str:
-    """The scale ratio printed on this sheet, where it prints exactly one.
-
-    A drawing may legitimately print several - a plan at 1:100 with an enlarged
-    detail beside it at 1:1 prints both - and which one applies to which
-    drawing cannot be told from the text alone. So **only an unambiguous sheet
-    answers**: where a sheet prints more than one distinct ratio, nothing is
-    returned and the sheet is measured or not measured on its own evidence.
-    Guessing here would put every length on the sheet out by the ratio between
-    them.
-    """
-    try:
-        text = page.get_text() or ""
-    except Exception as e:
-        logger.exception(f"printed_ratio_on: this sheet's text could not be read: {e}")
-        return ""
-    found = {f"1:{match.group(1)}" for match in _PRINTED_RATIO.finditer(text)}
-    if len(found) != 1:
-        return ""
-    return found.pop()
 
 
 def _axis_of_text(line: dict) -> str:
@@ -371,19 +354,39 @@ def calibrate_scale(
     except Exception:
         origin = (0.0, 0.0)
 
-    if not printed_scale:
-        # **A sheet that prints no dimension figures can still print its
-        # scale.** A plan set published as pictures is exactly that case: its
-        # drawing is pixels, so there are no dimension lines to measure
-        # against, and without this the whole set reports nothing measurable
-        # at all. Read from the sheet's text rather than from a located title
-        # block, so it is used only as the fallback and always says so.
-        printed_scale = printed_ratio_on(page)
+    # **The sheet's text is read once**, and both the dimension figures and the
+    # title block are read out of it. Where the caller supplied recognition
+    # results those are what is used, so a scanned sheet's title block is read
+    # from exactly the text the rest of the reader is working from.
+    try:
+        lines = _text_lines(page, ocr_results)
+    except Exception as e:
+        logger.exception(f"calibrate_scale: this sheet's text could not be read: {e}")
+        lines = []
 
-    denominator = scale_ratio_denominator(printed_scale) if printed_scale else None
-    printed_mm_per_point = (
-        MM_PER_POINT_AT_FULL_SIZE * float(denominator) if denominator else 0.0
-    )
+    # **What the sheet says about itself, kept separate from what it measures.**
+    # A caller that has properly located a title block wins outright. Otherwise
+    # the title block is parsed here (``titleblockscale``), and how strongly the
+    # statement is tied to this sheet is carried along with it - a ratio printed
+    # in the title block beside the word SCALE is the sheet speaking about
+    # itself, while one printed under a drawing is that drawing's caption.
+    stated = None
+    if not printed_scale:
+        stated = titleblockscale.scale_from_title_block(page, lines, settings)
+        if stated is not None:
+            printed_scale = stated.ratio
+
+    if stated is not None:
+        printed_mm_per_point = stated.mm_per_point
+        printed_rank = stated.rank
+    else:
+        denominator = scale_ratio_denominator(printed_scale) if printed_scale else None
+        printed_mm_per_point = (
+            MM_PER_POINT_AT_FULL_SIZE * float(denominator) if denominator else 0.0
+        )
+        # A scale the caller located and handed in is authoritative by
+        # definition; there is nothing here that knows better than it does.
+        printed_rank = _AUTHORITATIVE if printed_mm_per_point > 0 else 0
 
     def result(mm_per_point, source, confidence, samples, note, measured=0.0, variance=None):
         return Scale(
@@ -400,7 +403,6 @@ def calibrate_scale(
         )
 
     try:
-        lines = _text_lines(page, ocr_results)
         figures = []
         for line in lines:
             parsed = dimension_value_mm(line.get("text"), settings)
@@ -448,8 +450,10 @@ def calibrate_scale(
         or agreeing < minimum
         or agreeing < share_needed * len(used)
     ):
+        # **The fallback.** The drawing could not measure itself, so what it
+        # says about itself is all there is.
         return _without_a_measurement(
-            result, printed_mm_per_point, printed_scale, settings, len(used), agreeing
+            result, printed_mm_per_point, printed_scale, stated, settings, len(used), agreeing
         )
 
     confidence = min(0.99, 0.5 + 0.49 * (agreeing / max(len(used), 1)))
@@ -490,6 +494,32 @@ def calibrate_scale(
             enough = int(number(settings, "scale.min_samples_to_contradict_printed", 12))
             unanimity = number(settings, "scale.contradiction_agreement_share", 0.9)
             convincing = agreeing >= enough and agreeing >= unanimity * len(used)
+
+            # **And a printed ratio only outranks a measurement when it is
+            # really this sheet's own.** A scale the caller located, or one
+            # printed in the title block beside the word SCALE, is the sheet
+            # speaking about itself and is worth keeping over a thin
+            # measurement. A ratio picked up from a drawing caption or from a
+            # drawing index is not - it belongs to a detail or to another
+            # sheet entirely, and letting it set aside a real measurement
+            # would be preferring the weaker evidence.
+            if not convincing and printed_rank < _STATES_ITS_OWN_SCALE:
+                note = (
+                    f"This sheet measures {measured:.2f} mm to a point from {agreeing} of its "
+                    f"own dimension figures. A scale of {printed_scale} is printed on it, which "
+                    f"would make one point {printed_mm_per_point:.2f} mm - "
+                    f"{abs(variance):.1f}% apart - but it is not printed in the title block as "
+                    "this sheet's own scale, so the measurement is used. Check the printed "
+                    "scale before relying on lengths taken from this sheet."
+                )
+                logger.warning(
+                    f"scale: measured {measured:.3f} kept over a weakly-stated printed "
+                    f"{printed_mm_per_point:.3f} ({variance:.2f}% apart)"
+                )
+                return result(
+                    measured, source_name, min(confidence, 0.7), agreeing, note, measured, variance
+                )
+
             logger.warning(
                 f"scale contradicted: printed={printed_mm_per_point:.3f} "
                 f"measured={measured:.3f} variance={variance:.2f}% "
@@ -527,25 +557,37 @@ def calibrate_scale(
     return result(measured, source_name, confidence, agreeing, note, measured, variance)
 
 
-def _without_a_measurement(result, printed_mm_per_point, printed_scale, settings, tried, agreeing):
+def _without_a_measurement(
+    result, printed_mm_per_point, printed_scale, stated, settings, tried, agreeing
+):
     """What to report when the drawing could not measure itself.
 
-    Two honest outcomes, and neither of them is a guess. Where the title block
-    prints a ratio it is used and said to be unchecked; where it prints none,
-    nothing on the sheet can be measured and that is what is reported.
+    Two honest outcomes, and neither of them is a guess. Where the sheet states
+    a scale it is used and said plainly to be **unverified**; where it states
+    none, nothing on the sheet can be measured and that is what is reported.
+
+    **How far the statement is trusted depends on where it was printed.** A
+    ratio the caller located, or one printed in the title block against the
+    word SCALE, is the sheet speaking about itself. One found in the title
+    block without a label, or labelled but out on the paper, is weaker. The
+    confidence says which, and the note names it, so a reader can see the
+    difference rather than being handed one number for all three cases.
     """
     if printed_mm_per_point > 0 and setting(settings, "scale.fall_back_to_printed_scale", True):
-        return result(
-            printed_mm_per_point,
-            "printed_scale",
-            0.4,
-            0,
-            (
-                f"This sheet does not print enough dimension figures to check its scale "
-                f"against ({tried} tried, {agreeing} agreeing). The printed scale "
-                f"{printed_scale} is used as stated and has not been verified."
-            ),
+        rank = stated.rank if stated is not None else _AUTHORITATIVE
+        confidence = {1: 0.2, 2: 0.3, 3: 0.35, 4: 0.4}.get(rank, 0.4)
+        where = _where_it_was_printed(stated)
+        note = (
+            f"This sheet does not print enough dimension figures to measure its own scale "
+            f"({tried} tried, {agreeing} agreeing), so the scale {printed_scale} {where} is "
+            "used. It has not been verified against the drawing."
         )
+        if stated is not None and stated.note:
+            note += " " + stated.note
+        if stated is not None and stated.evidence:
+            note += " " + " ".join(stated.evidence)
+        return result(printed_mm_per_point, "printed_scale", confidence, 0, note)
+
     return result(
         0.0,
         "not_established",
@@ -557,3 +599,15 @@ def _without_a_measurement(result, printed_mm_per_point, printed_scale, settings
             "from this sheet."
         ),
     )
+
+
+def _where_it_was_printed(stated) -> str:
+    """A reader's words for how firmly a printed scale belongs to this sheet."""
+    if stated is None:
+        return "supplied for this sheet"
+    return {
+        4: "printed in its title block",
+        3: "printed beside the word SCALE in a strip along one edge",
+        2: "printed on it beside the word SCALE",
+        1: "printed in its title-block area",
+    }.get(stated.rank, "printed on it")

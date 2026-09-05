@@ -61,6 +61,10 @@ _DEFAULTS = {
         "min_samples_to_contradict_printed": 12,
         "contradiction_agreement_share": 0.9,
         "fall_back_to_printed_scale": True,
+        "title_block_band_share": 0.25,
+        "label_reach_text_heights": 6.0,
+        "correct_for_stated_sheet_size": True,
+        "sheet_size_tolerance_pct": 2.0,
     },
     "openings": {
         "door_min_width_mm": 600.0,
@@ -95,6 +99,19 @@ _DEFAULTS = {
         "hatch_angle_degrees": [45.0, 135.0],
         "min_length_to_thickness": 1.5,
         "min_walls_for_vector": 4,
+    },
+    "page": {
+        "never_trace_walls_on": [
+            "SITE PLAN", "ROOF PLAN", "LANDSCAPE PLAN", "DRAINAGE PLAN",
+            "STORMWATER PLAN", "SEDIMENT CONTROL", "EROSION CONTROL",
+            "LOCALITY PLAN", "SURVEY PLAN", "SHADOW DIAGRAM", "SITE ANALYSIS",
+            "DEMOLITION PLAN", "LOCATION PLAN",
+        ],
+        "traces_walls_on": [
+            "FLOOR PLAN", "SLAB PLAN", "SLAB SETOUT", "SETOUT PLAN",
+            "FRAMING PLAN", "LAYOUT PLAN", "REFLECTED CEILING",
+            "ELECTRICAL PLAN",
+        ],
     },
     "crosslink": {
         "max_offset_mm": 200.0,

@@ -483,3 +483,259 @@ def test_a_pdf_with_no_pages_says_so(tmp_path):
     result = read_document(empty)
     assert result["sheets"] == []
     assert result["note"], "a file with nothing in it must say so, not come back blank"
+
+
+# --------------------------------------------------------------------------
+# Step 2, fallback - the scale a sheet prints about itself
+# --------------------------------------------------------------------------
+
+def _sheet_with(tmp_path, items, size="a3", name="sheet.pdf"):
+    """A blank sheet carrying the given text at the given places.
+
+    ``items`` are ``(x, y, text)`` or ``(x, y, text, fontsize)`` in points, with
+    ``y`` the text baseline - which is how a title block's own cells arrive.
+
+    Landscape, because that is how a construction drawing is plotted -
+    ``fitz.paper_size`` hands back portrait, and a title block placed by
+    portrait coordinates lands off the side of the sheet.
+    """
+    width, height = sorted(fitz.paper_size(size), reverse=True)
+    document = fitz.open()
+    page = document.new_page(width=width, height=height)
+    for item in items:
+        x, y, text = item[0], item[1], item[2]
+        page.insert_text((x, y), text, fontsize=item[3] if len(item) > 3 else 8)
+    path = tmp_path / name
+    document.save(str(path))
+    document.close()
+    return path
+
+
+def _title_block_scale(tmp_path, items, size="a3", config=None):
+    from pipeline.plan.cvdetect import titleblockscale
+    from pipeline.plan.cvdetect.calibration import _text_lines
+
+    path = _sheet_with(tmp_path, items, size)
+    document = fitz.open(str(path))
+    try:
+        page = document[0]
+        return titleblockscale.scale_from_title_block(
+            page, _text_lines(page, None), config or load_settings()
+        )
+    finally:
+        document.close()
+
+
+def test_a_scale_printed_in_the_title_block_is_read(tmp_path, config):
+    found = _title_block_scale(tmp_path, [(60, 800, "SCALE: 1:100 @ A3")], config=config)
+    assert found is not None
+    assert found.ratio == "1:100"
+    assert found.mm_per_point == pytest.approx(AT_1_TO_100, rel=1e-6)
+    assert found.rank == 4
+
+
+def test_a_label_above_its_value_is_a_title_block_cell(tmp_path, config):
+    """One real plan set prints 'Scale:' on one line and '1:100 @ A3' on the next."""
+    found = _title_block_scale(
+        tmp_path, [(1050, 790, "Scale:", 6), (1050, 800, "1:100 @ A3")], config=config
+    )
+    assert found is not None and found.ratio == "1:100" and found.rank == 4
+
+
+def test_a_label_beside_its_value_is_a_title_block_cell(tmp_path, config):
+    """Another prints 'SCALE:' with '1 : 200' next to it, spaces and all."""
+    found = _title_block_scale(
+        tmp_path, [(700, 800, "SCALE:", 6), (740, 800, "1 : 200")], config=config
+    )
+    assert found is not None and found.ratio == "1:200"
+
+
+def test_a_fall_is_not_a_scale(tmp_path, config):
+    """'1:100MM FALL ON SPANDECK' is printed on a real floor plan, in the strip
+    where a title block sits. A ratio followed straight by a letter is not one."""
+    found = _title_block_scale(
+        tmp_path, [(60, 800, "SCALE:", 6), (200, 800, "1:100MM FALL ON SPANDECK")], config=config
+    )
+    assert found is None
+
+
+def test_do_not_scale_drawing_is_not_a_scale_label(tmp_path, config):
+    """Printed across the bottom strip of real sheets, right where a scale is."""
+    found = _title_block_scale(
+        tmp_path,
+        [(60, 800, "DO NOT SCALE DRAWING - REFER ONLY TO FIGURED DIMENSIONS"),
+         (60, 812, "1:250")],
+        config=config,
+    )
+    assert found is None, "a ratio under this wording is not the sheet's scale"
+
+
+def test_a_sheet_marked_not_to_scale_measures_nothing(tmp_path, config):
+    found = _title_block_scale(
+        tmp_path, [(60, 800, "SCALE:", 6), (200, 800, "N.T.S.")], config=config
+    )
+    assert found is None
+
+
+def test_a_drawing_index_column_is_not_this_sheets_scale(tmp_path, config):
+    """A cover sheet's index has SCALE as a column HEADER with a row for every
+    sheet in the set - measured on one real cover, 22 ratios stacked beneath it.
+    Read as a cell label, the first became 'this sheet's scale' with the highest
+    confidence the reader can give, on a sheet that draws nothing at all."""
+    index = [(147, 128, "SCALE", 6)]
+    for step, ratio in enumerate(["1:200", "1:100", "1:100", "1:50", "1:50", "1:50"]):
+        index.append((151, 182 + step * 17, ratio))
+    assert _title_block_scale(tmp_path, index, config=config) is None
+
+
+def test_an_unlabelled_ratio_by_the_left_edge_is_a_caption(tmp_path, config):
+    """On a real details sheet a '1:20' printed under one detail, on a sheet whose
+    other drawings are marked NTS, would otherwise become the whole sheet's scale."""
+    assert _title_block_scale(tmp_path, [(64, 344, "1:20")], config=config) is None
+
+
+def test_a_title_block_listing_two_scales_takes_the_first(tmp_path, config):
+    """A plan at 1:100 with an enlarged detail beside it prints both, and the
+    first applies to the drawing itself. A drafting convention, not a guess."""
+    found = _title_block_scale(
+        tmp_path, [(60, 800, "SCALE: 1:100, 1:1")], config=config
+    )
+    assert found is not None and found.ratio == "1:100"
+
+
+def test_two_weakly_printed_scales_that_disagree_answer_nothing(tmp_path, config):
+    """Neither is tied to the sheet more strongly than the other, and picking one
+    would put every length on it out by the ratio between them."""
+    found = _title_block_scale(
+        tmp_path, [(300, 800, "1:100"), (600, 800, "1:50")], config=config
+    )
+    assert found is None
+
+
+def test_the_page_says_which_iso_sheet_it_is(tmp_path):
+    from pipeline.plan.cvdetect import titleblockscale
+
+    for size, expected in (("a3", "A3"), ("a4", "A4"), ("a1", "A1")):
+        path = _sheet_with(tmp_path, [(50, 50, "x")], size, name=f"{size}.pdf")
+        document = fitz.open(str(path))
+        try:
+            assert titleblockscale.page_sheet_size(document[0])[0] == expected
+        finally:
+            document.close()
+
+
+def test_a_drawing_reprinted_at_another_size_is_corrected(tmp_path, config):
+    """'1:50 @ A3' printed on an A4 page means the drawing was reduced. Left
+    uncorrected, every length is out by 1.414 - a 3 m wall reported as 2.1 m."""
+    found = _title_block_scale(
+        tmp_path, [(60, 560, "SCALE: 1:50 @ A3")], size="a4", config=config
+    )
+    assert found is not None
+    assert found.stated_sheet == "A3"
+    assert found.sheet_correction == pytest.approx(420.0 / 297.0, rel=0.01)
+    assert found.mm_per_point == pytest.approx(AT_1_TO_100 / 2 * 420.0 / 297.0, rel=0.01)
+    assert "re-printed at a different size" in found.note
+
+
+def test_a_drawing_printed_at_the_size_it_states_is_not_corrected(tmp_path, config):
+    found = _title_block_scale(tmp_path, [(60, 800, "SCALE: 1:50 @ A3")], config=config)
+    assert found is not None
+    assert found.sheet_correction == 1.0
+    assert found.mm_per_point == pytest.approx(AT_1_TO_100 / 2, rel=1e-6)
+
+
+def test_a_sheet_that_cannot_measure_itself_falls_back_and_says_so(tmp_path, config):
+    """The whole point of the fallback: a plan set published as pictures has no
+    dimension lines to measure against, and without this reports no lengths."""
+    from pipeline.plan.cvdetect.calibration import calibrate_scale
+
+    path = _sheet_with(tmp_path, [(60, 800, "SCALE: 1:100 @ A3")])
+    document = fitz.open(str(path))
+    try:
+        scale = calibrate_scale(document[0])
+    finally:
+        document.close()
+    assert scale.usable
+    assert scale.source == "printed_scale"
+    assert scale.mm_per_point == pytest.approx(AT_1_TO_100, rel=1e-6)
+    assert scale.confidence < 0.5, "a printed claim is never as good as a measurement"
+    assert "not been verified" in scale.note
+
+
+def test_a_sheet_stating_nothing_measures_nothing(tmp_path):
+    """Critical Rule 5: never guess silently. No scale means no lengths."""
+    from pipeline.plan.cvdetect.calibration import calibrate_scale
+
+    path = _sheet_with(tmp_path, [(60, 800, "GENERAL NOTES"), (60, 812, "REFER TO ENGINEER")])
+    document = fitz.open(str(path))
+    try:
+        scale = calibrate_scale(document[0])
+    finally:
+        document.close()
+    assert not scale.usable
+    assert scale.mm_per_point == 0.0
+    assert scale.source == "not_established"
+
+
+# --------------------------------------------------------------------------
+# Step 4 - sheets whose drawing has no walls in it
+# --------------------------------------------------------------------------
+
+def test_no_walls_are_traced_on_a_site_plan(tmp_path, config):
+    """Measured on a real site-plan-and-roof-plan sheet, tracing it produced
+    124 walls and 400 metres of them - every one a boundary or a batten."""
+    path = _sheet_with(tmp_path, [(60, 100, "PROPOSED SITE PLAN"), (60, 800, "SCALE: 1:200 @ A3")])
+    document = fitz.open(str(path))
+    try:
+        assert "Site Plan" in wallgeometry.why_this_sheet_has_no_walls(document[0], config)
+    finally:
+        document.close()
+
+
+def test_no_walls_are_traced_on_a_roof_plan(tmp_path, config):
+    path = _sheet_with(tmp_path, [(60, 100, "ROOF PLAN"), (60, 800, "SCALE: 1:100 @ A3")])
+    document = fitz.open(str(path))
+    try:
+        assert wallgeometry.why_this_sheet_has_no_walls(document[0], config)
+    finally:
+        document.close()
+
+
+def test_a_floor_plan_is_traced(tmp_path, config):
+    path = _sheet_with(tmp_path, [(60, 100, "GROUND FLOOR PLAN"), (60, 800, "SCALE: 1:100 @ A3")])
+    document = fitz.open(str(path))
+    try:
+        assert wallgeometry.why_this_sheet_has_no_walls(document[0], config) == ""
+    finally:
+        document.close()
+
+
+def test_a_floor_plan_with_a_roof_plan_beside_it_is_still_traced(tmp_path, config):
+    """The safe direction: read it and let the geometry decide."""
+    path = _sheet_with(
+        tmp_path, [(60, 100, "GROUND FLOOR PLAN"), (600, 100, "ROOF PLAN"),
+                   (60, 800, "SCALE: 1:100 @ A3")]
+    )
+    document = fitz.open(str(path))
+    try:
+        assert wallgeometry.why_this_sheet_has_no_walls(document[0], config) == ""
+    finally:
+        document.close()
+
+
+def test_a_level_named_in_a_table_does_not_rescue_a_site_plan(tmp_path, config):
+    """A bare 'GROUND FLOOR' matched a site-coverage table on a real site plan -
+    'BUILDING SITE COVERAGE (AREA M2) | GROUND FLOOR | HOUSE: 182.66 M2' - and
+    rescued the very sheet the rule exists to stop."""
+    path = _sheet_with(
+        tmp_path,
+        [(60, 100, "PROPOSED SITE PLAN"),
+         (60, 300, "BUILDING SITE COVERAGE (AREA M2)"),
+         (60, 320, "GROUND FLOOR   HOUSE: 182.66 M2"),
+         (60, 800, "SCALE: 1:200 @ A3")],
+    )
+    document = fitz.open(str(path))
+    try:
+        assert wallgeometry.why_this_sheet_has_no_walls(document[0], config)
+    finally:
+        document.close()

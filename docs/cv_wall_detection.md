@@ -38,7 +38,7 @@ The order is the design, not an implementation detail.
 | | step | module |
 |---|---|---|
 | 1 | the drawing's own paths, with dashed and lightly plotted line work set aside **before** any image is made | `vectorpaths.py` |
-| 2 | what one point of this sheet measures, taken off its own dimension figures | `calibration.py` |
+| 2 | what one point of this sheet measures, taken off its own dimension figures, falling back to what its title block states | `calibration.py`, `titleblockscale.py` |
 | 3 | doors and windows, found and painted white **before** any gap is closed | `openings.py` |
 | 4 | wall bands, outlines by contour, centrelines by skeletonisation | `wallgeometry.py` |
 | 5 | which wall each opening is in, or why that could not be said | `crosslink.py` |
@@ -92,6 +92,100 @@ from the sheet's perfectly correct 1:100 title block. Four figures on an
 elevation are not evidence that a title block is wrong. A sheet genuinely
 re-plotted from A3 to A4 is real and common, so the capability stays, but it
 takes a proper number of figures in near-unanimous agreement.
+
+### When the drawing cannot measure itself, the title block is asked
+
+A great many sheets carry too few dimension figures to pool — and they are not
+unusual sheets. A plan set published as pictures has no vector dimension lines
+to measure against at all; a cover sheet, a notes page and a details sheet have
+none either. So where the measurement cannot be made, the sheet's **own
+statement about itself** is read (`titleblockscale.py`), used, and marked
+plainly as unverified.
+
+**Where it looks matters more than what it matches.** The four edge strips are
+searched first, because a title block sits on an edge — AS 1100 puts it
+bottom-right, and the bottom, right, left and top have all been seen on real
+sets. That ordering is what separates *this sheet's* scale from the scales
+printed beside its details. On one real detail sheet the title block says
+`1:50 @ A3` while `1:50` is also set in large type under one drawing, and a
+drawing index elsewhere in the set lists 1:200, 1:100 and 1:50.
+
+Each statement is ranked by how firmly it is tied to this sheet:
+
+| rank | where it was printed |
+|---|---|
+| 4 | labelled `SCALE`, in the bottom or right strip — AS 1100's own position |
+| 3 | labelled, in the left or top strip — the uncommon variants |
+| 2 | labelled, anywhere else on the sheet |
+| 0 | **unlabelled — not usable, wherever it is printed** |
+
+**Zero matters as much as four.** A title block *labels* its scale cell; a
+ratio with no label beside it is a caption under a drawing. Measured across all
+three plan sets, every scale actually recovered scores 4 — so refusing the
+unlabelled ones costs nothing and removes the whole class of error.
+
+Five traps, every one taken from a real sheet rather than imagined:
+
+* `1:100MM FALL ON SPANDECK` — **not a scale.** It is printed on a real floor
+  plan, inside the strip where a title block sits. A ratio followed straight by
+  a letter is a fall, a grade or a product code.
+* `DO NOT SCALE DRAWING` and `DO NOT SCALE FROM DRAWINGS` — **not a scale
+  label.** Both are printed across the bottom strip of real sheets, exactly
+  where a scale would be.
+* A **drawing-index column**: a cover sheet's index has `SCALE` as a column
+  *header* with a row per sheet — 22 ratios stacked beneath it on one real
+  cover. Read as a cell label, the first became "this sheet's scale" with the
+  highest confidence available, on a sheet that draws nothing at all. A title
+  block's scale cell holds exactly one value.
+* `Scale:` on one line with `1:100 @ A3` on the next, and `SCALE:` with
+  `1 : 200` beside it — a label above or beside its value is how a ruled cell is
+  set out, and two different offices do it the two different ways.
+* `NTS` / `NOT TO SCALE` in the title block — a positive statement that nothing
+  on the drawing may be measured, which is different from finding nothing.
+
+**The sheet size is part of the claim.** `1:50 @ A3` says the ratio holds when
+the drawing is printed at A3. If the page really is A3 it stands; if the page is
+A4, the drawing was reduced and every length taken from the printed ratio is out
+by the ratio of the two long edges — **1.414 between one A size and the next,
+which is a 3 m wall reported as 2.1 m**. ISO sizes are a standard and the page
+states its own size, so that correction can be made exactly. This is the whole
+reason offices print the sheet size next to the scale.
+
+**A printed claim never outranks a measurement**, except where it is the sheet's
+own title block (rank 4) and the measurement is thin. A ratio picked up from a
+caption or an index is not allowed to set aside a real measurement — that would
+be preferring the weaker evidence.
+
+*Measured across the corpus: the sheets that can establish a scale are 6 of 6,
+21 of 23 and 8 of 17. Every sheet that cannot is a cover, a notes page, an
+engineering report page, or a details sheet whose drawings are marked NTS —
+there is genuinely no scale on them to find, and each says so rather than
+guessing.*
+
+### A site plan and a roof plan have no walls on them
+
+Adding the fallback above immediately exposed a defect it had been hiding. A
+site-plan-and-roof-plan sheet had previously produced nothing only because its
+scale could not be read; once it could, the sheet reported **124 walls and
+400 metres** of them — every one a boundary, a setback, a driveway or a roof
+batten.
+
+A site plan draws the block, not the building; a roof plan draws what is over
+it. And the thickness test cannot separate their lines from walls: **at 1:200
+the band that means "a 70–320 mm wall" is 1 to 4.5 points of paper**, and on a
+site plan almost every pair of lines is that far apart.
+
+So walls are not traced on a sheet whose own title names a drawing of that
+kind. The wording is configuration, not a list in code — what one office calls
+a stormwater plan another calls a drainage plan. A sheet naming *both* a kind
+with walls and a kind without (a floor plan with a small roof plan inset) is
+traced: the safe direction is to read it and let the geometry decide.
+
+**Every "traces walls" entry names a drawing, and that is not a style choice.**
+A bare `GROUND FLOOR` matched a site-coverage *table* on the real site plan —
+`BUILDING SITE COVERAGE (AREA M2) | GROUND FLOOR | HOUSE: 182.66 M2` — and
+rescued the very sheet the rule exists to stop. `FLOOR PLAN` already covers
+`GROUND FLOOR PLAN` as a substring, so requiring the word `PLAN` loses nothing.
 
 ### Stroke weight does not separate structure from annotation
 
@@ -213,17 +307,18 @@ angles and stay two walls, which is right.
 
 Every sheet of all three plan sets, end to end through the CLI:
 
-| plan set | sheets | scale established | walls | centreline | openings | placed on a wall |
-|---|---|---|---|---|---|---|
-| published as pictures | 6 | **6 of 6** | 431 | 691 m | 8 | 6 |
-| vector, 23 sheets | 23 | **21 of 23** | 610 | 1,093 m | 214 | 117 |
-| unseen office, 17 sheets | 17 | 9 of 17 | 131 | 408 m | 41 | 21 |
+| plan set | sheets | scale established | walls | openings | placed on a wall |
+|---|---|---|---|---|---|
+| published as pictures | 6 | **6 of 6** | 431 | 8 | 6 |
+| vector, 23 sheets | 23 | **21 of 23** | 549 | 222 | 117 |
+| unseen office, 17 sheets | 17 | 8 of 17 | 125 | 39 | 19 |
 
-The two sheets of the 23-sheet set without a scale are a cover and a notes
-sheet, which print no dimension figures and more than one ratio. On the unseen
-set, 8 of its 17 sheets are in the same position. **They report no lengths and
-say so** rather than measuring from a ratio that may belong to a detail printed
-beside the drawing.
+Every sheet without a scale is a cover, a notes page, an engineering report
+page bound into the set, or a details sheet whose drawings are marked NTS.
+**They report no lengths and say so** rather than measuring from a ratio that
+may belong to a detail printed beside the drawing. Two further sheets — a site
+plan and a roof plan — do establish a scale and are deliberately not traced for
+walls (above).
 
 A wall here is a stretch between two junctions, so the counts are not
 comparable with a reader that reports one wall per pair of drawn faces — this
@@ -270,7 +365,7 @@ is never cropped, because cropping loses part of the drawing silently.
 
 ## Tests
 
-`backend/tests/test_cvdetect.py` — 43 tests, each naming the mistake it
+`backend/tests/test_cvdetect.py` — 63 tests, each naming the mistake it
 prevents rather than restating what the code does. They include an end-to-end
 run against a **building drawn for the purpose**: a 12 m × 8 m rectangle in
 230 mm wall at 1:100, read back and compared with what was drawn. Scoring a

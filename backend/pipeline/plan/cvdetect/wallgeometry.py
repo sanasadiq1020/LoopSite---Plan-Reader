@@ -142,6 +142,57 @@ def _outline_coords(outline):
         return []
 
 
+def why_this_sheet_has_no_walls(page, settings: dict) -> str:
+    """A sentence, where this sheet is one whose drawing has no walls in it.
+
+    **A site plan draws the block, not the building**, and a roof plan draws
+    what is over it. Their parallel lines are boundaries, setbacks, easements,
+    fences, driveways, kerbs and contours on the one, and battens, ridges,
+    valleys and gutter lines on the other - and none of those is a wall. Worse,
+    the thickness test cannot separate them: at 1:200 the band that means "a
+    70 to 320 mm wall" is 1 to 4.5 points of paper, and on a site plan almost
+    every pair of lines is that far apart.
+
+    Measured on a real site-plan-and-roof-plan sheet, tracing it produced
+    **124 walls and 400 metres** of them, every one a boundary or a batten. It
+    is exactly the shape of error this reader exists to avoid: plausible,
+    confidently reported, and completely wrong. The main pipeline records the
+    same finding for the same reason (CLAUDE.md 4AE).
+
+    **The sheet's own title is the evidence**, and the wording is configuration
+    rather than a list in code (Critical Rule 1), because what one office calls
+    a stormwater plan another calls a drainage plan. A sheet that names *both*
+    a kind with walls and a kind without - a floor plan with a small roof plan
+    inset beside it - is traced: the safe direction is to read it and let the
+    geometry decide.
+    """
+    try:
+        text = (page.get_text() or "").upper()
+    except Exception as e:
+        logger.exception(f"why_this_sheet_has_no_walls: this sheet's text could not be read: {e}")
+        return ""
+    if not text:
+        return ""
+
+    without = [
+        str(w).upper() for w in (setting(settings, "page.never_trace_walls_on", []) or [])
+        if str(w).upper() in text
+    ]
+    if not without:
+        return ""
+    if any(
+        str(w).upper() in text
+        for w in (setting(settings, "page.traces_walls_on", []) or [])
+    ):
+        return ""
+    named = without[0].title()
+    return (
+        f"This sheet is a {named}, so no walls were traced on it. The parallel lines on a "
+        "drawing of this kind are boundaries, setbacks, fences, driveways, battens and "
+        "gutter lines - none of them a wall of the building."
+    )
+
+
 def build_ink(page, scale, paths, settings: dict):
     """The binary image the walls are measured from, and where it came from.
 
@@ -177,6 +228,13 @@ def detect_walls(
     (Critical Rule 6).
     """
     diagnostics = {"line_source": None, "components": 0, "candidates": 0, "notes": []}
+
+    refusal = why_this_sheet_has_no_walls(page, settings)
+    if refusal:
+        diagnostics["notes"].append(refusal)
+        logger.info(f"walls: not traced on {sheet_name or 'this sheet'} - {refusal}")
+        return [], diagnostics
+
     if not scale.usable:
         diagnostics["notes"].append(
             "No length is measured from this sheet, because what one point of it "
