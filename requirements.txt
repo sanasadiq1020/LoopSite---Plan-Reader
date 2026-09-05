@@ -28,3 +28,11 @@ pytest>=8.0
 # The canonical model written as IFC, the format the construction industry
 # exchanges.
 ifcopenshell>=0.8.0
+
+# Plane geometry for the computer-vision plan reader: wall centrelines as
+# LineStrings, wall bands as Polygons, and the distance between an opening and
+# the wall it sits in. It arrived transitively with ifcopenshell before; it is
+# named here because the reader now depends on it directly, and a dependency
+# that is only ever installed by accident is one deployment away from being
+# absent. A range rather than a pin, for the reason given at the top of this file.
+shapely>=2.0,<3

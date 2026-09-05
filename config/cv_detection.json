@@ -1,0 +1,106 @@
+{
+  "_comment": "Everything the computer-vision plan reader is allowed to differ on, in one file. Nothing here is a fact about buildings or about drafting - those live in the code. These are the numbers an office may legitimately set differently. Every one of them is a measurement in millimetres of building, in points of paper, or a ratio: never a coordinate, a room name or a count taken from any particular drawing.",
+  "_units_note": "Two kinds of quantity live here and the difference matters. A value in MILLIMETRES describes the building and is turned into pixels through the scale measured off each sheet, so it means the same on a 1:50 detail and a 1:200 site plan. A value in POINTS describes the paper - AS 1100.301 states dash lengths and line weights on the paper - and is never scaled.",
+  "_render_note": "300 DPI is a quarter of a millimetre on the paper, which is finer than any line an office plots, and it puts about 8 pixels across the thinnest wall on a 1:100 sheet - enough for the band to be skeletonised reliably. The megapixel ceiling is a promise to the machine rather than to the drawing: drawing sizes are not bounded, an A0 sheet at 300 DPI is 140 megapixels, and on a small server that render is what ends the run. Past the ceiling the resolution is reduced and the reduction is logged - the sheet is never cropped, because cropping loses part of the drawing silently.",
+  "render_dpi": 300,
+  "max_megapixels": 40.0,
+  "noise": {
+    "_dash_note": "A roof extent, an eave, a boundary, a setback and a carport are drawn dashed, and none of them is a wall. The dash pattern the PDF states settles it where there is one - but measured on the plan sets in use there never is: all 5,595 paths on one floor plan report a solid pattern, including the roof extent that is plainly dashed on the page, because exporters emit dashes as separate short segments. So the shape of the run is read as well. Regularity is the part that matters: a wall face broken by a doorway is also a line in pieces, but it is two long pieces with one big gap, not eight short ones with seven equal gaps. Dash lengths are stated on the paper by AS 1100, so the piece-length ceiling is in POINTS and is never scaled.",
+    "use_stated_dash_pattern": true,
+    "detect_dashes_geometrically": true,
+    "dash_min_pieces": 4,
+    "dash_max_piece_length_pt": 12.0,
+    "dash_max_gap_to_piece": 3.0,
+    "dash_gap_regularity": 0.6,
+    "_weight_note": "AS 1100.301 has offices plot a structural outline heavier than an annotation line, so separating them by weight is sound in principle. In practice no fixed number of points can do it. Measured by drawn length, one office's floor plan carries 0.28 pt (48%), 0.37 pt (24%), 0.51 pt (18%) and 0.71 pt (10%) and draws its walls at the lightest of those; another carries 0.17 pt (66%), 0.42 pt (2%) and 1.36 pt (29%), where the heaviest lines are the drawing frame and the building itself is the lightest. A 0.35 pt rule deletes half the first sheet; an Otsu split deletes the whole building on the second. So 'dominant' is the default: the weight class carrying the most drawn length IS the drawing, and only what is plotted lighter than the drawing is an annotation line - a rule that cannot delete the drawing, because the drawing sets the threshold. Measured, it removes nothing on any of the three plan sets in use, which is the honest finding: on these drawings stroke weight does not separate structure from annotation, and the thickness of the two paired faces does. Options: 'dominant', 'otsu', 'off'. Setting thin_line_absolute_pt above zero overrides both with a fixed weight; check the wall count before and after if you do.",
+    "stroke_weight_split": "dominant",
+    "thin_line_absolute_pt": 0.0,
+    "min_heavy_share_of_length": 0.15
+  },
+  "scale": {
+    "_note": "A printed scale is a claim; a dimension figure printed against the line that measures it is evidence. Each figure gives one reading of how many millimetres of building one point of paper is worth, and the median across the sheet is taken. Measured on a real 1:100 floor plan, 61 of its 61 horizontal figures found their dimension line and the median came to 35.294 mm per point against a true 35.278 - 0.05% out.",
+    "dimension_min_mm": 100.0,
+    "dimension_max_mm": 100000.0,
+    "search_radius_text_heights": 4.0,
+    "_evidence_note": "The consensus itself has to carry the evidence, not merely the pile it was drawn from. Three figures agreeing out of six is a coincidence; requiring only that six were tried let a detail sheet report a scale on that basis. And overturning a printed scale needs more evidence than confirming one: an elevation sheet prints a handful of height figures ('2100 TO HEAD HT'), four of them agreed with each other, and they would have set aside a perfectly correct 1:100 title block. A sheet re-plotted from A3 to A4 is real and common, so the capability stays - but it takes a proper number of figures in near-unanimous agreement.",
+    "min_samples": 6,
+    "agreement_pct": 5.0,
+    "consensus_share": 0.5,
+    "min_samples_to_contradict_printed": 12,
+    "contradiction_agreement_share": 0.9,
+    "fall_back_to_printed_scale": true
+  },
+  "openings": {
+    "_note": "A door or window is found before any wall gap is closed, because closing bridges a gap the width of the thinnest wall and a door gap is exactly that size. Bridge it and the wall reads as continuous, the door is gone, and nothing downstream can know it was there.",
+    "_swing_note": "A hinged door is drawn as its swing, and the arc's radius IS the door leaf - so a plan carries its door widths in its geometry whether or not it prints a schedule. A swing is recognised by shape, never by a particular size: a curved path whose box is about as wide as it is tall. One much wider than it is tall is a leader, a revision cloud or lettering set on a curve.",
+    "door_min_width_mm": 600.0,
+    "door_max_width_mm": 2400.0,
+    "arc_squareness": 1.6,
+    "_hough_note": "Only ever reached on a sheet whose own geometry holds no arcs AND whose drawing really is an embedded picture - reading the page costs a render and a Hough transform, and an elevation with no doors on it should pay for neither. Asked to find circles on a floor plan, HoughCircles proposes thousands: every basin, every pan, every cooktop burner, every letter O. Measured on one sheet, 4,809 proposals. What makes them usable is that a proposal is not an answer: each is put back to the image as a question with a checkable answer - is there ink along this circle, and through how many UNBROKEN degrees? A swing is a curve and sweeps one continuous quarter turn; a basin sweeps the whole way round; and counting scattered ink that merely adds up to a quarter read the four corners of a plain rectangular building as doors.",
+    "hough_when_no_vector_arcs": true,
+    "hough_accumulator_ratio": 1.5,
+    "arc_min_sweep_degrees": 55.0,
+    "arc_search_radius_mm": 60.0,
+    "_mark_note": "Which letters an office puts in front of its door and window numbers is exactly the sort of thing one office does differently from the next, so the prefixes are configuration and never a list in code.",
+    "mark_prefixes": {
+      "door": [
+        "D",
+        "SD",
+        "BD",
+        "GD",
+        "CD",
+        "FD"
+      ],
+      "window": [
+        "W",
+        "AW",
+        "DH",
+        "FW",
+        "SW",
+        "HW"
+      ]
+    },
+    "_glazing_note": "A wall is solid, so nothing is drawn inside a wall. A window is not solid: between the wall's two faces the drawing puts the glass, the frame and the sashes. How many lines are in there says which window it is - three or more are the overlapping sashes of a slider, two are a fixed pane and its frame.",
+    "window_min_width_mm": 300.0,
+    "window_max_width_mm": 6000.0,
+    "glazing_min_lines": 2,
+    "glazing_max_lines": 6,
+    "_padding_note": "A swing's box stops at the leaf and the jamb is a little beyond it, so the mask painted onto the plan image is padded by this much building.",
+    "mask_padding_mm": 40.0,
+    "_hough_cost_note": "A Hough transform over a 17 megapixel sheet searching radii of 71 to 283 pixels takes 280 SECONDS, and it is only ever guessing at where to look. Proposing at a quarter of the resolution takes 1.9 seconds and every real door still survives, because the check is done at full size where the precision matters. The reduction is computed from how many pixels a swing needs to be recognisable as a circle at all, not from the render resolution - so a 1:200 sheet, where a door is already small, is not reduced.",
+    "hough_proposal_radius_px": 18.0,
+    "picture_share_of_sheet": 0.1
+  },
+  "wall": {
+    "_thickness_note": "A wall band is this thick, measured by distance transform: every pixel is labelled with how far it is from the nearest paper, so on the centre of a wall that value is exactly half its thickness. Below the minimum the band is a lining, a hatch boundary or a dimension line; above the maximum it is a filled panel rather than a wall.",
+    "min_thickness_mm": 70.0,
+    "max_thickness_mm": 320.0,
+    "_length_note": "Anything shorter than the floor is furniture, hatching, a door swing or a fragment - never a wall. The slenderness rule sits beside it and is worth having, because it holds at any scale and on any size of building where a length floor cannot: two lines 230 mm apart that run together for 230 mm are a square, and a square is a column, a symbol or a fragment.",
+    "min_length_mm": 600.0,
+    "min_length_to_thickness": 1.5,
+    "_spur_note": "Closing a wall's two faces into a solid band rounds its corners, and thinning a rounded corner grows a whisker off the centreline. Each whisker is a run with one free end, and left in they are counted as walls and they break the wall they hang off into pieces. A run is a spur when it is short AND has an end no other run reaches - a short run joined at both ends is a nib, a pier or the stub between two doorways, and those are real.",
+    "spur_mm": 600.0,
+    "_carry_on_note": "A skeleton is split at every junction, because running through a T would join two different walls into one line. But a wall does not stop at a T - the partition stops, the wall carries on - so the two pieces either side are one wall. Two runs carry on from each other when they leave the meeting in nearly opposite directions. At a corner they leave at right angles and stay two walls, which is right: a wall running north and a wall running east are two walls.",
+    "carry_on_angle_degrees": 25.0,
+    "_closing_note": "A wall face is broken wherever another line crosses it and wherever a hatch stroke lands on it. Closing with a kernel the width of the thinnest wall joins a wall's own two faces without joining two different walls, because two different walls are a room apart. The kernel is computed from the calibrated scale on every sheet - 8 pixels on a 1:100 sheet at 300 DPI and 4 on a 1:200 one - so this is a share of the thinnest wall, never a pixel count.",
+    "closing_share_of_thinnest_wall": 1.0,
+    "_simplify_note": "How far a simplified centreline may depart from the traced one, in millimetres of building. Larger straightens a wall that was traced with a wobble; too large cuts a real corner off.",
+    "simplify_mm": 30.0,
+    "_fill_note": "Australian plans black their walls in, hatch them at 45 degrees, or simply outline them, and which one an office uses is a habit rather than a fact about the wall. So a fill or a hatch is RECORDED and raises the confidence - it is never required. Requiring it would delete every wall on a plan set that outlines its walls, which is most of them. A solid fill is not hatching: a diagonal kernel fits inside a blacked-in wall as happily as inside a hatched one, which reported 45 of 66 outlined walls as hatched. Hatching is diagonal strokes with paper between them, so it needs the diagonals to carry most of the band's ink AND the band not to be solid.",
+    "hatch_angle_degrees": [
+      45.0,
+      135.0
+    ],
+    "solid_fill_share": 0.85,
+    "hatch_share_of_ink": 0.5,
+    "_picture_note": "A plan set can be published as embedded images, with only its frame and title block as real drawn paths - one of the sets in use has 164 drawn segments on a sheet whose whole building is pixels. Counting paths, that sheet looks like a vector drawing and comes back with one wall on it. So the switch is decided on what the reading PRODUCED, not on how much geometry was there: a building is a closed shape, so it takes at least this many walls, and below that the geometry has not traced a building whatever it returned. The sheet's own line work is always tried first because it is exact, and the fuller of the two readings wins, so exact geometry is never displaced by pixels that found less.",
+    "min_walls_for_vector": 4
+  },
+  "crosslink": {
+    "_note": "An opening belongs to the wall it is nearest, measured to the wall BAND rather than to its centreline - a centreline sits half a thickness inside the wall, so a door drawn hard against its own jamb is already 45 to 115 mm from it before it has moved. Where two walls are equally close the opening is reported unplaced with that reason: a wrong link is worse than none, because every later stage trusts it.",
+    "_reach_note": "Both allowances have the openings mask padding added to them, because this reader made that gap itself: Step 3 paints every opening white before the walls are closed, so by the time a wall band exists there is a hole in it exactly where the opening is.",
+    "max_offset_mm": 200.0,
+    "_mark_note": "A mark is printed BESIDE its opening and a symbol is drawn ON it, which is a drafting convention rather than a tuning value: a D12 commonly sits inside the room on a leader, while the swing it labels is drawn in the wall itself. Measuring both to the same allowance reported real, marked doors as having no wall near them.",
+    "mark_reach_mm": 1000.0
+  }
+}
