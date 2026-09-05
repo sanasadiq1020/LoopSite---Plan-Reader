@@ -1009,3 +1009,85 @@ def test_a_pair_whose_run_misses_the_wall_is_not_injected(config):
     }
     cvwalls._inject_face_gaps([wall], [elsewhere], mm_per_point, config)
     assert wall["gaps_pt"] == []
+
+
+# --------------------------------------------------------------------------
+# Collinear merging of traced runs
+# --------------------------------------------------------------------------
+
+def _run(points, thickness=None):
+    import numpy as np
+
+    entry = {
+        "points": np.array(points, dtype=np.int32),
+        "fill_share": 0.5,
+        "drawn_as": "outline",
+    }
+    if thickness is not None:
+        entry["thickness_mm"] = thickness
+    return entry
+
+
+def test_collinear_pieces_of_one_wall_become_one_run(config, scale):
+    """A 14.7 m wall on a sheet read as a picture arrives as a dozen pieces,
+    and each one dies at the length floor before anything can join them."""
+    import numpy as np
+
+    distance = np.full((400, 4000), 6.0, dtype=np.float32)
+    pieces = [_run([[0, 200], [400, 200]]), _run([[600, 201], [1200, 201]])]
+    merged = wallgeometry._merge_collinear_runs(pieces, distance, scale, config)
+    assert len(merged) == 1
+    points = merged[0]["points"]
+    assert int(points[:, 0].min()) == 0 and int(points[:, 0].max()) == 1200
+
+
+def test_two_walls_on_different_lines_are_not_merged(config, scale):
+    """Two walls of a building are a room apart, not a few points."""
+    import numpy as np
+
+    distance = np.full((900, 4000), 6.0, dtype=np.float32)
+    pieces = [_run([[0, 200], [400, 200]]), _run([[600, 800], [1200, 800]])]
+    assert len(wallgeometry._merge_collinear_runs(pieces, distance, scale, config)) == 2
+
+
+def test_a_run_that_bends_is_left_alone(config, scale):
+    """It is already more than one straight run, and joining it to anything
+    would invent a corner."""
+    import numpy as np
+
+    distance = np.full((900, 900), 6.0, dtype=np.float32)
+    bent = _run([[0, 100], [400, 100], [400, 500]])
+    merged = wallgeometry._merge_collinear_runs([bent], distance, scale, config)
+    assert len(merged) == 1
+    assert len(merged[0]["points"]) == 3, "the bend is preserved"
+
+
+def test_merging_can_be_switched_off(config, scale):
+    import numpy as np
+
+    off = cv_settings._deep_merge(config, {"wall": {"merge_collinear_runs": False}})
+    distance = np.full((400, 4000), 6.0, dtype=np.float32)
+    pieces = [_run([[0, 200], [400, 200]]), _run([[600, 201], [1200, 201]])]
+    assert len(wallgeometry._merge_collinear_runs(pieces, distance, scale, off)) == 2
+
+
+def test_thickness_comes_from_the_paired_faces_where_there_is_one(config, scale):
+    """Closing joins a wall to whatever ink is drawn against it, so the band is
+    wider than the wall - eleven of one sheet's longest walls were thrown away
+    as 322 to 779 mm thick. The faces measure the real thickness."""
+    run = {"axis": "h", "position": scale.px_from_pt(100.0), "start": 0.0, "end": 1000.0}
+    pairs = [{
+        "axis": "h", "position": 100.0, "thickness_mm": 230.0,
+        "start": 0.0, "end": 300.0, "face_positions": [97.0, 103.0], "gaps": [],
+    }]
+    assert wallgeometry._thickness_from_the_faces(run, pairs, scale, config) == 230.0
+
+
+def test_no_pair_means_the_band_keeps_its_own_measurement(config, scale):
+    run = {"axis": "h", "position": scale.px_from_pt(100.0), "start": 0.0, "end": 1000.0}
+    far = [{
+        "axis": "h", "position": 400.0, "thickness_mm": 230.0,
+        "start": 0.0, "end": 300.0, "face_positions": [397.0, 403.0], "gaps": [],
+    }]
+    assert wallgeometry._thickness_from_the_faces(run, far, scale, config) is None
+    assert wallgeometry._thickness_from_the_faces(run, [], scale, config) is None

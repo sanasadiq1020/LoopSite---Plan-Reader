@@ -268,7 +268,9 @@ def detect_walls(
             page, scale, paths, settings, openings_mask, None
         )
         diagnostics["face_pairs"] = vector_breaks
-        walls, components = _measure(page, scale, ink, source, settings, mask, sheet_name)
+        walls, components = _measure(
+            page, scale, ink, source, settings, mask, sheet_name, vector_breaks
+        )
 
         # **The switch is decided on what the reading produced, not on how much
         # geometry was there.** A plan set can be published as embedded images
@@ -297,7 +299,7 @@ def detect_walls(
             )
             from_page, page_components = _measure(
                 page, scale, imaging.ink_from_rulings(page, scale, page_rulings),
-                "page_image", settings, page_mask, sheet_name,
+                "page_image", settings, page_mask, sheet_name, page_breaks,
             )
             if len(from_page) > len(walls):
                 walls, components, source = from_page, page_components, "page_image"
@@ -355,7 +357,7 @@ def _mask_with_the_breaks(page, scale, paths, settings, openings_mask, rulings):
         return punched, pairs
 
 
-def _measure(page, scale, ink, source, settings, openings_mask, sheet_name):
+def _measure(page, scale, ink, source, settings, openings_mask, sheet_name, face_pairs=None):
     """Closing, distance transform, contours and centrelines, over one image."""
     import cv2
     import numpy as np
@@ -401,13 +403,13 @@ def _measure(page, scale, ink, source, settings, openings_mask, sheet_name):
 
     return _walls_from_band(
         band, distance, ink, scale, settings, sheet_name, source, thickest_px,
-        openings_mask,
+        openings_mask, face_pairs,
     )
 
 
 def _walls_from_band(
     band, distance, ink, scale, settings, sheet_name, source, thickest_px,
-    openings_mask=None,
+    openings_mask=None, face_pairs=None,
 ):
     """Outlines by contour, centrelines by thinning, one component at a time."""
     import cv2
@@ -419,6 +421,7 @@ def _walls_from_band(
     simplify_px = max(1.0, scale.px_from_mm(number(settings, "wall.simplify_mm", 30.0)))
 
     walls = []
+    gathered = []
     # **A band too small to hold the shortest wall the office builds cannot
     # hold a wall.** The shortest wall is 600 mm long and the thinnest is
     # 70 mm, so no wall band covers less than their product - and a sheet read
@@ -509,42 +512,237 @@ def _walls_from_band(
         )
         traced = _join_runs_that_carry_on(traced, scale, settings)
 
+        # **Collected, not built yet.** A wall of a building is one thing, but
+        # on a sheet read as a picture it is traced as several - and the pieces
+        # land in different connected components, because the band is severed
+        # wherever the picture's ink thinned. Building each piece into a wall
+        # here would put every one of them through the length floor first, and
+        # a 0.5 m piece of a 14.7 m wall does not survive that. So the runs of
+        # every component are gathered, put back together, and only then judged.
         for points in traced:
-            if len(points) < 2:
-                continue
-            simplified = cv2.approxPolyDP(
-                points.reshape(-1, 1, 2).astype(np.int32), simplify_px, False
-            ).reshape(-1, 2)
-            if len(simplified) < 2:
-                continue
+            if len(points) >= 2:
+                gathered.append(
+                    {
+                        "points": points + np.array(offset, dtype=points.dtype),
+                        "fill_share": fill_share,
+                        "drawn_as": drawn_as,
+                    }
+                )
 
-            thickness_px = _thickness_along(distance, points, offset)
-            thickness_mm = scale.mm_from_px(thickness_px * 2.0)
-            if not (
-                number(settings, "wall.min_thickness_mm", 70.0)
-                <= thickness_mm
-                <= number(settings, "wall.max_thickness_mm", 320.0)
-            ):
-                continue
+    for run in _merge_collinear_runs(gathered, distance, scale, settings):
+        points = run["points"]
+        simplified = cv2.approxPolyDP(
+            points.reshape(-1, 1, 2).astype(np.int32), simplify_px, False
+        ).reshape(-1, 2)
+        if len(simplified) < 2:
+            continue
 
-            wall = _wall_from_points(
-                simplified, offset, scale, thickness_mm, sheet_name, source,
-                fill_share, drawn_as, len(walls) + 1,
+        thickness_mm = run.get("thickness_mm")
+        if thickness_mm is None:
+            thickness_mm = scale.mm_from_px(
+                _thickness_along(distance, points, (0, 0)) * 2.0
             )
-            if wall is None:
-                continue
-            if wall.length_mm < shortest_mm:
-                continue
-            # A wall is longer than it is thick. Two lines 230 mm apart running
-            # together for 230 mm are a square, and a square is a column, a
-            # symbol or a fragment - never a wall. This holds at any scale and
-            # on any size of building, which is what makes it worth having
-            # beside a length floor.
-            if wall.length_mm < slenderness * wall.thickness_mm:
-                continue
-            walls.append(wall)
+        # **A wall's thickness is the distance between its two drawn faces.**
+        # The band is only a stand-in for that, and on a sheet read as a
+        # picture it is a poor one: closing with a kernel the width of the
+        # thickest wall joins the wall to whatever ink is drawn against it -
+        # a fitting, a hatch, a run of joinery - and the band comes out wider
+        # than the wall. Measured on one such sheet, eleven of its longest
+        # walls were thrown away as "too thick" at 322 to 779 mm, and among
+        # them were its 29.6 m, 28.5 m and 17.7 m runs. The faces were paired
+        # before any of that (``breaks.py``) and they measure the real
+        # thickness, so where a run lies along a pair, the pair's figure is
+        # used and the band's is set aside.
+        from_faces = _thickness_from_the_faces(run, face_pairs, scale, settings)
+        if from_faces:
+            thickness_mm = from_faces
+        if not (
+            number(settings, "wall.min_thickness_mm", 70.0)
+            <= thickness_mm
+            <= number(settings, "wall.max_thickness_mm", 320.0)
+        ):
+            continue
+
+        wall = _wall_from_points(
+            simplified, (0, 0), scale, thickness_mm, sheet_name, source,
+            run["fill_share"], run["drawn_as"], len(walls) + 1,
+        )
+        if wall is None:
+            continue
+        if wall.length_mm < shortest_mm:
+            continue
+        # A wall is longer than it is thick. Two lines 230 mm apart running
+        # together for 230 mm are a square, and a square is a column, a symbol
+        # or a fragment - never a wall. This holds at any scale and on any size
+        # of building, which is what makes it worth having beside a length floor.
+        if wall.length_mm < slenderness * wall.thickness_mm:
+            continue
+        walls.append(wall)
 
     return walls, count - 1
+
+
+def _thickness_from_the_faces(run: dict, face_pairs, scale, settings: dict):
+    """The thickness of the paired faces this run lies along, where there is one.
+
+    Matched the same way a gap is matched to a wall: the same direction, the
+    same line within a lateral tolerance on the paper, and runs that actually
+    overlap. Returns None where no pair covers this run, so the band's own
+    measurement stands.
+    """
+    if not face_pairs or "axis" not in run:
+        return None
+    if not setting(settings, "wall.thickness_from_the_faces", True):
+        return None
+    lateral = scale.px_from_pt(
+        number(settings, "wall.collinear_lateral_tolerance_pt", 3.5)
+    )
+    best, nearest = None, None
+    for pair in face_pairs:
+        if pair["axis"] != run["axis"]:
+            continue
+        # The pair is in points; the run is in pixels of the rendered page.
+        position = scale.px_from_pt(pair["position"] - _origin_along(scale, run["axis"]))
+        if abs(position - run["position"]) > lateral:
+            continue
+        start = scale.px_from_pt(pair["start"] - _origin_across(scale, run["axis"]))
+        end = scale.px_from_pt(pair["end"] - _origin_across(scale, run["axis"]))
+        overlap = min(end, run["end"]) - max(start, run["start"])
+        if overlap <= 0:
+            continue
+        if best is None or overlap > best:
+            best, nearest = overlap, pair["thickness_mm"]
+    return nearest
+
+
+def _origin_along(scale, axis: str) -> float:
+    """The page origin on the axis a run's position is measured across."""
+    return scale.origin[1] if axis == "h" else scale.origin[0]
+
+
+def _origin_across(scale, axis: str) -> float:
+    """The page origin on the axis a run's length is measured along."""
+    return scale.origin[0] if axis == "h" else scale.origin[1]
+
+
+def _merge_collinear_runs(gathered: list, distance, scale, settings: dict) -> list:
+    """Pieces of one wall, traced separately, put back into one run.
+
+    **A wall is one thing; a picture traces it as several.** On a sheet whose
+    drawing is an embedded image the band is severed wherever the ink thinned,
+    wherever a fitting was drawn against the wall and wherever the picture was
+    compressed - so a 14.7 m external wall arrives as a dozen pieces, and those
+    pieces land in *different connected components*, which is why nothing
+    downstream could put them together. Measured on one such sheet: the face
+    pairing found the real walls as 416-point runs while the tracing returned
+    13 to 22 point fragments, so the gaps read off those faces had no wall long
+    enough to be written onto - 35 real gaps found and four written.
+
+    Two pieces are the same wall when they run the same way, sit on the same
+    line, and measure the same thickness. The lateral tolerance is stated on
+    the **paper** rather than in millimetres of building, because what is being
+    allowed for is how far a skeleton wanders inside a band whose width varies -
+    a property of the tracing, not of the building.
+
+    A piece that bends is left alone. It is already more than one straight run,
+    and joining it to anything would invent a corner.
+    """
+    import numpy as np
+
+    if not gathered or not setting(settings, "wall.merge_collinear_runs", True):
+        return gathered
+
+    lateral = scale.px_from_pt(
+        number(settings, "wall.collinear_lateral_tolerance_pt", 3.5)
+    )
+    widest_gap = scale.px_from_mm(number(settings, "wall.collinear_max_gap_mm", 6000.0))
+    agreement = number(settings, "wall.thickness_agreement_share", 0.5)
+
+    straight, bent = [], []
+    for run in gathered:
+        points = run["points"]
+        spread_x = float(points[:, 0].max() - points[:, 0].min())
+        spread_y = float(points[:, 1].max() - points[:, 1].min())
+        if spread_y <= lateral and spread_x > spread_y:
+            run["axis"], run["position"] = "h", float(points[:, 1].mean())
+            run["start"], run["end"] = float(points[:, 0].min()), float(points[:, 0].max())
+        elif spread_x <= lateral and spread_y > spread_x:
+            run["axis"], run["position"] = "v", float(points[:, 0].mean())
+            run["start"], run["end"] = float(points[:, 1].min()), float(points[:, 1].max())
+        else:
+            bent.append(run)
+            continue
+        run["thickness_mm"] = scale.mm_from_px(
+            _thickness_along(distance, points, (0, 0)) * 2.0
+        )
+        straight.append(run)
+
+    merged = []
+    for axis in ("h", "v"):
+        along = sorted(
+            (r for r in straight if r["axis"] == axis),
+            key=lambda r: (r["position"], r["start"]),
+        )
+        band = []
+        for run in along:
+            if band and run["position"] - band[-1]["position"] <= lateral:
+                band.append(run)
+                continue
+            merged.extend(_join_along(band, widest_gap, agreement, axis, np))
+            band = [run]
+        merged.extend(_join_along(band, widest_gap, agreement, axis, np))
+
+    if len(merged) < len(straight):
+        logger.info(
+            f"walls: {len(straight)} traced runs merged into {len(merged)} continuous walls"
+        )
+    return merged + bent
+
+
+def _join_along(band: list, widest_gap: float, agreement: float, axis: str, np) -> list:
+    """One band's runs, joined where they carry on and their thickness agrees."""
+    if not band:
+        return []
+    band = sorted(band, key=lambda r: r["start"])
+    joined, run = [], [band[0]]
+    for piece in band[1:]:
+        thickness = max(min(piece["thickness_mm"], run[-1]["thickness_mm"]), 1.0)
+        carries_on = (
+            piece["start"] - run[-1]["end"] <= widest_gap
+            and abs(piece["thickness_mm"] - run[-1]["thickness_mm"])
+            <= thickness * agreement
+        )
+        if carries_on:
+            run.append(piece)
+            continue
+        joined.append(_one_run(run, axis, np))
+        run = [piece]
+    joined.append(_one_run(run, axis, np))
+    return joined
+
+
+def _one_run(pieces: list, axis: str, np) -> dict:
+    """The pieces of one wall as a single straight centreline."""
+    if len(pieces) == 1:
+        return pieces[0]
+    start = min(p["start"] for p in pieces)
+    end = max(p["end"] for p in pieces)
+    position = sum(p["position"] for p in pieces) / len(pieces)
+    thickness = sum(p["thickness_mm"] for p in pieces) / len(pieces)
+    if axis == "h":
+        points = np.array([[start, position], [end, position]], dtype=np.int32)
+    else:
+        points = np.array([[position, start], [position, end]], dtype=np.int32)
+    return {
+        "points": points,
+        "fill_share": max(p["fill_share"] for p in pieces),
+        "drawn_as": pieces[0]["drawn_as"],
+        "axis": axis,
+        "position": position,
+        "start": start,
+        "end": end,
+        "thickness_mm": thickness,
+    }
 
 
 def _thinning_divisor(shape, thinnest_px: float, settings: dict) -> int:
