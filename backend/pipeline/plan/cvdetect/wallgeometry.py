@@ -229,7 +229,7 @@ def detect_walls(
     """
     diagnostics = {
         "line_source": None, "components": 0, "candidates": 0,
-        "notes": [], "break_boxes": [],
+        "notes": [], "face_pairs": [],
     }
 
     refusal = why_this_sheet_has_no_walls(page, settings)
@@ -267,7 +267,7 @@ def detect_walls(
         mask, vector_breaks = _mask_with_the_breaks(
             page, scale, paths, settings, openings_mask, None
         )
-        diagnostics["break_boxes"] = vector_breaks
+        diagnostics["face_pairs"] = vector_breaks
         walls, components = _measure(page, scale, ink, source, settings, mask, sheet_name)
 
         # **The switch is decided on what the reading produced, not on how much
@@ -301,7 +301,7 @@ def detect_walls(
             )
             if len(from_page) > len(walls):
                 walls, components, source = from_page, page_components, "page_image"
-                diagnostics["break_boxes"] = page_breaks
+                diagnostics["face_pairs"] = page_breaks
                 diagnostics["notes"].append(
                     "This sheet stores its drawing as a picture rather than as line work, "
                     "so its walls were measured from the page image. They are less exact "
@@ -326,40 +326,33 @@ def detect_walls(
 def _mask_with_the_breaks(page, scale, paths, settings, openings_mask, rulings):
     """The openings mask, with every shared gap in the faces punched out too.
 
-    Returns ``(mask, boxes)`` - the mask Step 4 subtracts from the ink before
-    closing, and the boxes themselves, because the boxes are evidence in their
-    own right and are carried onto the wall records afterwards. Never raises: a
+    Returns ``(mask, pairs)`` - the mask Step 4 subtracts from the ink before
+    closing, and the paired faces themselves, because a pair carries its band,
+    its run and its gaps, and those gaps are injected onto the wall centrelines
+    afterwards. Never raises: a
     sheet whose faces cannot be read keeps whatever mask Step 3 gave it, which
     is what the reader did before this existed (Critical Rule 6).
     """
     import cv2
 
+    pairs = breaks.paired_faces_with_gaps(page, scale, paths, settings, rulings=rulings)
     if not setting(settings, "breaks.punch_before_closing", True):
-        # Kept as evidence even when it is not punched: the gaps are still
-        # placed on the walls afterwards, where the opening reader can weigh
-        # them. What is switched off is only the cutting of the mask.
-        try:
-            return openings_mask, breaks.boxes_for_the_mask(
-                page, scale, paths, settings, rulings=rulings
-            )
-        except Exception as e:
-            logger.exception(f"the breaks in this sheet's faces could not be read: {e}")
-            return openings_mask, []
-    try:
-        boxes = breaks.boxes_for_the_mask(page, scale, paths, settings, rulings=rulings)
-    except Exception as e:
-        logger.exception(f"the breaks in this sheet's faces could not be read: {e}")
-        return openings_mask, []
+        # The pairs are still reported: their gaps are injected onto the wall
+        # centrelines afterwards, which is where they actually do their work.
+        # What is switched off is only the cutting of the mask.
+        return openings_mask, pairs
+
+    boxes = breaks.boxes_for_the_mask(pairs, scale, settings)
     if not boxes:
-        return openings_mask, []
+        return openings_mask, pairs
 
     punched = imaging.draw_mask(page, scale, boxes, 0.0)
     if openings_mask is None:
-        return punched, boxes
+        return punched, pairs
     try:
-        return cv2.bitwise_or(openings_mask, punched), boxes
+        return cv2.bitwise_or(openings_mask, punched), pairs
     except Exception:
-        return punched, boxes
+        return punched, pairs
 
 
 def _measure(page, scale, ink, source, settings, openings_mask, sheet_name):

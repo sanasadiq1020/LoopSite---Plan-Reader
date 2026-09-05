@@ -346,6 +346,16 @@ fragmentation gap in any of them becomes a "shared gap": measured on one sheet
 read as a picture, 69 of them, which punched so much out of the mask that the
 sheet fell from 37 walls to 16.
 
+**The gaps are injected onto the centrelines directly.** A paired face carries
+the same three things a wall does — the band it occupies, the run it covers and
+the breaks in it — so each pair's gaps are written onto the wall running along
+the same line, matched by band and run rather than inferred from the shape of
+the closed band. The band a wall was closed from is *not* the pair that revealed
+its break: closing picks up a lining or a return on one side and shifts the band
+across, and measured on one sheet every real pair missed its wall by 3.0–3.7
+points against a 2.5 point reach, so 35 real gaps were found and none written.
+The tolerance is a share of the wall's own thickness, swept to 1.5.
+
 **Cutting the gaps out of the mask is off by default, and that is measured.**
 Cutting is the obvious way to stop the morphology welding a doorway shut, and
 it does raise the breaks reaching a wall — 18 to 44 on a 23-sheet set. But it
@@ -415,7 +425,7 @@ is never cropped, because cropping loses part of the drawing silently.
 
 ## Tests
 
-`backend/tests/test_cvdetect.py` — 77 tests, each naming the mistake it
+`backend/tests/test_cvdetect.py` — 79 tests, each naming the mistake it
 prevents rather than restating what the code does. They include an end-to-end
 run against a **building drawn for the purpose**: a 12 m × 8 m rectangle in
 230 mm wall at 1:100, read back and compared with what was drawn. Scoring a

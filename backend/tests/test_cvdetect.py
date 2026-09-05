@@ -863,9 +863,12 @@ def test_a_break_is_read_from_the_faces_of_a_wall(config, scale):
         rulings["h_widths"].extend([0.5, 0.5])
 
     found = breaks.shared_gaps(rulings, scale, config)
-    assert len(found) == 1, "both faces stop together, so that is one break"
-    x0, _y0, x1, _y1 = found[0]
-    assert (x1 - x0) * scale.mm_per_point == pytest.approx(900.0, abs=200.0)
+    assert len(found) == 1, "one pair of faces"
+    gaps = found[0]["gaps"]
+    assert len(gaps) == 1, "both faces stop together, so that is one break"
+    low, high = gaps[0]
+    assert (high - low) * scale.mm_per_point == pytest.approx(900.0, abs=200.0)
+    assert found[0]["thickness_mm"] == pytest.approx(230.0, abs=30.0)
 
 
 def test_a_break_in_one_face_alone_is_not_an_opening(config, scale):
@@ -926,9 +929,10 @@ def test_the_reduction_never_takes_a_wall_below_a_few_pixels(config):
     assert wallgeometry._thinning_divisor((9000, 9000), 4.0, config) == 1
 
 
-def test_the_breaks_are_placed_on_the_wall_they_interrupt(config):
-    """A break box knows the stretch of paper both faces stopped over; a wall
-    knows its band and its run. That is what openingevidence reads."""
+def test_a_face_pairs_gaps_are_injected_onto_the_matching_centreline(config):
+    """Direct injection: the morphology cannot be relied on to leave a doorway
+    open, so the gaps are read off the two drawn faces and written straight onto
+    the wall that runs along the same line."""
     from pipeline.plan import cvwalls
 
     mm_per_point = AT_1_TO_100
@@ -938,19 +942,70 @@ def test_the_breaks_are_placed_on_the_wall_they_interrupt(config):
         "start_point_pt": [0.0, 100.0], "end_point_pt": [800.0, 100.0],
         "face_positions_pt": [100.0 - half, 100.0 + half],
     }
-    box = [300.0, 100.0 - half, 330.0, 100.0 + half]
-    cvwalls._put_the_breaks_on_the_walls([wall], [box], mm_per_point, config)
-    assert len(wall["gaps_pt"]) == 1
+    pair = {
+        "axis": "h", "position": 100.0, "thickness_mm": 230.0,
+        "face_positions": [100.0 - half, 100.0 + half],
+        "start": 0.0, "end": 800.0,
+        "gaps": [(300.0, 330.0)],
+    }
+    cvwalls._inject_face_gaps([wall], [pair], mm_per_point, config)
+    assert wall["gaps_pt"] == [[300.0, 330.0]]
 
 
-def test_a_break_far_from_any_wall_is_not_placed(config):
+def test_a_gap_is_clipped_to_the_wall_it_is_written_on(config):
+    """A wall traced shorter than its faces must not claim a gap beyond its end."""
     from pipeline.plan import cvwalls
 
     mm_per_point = AT_1_TO_100
+    half = (230.0 / mm_per_point) / 2.0
     wall = {
-        "runs_along": "x", "thickness_mm": 90.0, "gaps_pt": [],
-        "start_point_pt": [0.0, 100.0], "end_point_pt": [800.0, 100.0],
-        "face_positions_pt": [98.0, 102.0],
+        "runs_along": "x", "thickness_mm": 230.0, "gaps_pt": [],
+        "start_point_pt": [0.0, 100.0], "end_point_pt": [305.0, 100.0],
+        "face_positions_pt": [100.0 - half, 100.0 + half],
     }
-    cvwalls._put_the_breaks_on_the_walls([wall], [[300.0, 600.0, 330.0, 610.0]], mm_per_point, config)
+    pair = {
+        "axis": "h", "position": 100.0, "thickness_mm": 230.0,
+        "face_positions": [100.0 - half, 100.0 + half],
+        "start": 0.0, "end": 800.0, "gaps": [(300.0, 400.0)],
+    }
+    cvwalls._inject_face_gaps([wall], [pair], mm_per_point, config)
+    assert wall["gaps_pt"] == [], "clipped to 176 mm, under the smallest opening"
+
+
+def test_a_pair_on_a_different_line_is_not_injected(config):
+    """Two walls of a building are a room apart, not a thickness."""
+    from pipeline.plan import cvwalls
+
+    mm_per_point = AT_1_TO_100
+    half = (230.0 / mm_per_point) / 2.0
+    wall = {
+        "runs_along": "x", "thickness_mm": 230.0, "gaps_pt": [],
+        "start_point_pt": [0.0, 100.0], "end_point_pt": [800.0, 100.0],
+        "face_positions_pt": [100.0 - half, 100.0 + half],
+    }
+    far = {
+        "axis": "h", "position": 400.0, "thickness_mm": 230.0,
+        "face_positions": [400.0 - half, 400.0 + half],
+        "start": 0.0, "end": 800.0, "gaps": [(300.0, 330.0)],
+    }
+    cvwalls._inject_face_gaps([wall], [far], mm_per_point, config)
+    assert wall["gaps_pt"] == []
+
+
+def test_a_pair_whose_run_misses_the_wall_is_not_injected(config):
+    from pipeline.plan import cvwalls
+
+    mm_per_point = AT_1_TO_100
+    half = (230.0 / mm_per_point) / 2.0
+    wall = {
+        "runs_along": "x", "thickness_mm": 230.0, "gaps_pt": [],
+        "start_point_pt": [0.0, 100.0], "end_point_pt": [200.0, 100.0],
+        "face_positions_pt": [100.0 - half, 100.0 + half],
+    }
+    elsewhere = {
+        "axis": "h", "position": 100.0, "thickness_mm": 230.0,
+        "face_positions": [100.0 - half, 100.0 + half],
+        "start": 500.0, "end": 900.0, "gaps": [(600.0, 640.0)],
+    }
+    cvwalls._inject_face_gaps([wall], [elsewhere], mm_per_point, config)
     assert wall["gaps_pt"] == []

@@ -119,6 +119,7 @@ _DEFAULTS = {
     },
     "breaks": {
         "punch_before_closing": False,
+        "band_match_share_of_thickness": 1.5,
         "min_face_overlap_share": 0.5,
         "min_wall_each_side_mm": 300.0,
         "collinear_tolerance_pt": 0.6,

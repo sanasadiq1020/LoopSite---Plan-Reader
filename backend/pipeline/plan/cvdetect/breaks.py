@@ -110,7 +110,7 @@ def shared_gaps(rulings: dict, scale, settings: dict) -> list:
     paired = _legacy_shaped(settings, mm_per_point)
     standards = paired["walls"]["nominal_thickness_mm"]
 
-    boxes = []
+    found = []
     for axis, key, widths_key in (("h", "h", "h_widths"), ("v", "v", "v_widths")):
         segments = rulings.get(key) or []
         if len(segments) < 2:
@@ -131,17 +131,43 @@ def shared_gaps(rulings: dict, scale, settings: dict) -> list:
 
         for pair in pairs:
             low_face, high_face = sorted(pair["face_positions"])
-            separation = high_face - low_face
-            for low, high in pair.get("gaps") or []:
-                width_mm = (high - low) * mm_per_point
-                if not (narrowest_mm <= width_mm <= widest_mm):
-                    continue
-                boxes.append(
-                    _box(axis, low, high, low_face, high_face, separation,
-                         mm_per_point, settings)
-                )
-    if boxes:
-        logger.info(f"breaks: {len(boxes)} shared gap(s) found in the faces before closing")
+            gaps = [
+                (low, high)
+                for low, high in (pair.get("gaps") or [])
+                if narrowest_mm <= (high - low) * mm_per_point <= widest_mm
+            ]
+            if not gaps:
+                continue
+            found.append(
+                {
+                    "axis": axis,
+                    "face_positions": [low_face, high_face],
+                    "position": (low_face + high_face) / 2.0,
+                    "thickness_mm": (high_face - low_face) * mm_per_point,
+                    "start": pair["start"],
+                    "end": pair["end"],
+                    "gaps": gaps,
+                }
+            )
+    if found:
+        logger.info(
+            f"breaks: {sum(len(p['gaps']) for p in found)} shared gap(s) in "
+            f"{len(found)} paired faces, read before anything was closed"
+        )
+    return found
+
+
+def gap_boxes(pairs: list, mm_per_point: float, settings: dict) -> list:
+    """The gaps as page-space boxes, for punching out of the mask."""
+    boxes = []
+    for pair in pairs:
+        low_face, high_face = pair["face_positions"]
+        separation = high_face - low_face
+        for low, high in pair["gaps"]:
+            boxes.append(
+                _box(pair["axis"], low, high, low_face, high_face, separation,
+                     mm_per_point, settings)
+            )
     return boxes
 
 
@@ -188,20 +214,29 @@ def _box(axis, low, high, position, other_position, separation, mm_per_point, se
     return [across_low, low - clearance, across_high, high + clearance]
 
 
-def boxes_for_the_mask(page, scale, paths, settings, openings=None, rulings=None) -> list:
+def paired_faces_with_gaps(page, scale, paths, settings, rulings=None) -> list:
+    """The paired faces of this sheet that have a break in them.
+
+    The drawing's own line work where the sheet has it, the line work recovered
+    from the page where it does not - the pairing does not care which, because
+    both arrive in the same shape.
+    """
+    try:
+        source = rulings if rulings is not None else segments_by_axis(paths)
+        return shared_gaps(source, scale, settings)
+    except Exception as e:
+        logger.exception(f"paired_faces_with_gaps: the faces could not be read: {e}")
+        return []
+
+
+def boxes_for_the_mask(pairs: list, scale, settings, openings=None) -> list:
     """Everything that must survive the closing, as page-space boxes.
 
     The shared gaps read off the faces, plus the openings Step 3 already found -
     a printed mark or a drawn swing is the drawing telling us directly, and it
     does not need a shared gap to be believed.
     """
-    boxes = []
-    try:
-        source = rulings if rulings is not None else segments_by_axis(paths)
-        boxes.extend(shared_gaps(source, scale, settings))
-    except Exception as e:
-        logger.exception(f"boxes_for_the_mask: the faces could not be read: {e}")
-
+    boxes = list(gap_boxes(pairs, scale.mm_per_point, settings))
     for opening in openings or []:
         try:
             box = list(opening.bbox)
