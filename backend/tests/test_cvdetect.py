@@ -739,3 +739,105 @@ def test_a_level_named_in_a_table_does_not_rescue_a_site_plan(tmp_path, config):
         assert wallgeometry.why_this_sheet_has_no_walls(document[0], config)
     finally:
         document.close()
+
+
+# --------------------------------------------------------------------------
+# The adapter that puts the reader into the pipeline
+# --------------------------------------------------------------------------
+
+def test_the_wall_reader_is_a_setting(config):
+    from pipeline.plan import cvwalls
+
+    assert cvwalls.reader_name({"walls": {"reader": "cvdetect"}}) == "cvdetect"
+    assert cvwalls.reader_name({"walls": {"reader": "legacy"}}) == "legacy"
+    # A config that says nothing, or is not a mapping, must not take a run down.
+    assert cvwalls.reader_name({}) == "cvdetect"
+    assert cvwalls.reader_name({"walls": None}) == "cvdetect"
+
+
+def test_the_adapter_measures_nothing_without_a_confirmed_scale():
+    """A length that cannot be trusted is worse than no length at all."""
+    from pipeline.plan import cvwalls
+
+    assert cvwalls.detect_walls({}, {"usable_for_measurement": False}, {}, "S1") == []
+    assert cvwalls.detect_walls({}, {"usable_for_measurement": True}, {}, "S1", page=None) == []
+
+
+def test_collinear_pieces_are_rejoined_with_the_break_between_them(config):
+    """The inverse of Step 3. A wall with a door in it arrives as two collinear
+    pieces of the same thickness, and the space between them is where the
+    opening was - so joining them and recording the space restores the record
+    the opening evidence reader works from."""
+    from pipeline.plan import cvwalls
+
+    mm_per_point = AT_1_TO_100
+    door_pt = 820.0 / mm_per_point
+    spans = [
+        {"runs_along": "x", "position_pt": 100.0, "start_pt": 0.0, "end_pt": 80.0,
+         "thickness_mm": 90.0, "length_mm": 80.0 * mm_per_point, "confidence": 0.8,
+         "measured_from": "test", "drawn_as": "outline"},
+        {"runs_along": "x", "position_pt": 100.2, "start_pt": 80.0 + door_pt, "end_pt": 200.0,
+         "thickness_mm": 94.0, "length_mm": 50.0 * mm_per_point, "confidence": 0.8,
+         "measured_from": "test", "drawn_as": "outline"},
+    ]
+    walls = cvwalls._rejoin_across_openings(spans, mm_per_point, config)
+    assert len(walls) == 1, "two pieces of one wall are one wall"
+    assert len(walls[0]["gaps_pt"]) == 1, "and the door between them is a break"
+
+
+def test_two_different_walls_on_one_line_are_not_joined(config):
+    """A 90 mm partition and a 230 mm external wall running along the same line
+    are two walls, and merging them would report a break where the building
+    simply changes thickness."""
+    from pipeline.plan import cvwalls
+
+    mm_per_point = AT_1_TO_100
+    spans = [
+        {"runs_along": "x", "position_pt": 100.0, "start_pt": 0.0, "end_pt": 80.0,
+         "thickness_mm": 90.0, "length_mm": 80.0 * mm_per_point, "confidence": 0.8,
+         "measured_from": "test", "drawn_as": "outline"},
+        {"runs_along": "x", "position_pt": 100.0, "start_pt": 100.0, "end_pt": 200.0,
+         "thickness_mm": 230.0, "length_mm": 100.0 * mm_per_point, "confidence": 0.8,
+         "measured_from": "test", "drawn_as": "outline"},
+    ]
+    assert len(cvwalls._rejoin_across_openings(spans, mm_per_point, config)) == 2
+
+
+def test_a_centreline_round_a_corner_becomes_two_walls(config, scale):
+    """The canonical record says a wall runs along x or y, because that is what
+    every later stage measures against. A skeleton traced round a corner is one
+    polyline with a bend in it."""
+    from shapely.geometry import LineString
+
+    from pipeline.plan import cvwalls
+
+    wall = wallgeometry.Wall(
+        element_id="W-001",
+        centreline=LineString([(0, 100), (200, 100), (200, 300)]),
+        outline=None, thickness_mm=90.0, length_mm=1000.0,
+        source_sheet="t", source_bbox=[0, 0, 1, 1],
+        extraction_method="test", confidence=0.8,
+    )
+    spans = cvwalls._straight_spans(wall, scale)
+    assert len(spans) == 2
+    assert {s["runs_along"] for s in spans} == {"x", "y"}
+
+
+def test_a_canonical_wall_carries_what_the_pipeline_reads(config):
+    """The adapter's whole job: everything downstream - the overlay, the model,
+    the CSVs, the junction graph - reads these fields."""
+    from pipeline.plan import cvwalls
+
+    mm_per_point = AT_1_TO_100
+    spans = [{
+        "runs_along": "x", "position_pt": 100.0, "start_pt": 0.0, "end_pt": 200.0,
+        "thickness_mm": 90.0, "length_mm": 200.0 * mm_per_point, "confidence": 0.8,
+        "measured_from": "test", "drawn_as": "outline",
+    }]
+    wall = cvwalls._rejoin_across_openings(spans, mm_per_point, config)[0]
+    for field in (
+        "wall_id", "runs_along", "length_mm", "thickness_mm", "start_point_pt",
+        "end_point_pt", "face_positions_pt", "bbox", "gaps_pt", "confidence",
+        "confidence_band", "review_status", "meets_another_wall", "linked_opening_marks",
+    ):
+        assert field in wall, f"the pipeline reads {field} off every wall"

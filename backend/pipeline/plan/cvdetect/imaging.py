@@ -169,6 +169,83 @@ def ink_from_paths(page, scale, segments: list, fills: list = None) -> np.ndarra
     return canvas
 
 
+def ink_from_page_lines(page, scale, settings: dict = None) -> np.ndarray:
+    """A binary image of a sheet stored as a picture, drawn from its **lines**.
+
+    **Thresholding the picture is not the same as reading it.** A sheet whose
+    drawing is an embedded image is grey, compressed and full of lettering,
+    hatching and furniture; thresholded whole and closed, it produces blobs,
+    and skeletonising a blob gives short fragments rather than the run of a
+    wall. Measured on one real office's sheets: 178 to 821 mm fragments, so no
+    two pieces of one wall ever sat collinear with a door gap between them, and
+    **28 breaks and 15 openings became 1 and 0**.
+
+    So the page's *line work* is recovered first, with the Line Segment
+    Detector, and the mask is drawn from those lines - the same principle as
+    Step 1, which draws the vector mask from the paths rather than from the
+    page. LSD grows each line from the image's own gradients and validates it
+    statistically, so it carries no length, no threshold and no kernel to be
+    set per drawing.
+
+    ``pipeline.plan.rasterlines`` already does this, including the two repairs
+    that make it usable - rejoining the pieces of one edge, and putting the two
+    sides of a plotted stroke back together - so it is imported and reused
+    rather than written a second time (Critical Rule 2).
+    """
+    from pipeline.plan import rasterlines
+
+    try:
+        rulings = rasterlines.extract_rulings_from_image(page, {}, scale.mm_per_point)
+    except Exception as e:
+        logger.exception(f"ink_from_page_lines: the page's lines could not be recovered: {e}")
+        return ink_from_page(page, scale)
+    if not (rulings.get("h") or rulings.get("v")):
+        logger.info(
+            "no line work could be recovered from this page, so it is read as a picture"
+        )
+        return ink_from_page(page, scale)
+    return ink_from_rulings(page, scale, rulings)
+
+
+def ink_from_rulings(page, scale, rulings: dict) -> np.ndarray:
+    """A binary image drawn from axis-aligned line segments in page space.
+
+    ``h`` entries are ``(y, x0, x1)`` and ``v`` entries ``(x, y0, y1)``, with
+    the parallel width lists giving each line's measured stroke - the same
+    shape ``layout.extract_rulings`` and ``rasterlines`` both return.
+    """
+    import cv2
+
+    height, width = image_size(page, scale)
+    canvas = np.zeros((height, width), dtype=np.uint8)
+    zoom = scale.pixels_per_point
+
+    for key, widths_key, horizontal in (("h", "h_widths", True), ("v", "v_widths", False)):
+        lines = rulings.get(key) or []
+        widths = rulings.get(widths_key) or []
+        for index, line in enumerate(lines):
+            try:
+                position, start, end = float(line[0]), float(line[1]), float(line[2])
+                stroke = float(widths[index]) if index < len(widths) else 0.0
+                if horizontal:
+                    first = scale.point_to_pixel(start, position)
+                    second = scale.point_to_pixel(end, position)
+                else:
+                    first = scale.point_to_pixel(position, start)
+                    second = scale.point_to_pixel(position, end)
+                cv2.line(
+                    canvas,
+                    (int(round(first[0])), int(round(first[1]))),
+                    (int(round(second[0])), int(round(second[1]))),
+                    255,
+                    max(1, int(round(stroke * zoom))),
+                    lineType=cv2.LINE_8,
+                )
+            except Exception:
+                continue
+    return canvas
+
+
 def page_is_a_picture(page, min_share: float = 0.1) -> bool:
     """Whether this sheet's drawing is an embedded image rather than line work.
 

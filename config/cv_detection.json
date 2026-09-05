@@ -101,7 +101,10 @@
     "solid_fill_share": 0.85,
     "hatch_share_of_ink": 0.5,
     "_picture_note": "A plan set can be published as embedded images, with only its frame and title block as real drawn paths - one of the sets in use has 164 drawn segments on a sheet whose whole building is pixels. Counting paths, that sheet looks like a vector drawing and comes back with one wall on it. So the switch is decided on what the reading PRODUCED, not on how much geometry was there: a building is a closed shape, so it takes at least this many walls, and below that the geometry has not traced a building whatever it returned. The sheet's own line work is always tried first because it is exact, and the fuller of the two readings wins, so exact geometry is never displaced by pixels that found less.",
-    "min_walls_for_vector": 4
+    "min_walls_for_vector": 4,
+    "_centreline_note": "How far two collinear centrelines may sit apart, and how far their thicknesses may differ, and still be one wall broken by an opening. Both are a SHARE OF THE WALL'S OWN THICKNESS rather than a fixed figure, because a centreline is derived rather than drawn: it sits down the middle of a closed band and moves whenever the band's width changes - which it does wherever a lining, a hatch boundary or a return is picked up on one side of a doorway and not the other. Measured on one real floor plan, of the 72 collinear pairs with a plausible opening between them the two centrelines sit up to 2.6 pt apart and their thicknesses differ by up to 102 mm; held to the drawn-face tolerance of 0.6 pt and 12 mm, only 4 breaks were recovered from a plan with dozens. A share is also safe: a wall's thickness is the smallest distance that can separate two different parallel walls, and two walls of a building are a room apart, not half a thickness.",
+    "centreline_tolerance_share_of_thickness": 0.5,
+    "thickness_agreement_share": 0.5
   },
   "crosslink": {
     "_note": "An opening belongs to the wall it is nearest, measured to the wall BAND rather than to its centreline - a centreline sits half a thickness inside the wall, so a door drawn hard against its own jamb is already 45 to 115 mm from it before it has moved. Where two walls are equally close the opening is reported unplaced with that reason: a wrong link is worse than none, because every later stage trusts it.",

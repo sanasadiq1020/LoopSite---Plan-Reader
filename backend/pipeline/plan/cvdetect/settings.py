@@ -98,6 +98,8 @@ _DEFAULTS = {
         "hatch_share_of_ink": 0.5,
         "hatch_angle_degrees": [45.0, 135.0],
         "min_length_to_thickness": 1.5,
+        "centreline_tolerance_share_of_thickness": 0.5,
+        "thickness_agreement_share": 0.5,
         "min_walls_for_vector": 4,
     },
     "page": {

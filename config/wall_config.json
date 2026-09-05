@@ -1,5 +1,7 @@
 {
   "_comment": "Everything the wall reader is allowed to differ on, in one file. Nothing here is a fact about buildings - those live in the code. These are the numbers an office may legitimately set differently, and every one of them is a measurement in millimetres or in PDF points, never a coordinate taken from any particular drawing. This file is merged over the 'walls' section of plan_reading.json, so a setting given here wins and anything left out keeps its existing value.",
+  "_reader_note": "Which reader measures the walls. 'cvdetect' is the computer-vision reader: it closes the drawing into solid bands, measures each band's thickness with a distance transform and reduces it to a centreline by skeletonisation, so A WALL IS REPORTED ONCE rather than once per pair of drawn faces - an external wall drawn with a lining and a hatch boundary gave three overlapping candidates before. 'legacy' is the face-pairing reader in pipeline/plan/walls.py, kept and switchable so the two can be compared on the same plan and so a deployed server can be changed back without a rebuild. Both hand back the same canonical record and both go through the same junction, free-tail, detached-structure, outer/inner and description pass, so nothing downstream - the overlay, the model, the CSVs, the opening evidence - depends on which one ran.",
+  "reader": "legacy",
   "_thickness_note": "A wall is two parallel faces this far apart. Below the minimum it is a lining, a hatch boundary or a piece of joinery; above the maximum it is two separate walls with a room between them, or a boundary line paired with an eave.",
   "min_wall_thickness_mm": 70,
   "max_wall_thickness_mm": 320,
@@ -127,5 +129,6 @@
     "merge_stroke_edges": true,
     "stroke_edge_width_factor": 2.0,
     "stroke_edge_overlap_share": 0.5
-  }
+  },
+  "_reader_status": "Currently legacy while the computer-vision reader's RASTER path is brought up to it. Measured end to end through the real pipeline: on a plan set whose sheets are drawn over a full-page background image, cvdetect falls back to pixel tracing (0 walls from the vector geometry) and returns 178-821 mm fragments, so no collinear pair has a door gap between it - 28 breaks and 15 openings became 1 and 0. The face-pairing reader traces the same sheets through its LSD raster path and does not. Flip this to \"cvdetect\" once its raster tracing produces full-length runs."
 }

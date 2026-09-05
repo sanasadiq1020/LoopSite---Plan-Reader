@@ -206,9 +206,9 @@ def build_ink(page, scale, paths, settings: dict):
     if len(structural) >= 4 or paths.fills:
         return imaging.ink_from_paths(page, scale, structural, paths.fills), "vector_paths"
     logger.info(
-        "this sheet holds no usable drawn line work, so it is read as a picture instead"
+        "this sheet holds no usable drawn line work, so its lines are recovered from the page"
     )
-    return imaging.ink_from_page(page, scale), "page_image"
+    return imaging.ink_from_page_lines(page, scale, settings), "page_image"
 
 
 def detect_walls(
@@ -280,7 +280,7 @@ def detect_walls(
                 "building; it is read as a picture as well"
             )
             from_page, page_components = _measure(
-                page, scale, imaging.ink_from_page(page, scale), "page_image",
+                page, scale, imaging.ink_from_page_lines(page, scale, settings), "page_image",
                 settings, openings_mask, sheet_name,
             )
             if len(from_page) > len(walls):

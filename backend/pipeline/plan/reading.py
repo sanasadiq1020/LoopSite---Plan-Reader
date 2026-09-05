@@ -35,6 +35,7 @@ from app.paths import CONFIG_DIR
 from pipeline.plan import dimensions as dimensions_module
 from pipeline.plan import rooms as rooms_module
 from pipeline.plan import schedules as schedules_module
+from pipeline.plan import cvwalls
 from pipeline.plan.layout import extract_rulings
 from pipeline.plan.openingevidence import read_openings_from_the_drawing
 from pipeline.plan.openings import (
@@ -800,8 +801,22 @@ def analyze_page(
         # is printed, the drawing has to look like a building before they are
         # reported: a building is a closed shape, so it takes at least four
         # walls, and enough of them at a thickness the office actually builds.
+        # **Which reader measures the walls is a setting, not a rebuild.** The
+        # computer-vision reader (``cvwalls`` over ``cvdetect``) closes the
+        # drawing into solid bands and skeletonises them, so a wall is reported
+        # once rather than once per pair of drawn faces; the face-pairing
+        # reader (``walls``) is kept and can be switched back to on a deployed
+        # server. Both hand back the same canonical record and both go through
+        # the same junction, outer/inner and description pass, so everything
+        # downstream - the overlay, the model, the CSVs - is unaffected by the
+        # choice.
+        read_walls = (
+            cvwalls.detect_walls
+            if cvwalls.reader_name(config) == "cvdetect"
+            else detect_walls
+        )
         detected_walls = (
-            detect_walls(
+            read_walls(
                 rulings,
                 calibration,
                 config,
