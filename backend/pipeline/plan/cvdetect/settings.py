@@ -90,7 +90,7 @@ _DEFAULTS = {
         "mask_padding_mm": 40.0,
     },
     "wall": {
-        "min_thickness_mm": 70.0,
+        "min_thickness_mm": 90.0,
         "max_thickness_mm": 300.0,
         "min_length_mm": 600.0,
         "spur_mm": 600.0,
@@ -98,6 +98,9 @@ _DEFAULTS = {
         "simplify_mm": 30.0,
         "merge_collinear_runs": True,
         "thickness_from_the_faces": True,
+        "require_paired_faces": False,
+        "twin_min_mm": 90.0,
+        "twin_max_mm": 300.0,
         "collinear_lateral_tolerance_pt": 3.5,
         "collinear_max_gap_mm": 6000.0,
         "thinning_pixel_budget": 2000000.0,

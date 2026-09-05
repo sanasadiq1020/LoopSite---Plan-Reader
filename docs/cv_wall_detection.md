@@ -206,6 +206,31 @@ are pixels they look exactly like a wall:
 bands — a 17-sheet set went from 35 s to 26 s and a 23-sheet set from 40 s to
 34 s.*
 
+### The double-face twin rule
+
+A wall is two parallel faces, so **a line with no twin at a wall's spacing is
+not a wall** — and that is what clears the stray lines running off into the
+paper. A page border, a grid tick, a dimension extension line and a roof
+overhang are each drawn *once*; everything the building is built from is drawn
+twice.
+
+The spacing band **is** that rule: 90 mm is a stud partition, 300 mm a cavity
+wall, and the band is measured from the ink by the distance transform — so every
+wall reported has two faces that far apart by construction.
+
+The stricter form — requiring the run to lie on a pair the face pairing itself
+produced — is available and **off**, because it was measured. The pairing takes
+each face once and applies its own filters, so its pairs do not cover every
+wall: requiring membership took a 23-sheet set from **158 walls to 34**, a
+picture set from **111 to 15** and an unseen set from **32 to 8**. It deletes the
+drawing.
+
+Walls outside the building envelope are not silently dropped either. The
+orchestrator's `building_outline` and `mark_walls_in_dead_ground` run on
+whichever reader produced the walls, and the overlay gives a set-aside wall
+precedence over its type — so a boundary or an eave is drawn **dashed red with
+its reason**, never solid blue.
+
 ### An Australian wall is not thicker than 300 mm
 
 A brick-veneer external wall is 230–270 mm and a cavity wall about 290, so
@@ -461,7 +486,7 @@ is never cropped, because cropping loses part of the drawing silently.
 
 ## Tests
 
-`backend/tests/test_cvdetect.py` — 90 tests, each naming the mistake it
+`backend/tests/test_cvdetect.py` — 95 tests, each naming the mistake it
 prevents rather than restating what the code does. They include an end-to-end
 run against a **building drawn for the purpose**: a 12 m × 8 m rectangle in
 230 mm wall at 1:100, read back and compared with what was drawn. Scoring a

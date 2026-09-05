@@ -136,6 +136,10 @@ def detect_walls(
     # read off the two drawn faces before anything is closed and written
     # straight onto the wall that runs along the same line.
     _inject_face_gaps(walls, diagnostics.get("face_pairs") or [], mm_per_point, config)
+    # **What the drawing says outright, punched where it says it.** A swing
+    # arc, a window symbol and a printed mark each name an opening and where
+    # it is; waiting for the closing to leave a hole there throws that away.
+    _punch_openings_onto_walls(walls, found_openings, scale, mm_per_point, config)
     _fill_in_thickness_context(walls, config)
 
     line_source = (
@@ -393,6 +397,97 @@ def _one_wall(run: list, mm_per_point: float, narrowest_break_mm: float) -> dict
         "stroke_pt": 0.0,
         "interior_drawn_as": run[0].get("drawn_as", "outline"),
     }
+
+
+def _punch_openings_onto_walls(walls, openings, scale, mm_per_point: float, config: dict):
+    """Cuts each opening the drawing states into the wall centreline it sits on.
+
+    **An anchor is the drawing speaking, and it should not have to wait for the
+    morphology to agree.** A door swing's arc is the leaf swept to its own
+    width, a window symbol is the glazing drawn between the wall's faces, and a
+    printed mark keys the opening to a schedule row. Each one says *there is an
+    opening here, and this wide* - so it is cut into the wall directly, rather
+    than hoping the closing left a hole in the band at the same place. It did
+    not: closing joins the wall to the jambs, the leaf and the arc drawn inside
+    the doorway (see ``breaks.py``).
+
+    **The wall is severed, not shortened.** The gap is recorded on the wall and
+    the wall keeps its own start and end, so the stretches either side stay in
+    the record with their endpoints intact - which is what the junction graph
+    and the model need, and what ``openingevidence`` tests when it asks whether
+    an opening has wall on both sides of it. An opening that would leave no
+    wall on one side is not cut at all: that is a wall ending, not a door.
+
+    Only an opening carrying a **measured width** is cut. A mark with no width
+    behind it says where something is but not how wide, and inventing a figure
+    there would be worse than leaving the wall whole - the mark is still
+    reported, and ``openingevidence`` still weighs it.
+    """
+    if not walls or not openings:
+        return
+    settings = config.get("walls", {})
+    flank = float(settings.get("opening_min_wall_each_side_mm", 300)) / mm_per_point
+    narrowest = float(settings.get("min_opening_width_mm", 300)) / mm_per_point
+    detection = cv_settings.load_settings()
+    share = cv_settings.number(
+        detection, "breaks.band_match_share_of_thickness", 1.5
+    )
+    floor = cv_settings.number(detection, "breaks.collinear_tolerance_pt", 0.6)
+    cut = 0
+
+    for opening in openings:
+        width_mm = getattr(opening, "width_mm", None)
+        if not width_mm:
+            continue
+        try:
+            x0, y0, x1, y1 = (float(v) for v in opening.bbox)
+        except (TypeError, ValueError):
+            continue
+        width_pt = float(width_mm) / mm_per_point
+
+        for wall in walls:
+            along = 0 if wall["runs_along"] == "x" else 1
+            low, high = sorted(wall["face_positions_pt"])
+            centre = (low + high) / 2.0
+            across_centre = (y0 + y1) / 2.0 if along == 0 else (x0 + x1) / 2.0
+            reach = max(floor, (wall["thickness_mm"] * share) / mm_per_point)
+            if abs(across_centre - centre) > reach:
+                continue
+
+            run_low = min(wall["start_point_pt"][along], wall["end_point_pt"][along])
+            run_high = max(wall["start_point_pt"][along], wall["end_point_pt"][along])
+            box_low, box_high = (x0, x1) if along == 0 else (y0, y1)
+            if min(box_high, run_high) - max(box_low, run_low) <= 0:
+                continue
+
+            # **Where along the wall, and how wide.** The mark's own box is not
+            # the opening - a swing's box is the leaf swept round, and a mark
+            # is printed beside the door - so the box says where and the
+            # measured width says how wide.
+            middle = (max(box_low, run_low) + min(box_high, run_high)) / 2.0
+            gap_low, gap_high = middle - width_pt / 2.0, middle + width_pt / 2.0
+
+            # Wall has to remain on both sides of it, or this is the end of a
+            # wall rather than a door in one.
+            if gap_low - run_low < flank or run_high - gap_high < flank:
+                continue
+            if gap_high - gap_low < narrowest:
+                continue
+            if any(
+                gap_low < existing[1] and existing[0] < gap_high
+                for existing in wall["gaps_pt"]
+            ):
+                break
+            wall["gaps_pt"].append([round(gap_low, 2), round(gap_high, 2)])
+            cut += 1
+            break
+
+    for wall in walls:
+        wall["gaps_pt"].sort()
+    if cut:
+        logger.info(
+            f"openings: {cut} cut into a wall centreline from the drawing's own anchors"
+        )
 
 
 def _inject_face_gaps(walls: list, pairs: list, mm_per_point: float, config: dict):

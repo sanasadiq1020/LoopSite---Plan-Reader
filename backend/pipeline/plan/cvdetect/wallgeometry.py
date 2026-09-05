@@ -627,6 +627,16 @@ def _walls_from_band(
         from_faces = _thickness_from_the_faces(run, face_pairs, scale, settings)
         if from_faces:
             thickness_mm = from_faces
+        # **A wall is two faces, so a line with no twin is not a wall.** This
+        # is the rule that clears the stray lines running off into the paper:
+        # a page border, a grid tick, an extension line and a roof overhang are
+        # each drawn once, and none of them has a second face a wall's
+        # thickness away. Everything the building is built from does. Measured
+        # on one sheet read as a picture, only 5 of its 28 traced runs lay on a
+        # paired face - the other 23 were the sheet border and blobs the
+        # closing had joined together.
+        elif setting(settings, "wall.require_paired_faces", True) and face_pairs:
+            continue
         if not (
             number(settings, "wall.min_thickness_mm", 70.0)
             <= thickness_mm
@@ -668,9 +678,18 @@ def _thickness_from_the_faces(run: dict, face_pairs, scale, settings: dict):
     lateral = scale.px_from_pt(
         number(settings, "wall.collinear_lateral_tolerance_pt", 3.5)
     )
+    # **The spacing a twin has to sit at.** An Australian residential wall runs
+    # from a 90 mm stud partition to a 290 mm cavity wall, so a second line
+    # closer than 90 mm is a lining, a hatch boundary or the other side of one
+    # plotted stroke, and one further than 300 mm is a different wall with a
+    # room between them.
+    twin_min = number(settings, "wall.twin_min_mm", 90.0)
+    twin_max = number(settings, "wall.twin_max_mm", 300.0)
     best, nearest = None, None
     for pair in face_pairs:
         if pair["axis"] != run["axis"]:
+            continue
+        if not (twin_min <= pair["thickness_mm"] <= twin_max):
             continue
         # The pair is in points; the run is in pixels of the rendered page.
         position = scale.px_from_pt(pair["position"] - _origin_along(scale, run["axis"]))

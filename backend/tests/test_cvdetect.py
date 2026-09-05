@@ -1204,3 +1204,91 @@ def test_an_australian_wall_is_not_thicker_than_three_hundred(config):
     """A brick-veneer external wall is 230 to 270 mm and a cavity wall about
     290; anything wider is a band the closing joined to something else."""
     assert cv_settings.number(config, "wall.max_thickness_mm", 0.0) == 300.0
+
+
+# --------------------------------------------------------------------------
+# The double-face twin rule, and openings cut from their anchors
+# --------------------------------------------------------------------------
+
+def test_a_wall_has_a_twin_face_between_ninety_and_three_hundred(config):
+    """A wall is two parallel faces. 90 mm is a stud partition and 300 mm a
+    cavity wall; the band the distance transform measures IS that spacing, so
+    every wall reported has two faces that far apart by construction."""
+    assert cv_settings.number(config, "wall.min_thickness_mm", 0.0) == 90.0
+    assert cv_settings.number(config, "wall.max_thickness_mm", 0.0) == 300.0
+
+
+def test_requiring_pair_membership_is_off_because_it_deletes_the_drawing(config):
+    """The face pairing takes each face once and applies its own filters, so its
+    pairs do not cover every wall. Requiring membership took a 23-sheet set from
+    158 walls to 34 and a picture set from 111 to 15."""
+    assert cv_settings.setting(config, "wall.require_paired_faces", True) is False
+
+
+def test_an_opening_anchor_is_cut_into_the_wall_it_sits_on(config):
+    """A swing arc, a window symbol and a printed mark each say there is an
+    opening here and this wide, so it is cut in directly rather than waiting
+    for the closing to leave a hole in the same place."""
+    from pipeline.plan import cvwalls
+    from pipeline.plan.cvdetect.openings import Opening
+    from pipeline.plan.cvdetect.settings import Scale
+
+    mm_per_point = AT_1_TO_100
+    half = (230.0 / mm_per_point) / 2.0
+    wall = {
+        "runs_along": "x", "thickness_mm": 230.0, "gaps_pt": [],
+        "start_point_pt": [0.0, 100.0], "end_point_pt": [800.0, 100.0],
+        "face_positions_pt": [100.0 - half, 100.0 + half],
+    }
+    door = Opening("D01", "door", [380.0, 96.0, 420.0, 104.0], "arc_geometry", 0.8,
+                   width_mm=820.0)
+    scale = Scale(mm_per_point=mm_per_point, dpi=300.0)
+    cvwalls._punch_openings_onto_walls([wall], [door], scale, mm_per_point, config)
+    assert len(wall["gaps_pt"]) == 1
+    low, high = wall["gaps_pt"][0]
+    assert (high - low) * mm_per_point == pytest.approx(820.0, abs=1.0)
+    # Boundary preservation: the wall keeps its own ends.
+    assert wall["start_point_pt"] == [0.0, 100.0]
+    assert wall["end_point_pt"] == [800.0, 100.0]
+
+
+def test_an_opening_with_no_measured_width_is_not_invented(config):
+    """A mark with no width behind it says where something is but not how wide."""
+    from pipeline.plan import cvwalls
+    from pipeline.plan.cvdetect.openings import Opening
+    from pipeline.plan.cvdetect.settings import Scale
+
+    mm_per_point = AT_1_TO_100
+    half = (230.0 / mm_per_point) / 2.0
+    wall = {
+        "runs_along": "x", "thickness_mm": 230.0, "gaps_pt": [],
+        "start_point_pt": [0.0, 100.0], "end_point_pt": [800.0, 100.0],
+        "face_positions_pt": [100.0 - half, 100.0 + half],
+    }
+    mark = Opening("D01", "door", [380.0, 96.0, 420.0, 104.0], "printed_mark", 0.7)
+    cvwalls._punch_openings_onto_walls(
+        [wall], [mark], Scale(mm_per_point=mm_per_point, dpi=300.0), mm_per_point, config
+    )
+    assert wall["gaps_pt"] == []
+
+
+def test_an_opening_at_the_end_of_a_wall_is_not_cut(config):
+    """An opening has wall on both sides of it. A gap running to the end is a
+    wall ending, not a door in one."""
+    from pipeline.plan import cvwalls
+    from pipeline.plan.cvdetect.openings import Opening
+    from pipeline.plan.cvdetect.settings import Scale
+
+    mm_per_point = AT_1_TO_100
+    half = (230.0 / mm_per_point) / 2.0
+    wall = {
+        "runs_along": "x", "thickness_mm": 230.0, "gaps_pt": [],
+        "start_point_pt": [0.0, 100.0], "end_point_pt": [40.0, 100.0],
+        "face_positions_pt": [100.0 - half, 100.0 + half],
+    }
+    door = Opening("D01", "door", [0.0, 96.0, 20.0, 104.0], "arc_geometry", 0.8,
+                   width_mm=820.0)
+    cvwalls._punch_openings_onto_walls(
+        [wall], [door], Scale(mm_per_point=mm_per_point, dpi=300.0), mm_per_point, config
+    )
+    assert wall["gaps_pt"] == []
