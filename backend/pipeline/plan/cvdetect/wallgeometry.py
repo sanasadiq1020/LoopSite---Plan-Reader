@@ -57,7 +57,7 @@ import math
 from dataclasses import dataclass, field
 
 from app.logging_setup import get_logger
-from pipeline.plan.cvdetect import imaging
+from pipeline.plan.cvdetect import breaks, imaging
 from pipeline.plan.cvdetect.settings import number, setting
 
 logger = get_logger()
@@ -227,7 +227,10 @@ def detect_walls(
     defeats the reader is a normal outcome and not a failed run
     (Critical Rule 6).
     """
-    diagnostics = {"line_source": None, "components": 0, "candidates": 0, "notes": []}
+    diagnostics = {
+        "line_source": None, "components": 0, "candidates": 0,
+        "notes": [], "break_boxes": [],
+    }
 
     refusal = why_this_sheet_has_no_walls(page, settings)
     if refusal:
@@ -256,9 +259,16 @@ def detect_walls(
         else:
             source = "vector_paths" if paths and paths.structural else "page_image"
 
-        walls, components = _measure(
-            page, scale, ink, source, settings, openings_mask, sheet_name
+        # **The breaks are read off the faces before anything is closed.**
+        # Closing joins a wall to the jamb lines, the leaf and the swing arc
+        # drawn inside its own doorway, and the band comes out continuous - so
+        # the gap has to be punched out before the morphology is given the
+        # chance to weld it shut. See ``breaks.py``.
+        mask, vector_breaks = _mask_with_the_breaks(
+            page, scale, paths, settings, openings_mask, None
         )
+        diagnostics["break_boxes"] = vector_breaks
+        walls, components = _measure(page, scale, ink, source, settings, mask, sheet_name)
 
         # **The switch is decided on what the reading produced, not on how much
         # geometry was there.** A plan set can be published as embedded images
@@ -279,12 +289,19 @@ def detect_walls(
                 f"this sheet's own geometry traced {len(walls)} walls, which is not a "
                 "building; it is read as a picture as well"
             )
+            # The picture's own line work, recovered once and used twice: to
+            # draw the mask, and to find the breaks in its faces.
+            page_rulings = imaging.page_line_work(page, scale)
+            page_mask, page_breaks = _mask_with_the_breaks(
+                page, scale, paths, settings, openings_mask, page_rulings
+            )
             from_page, page_components = _measure(
-                page, scale, imaging.ink_from_page_lines(page, scale, settings), "page_image",
-                settings, openings_mask, sheet_name,
+                page, scale, imaging.ink_from_rulings(page, scale, page_rulings),
+                "page_image", settings, page_mask, sheet_name,
             )
             if len(from_page) > len(walls):
                 walls, components, source = from_page, page_components, "page_image"
+                diagnostics["break_boxes"] = page_breaks
                 diagnostics["notes"].append(
                     "This sheet stores its drawing as a picture rather than as line work, "
                     "so its walls were measured from the page image. They are less exact "
@@ -304,6 +321,45 @@ def detect_walls(
         f"({source}) on {sheet_name or 'this sheet'}"
     )
     return walls, diagnostics
+
+
+def _mask_with_the_breaks(page, scale, paths, settings, openings_mask, rulings):
+    """The openings mask, with every shared gap in the faces punched out too.
+
+    Returns ``(mask, boxes)`` - the mask Step 4 subtracts from the ink before
+    closing, and the boxes themselves, because the boxes are evidence in their
+    own right and are carried onto the wall records afterwards. Never raises: a
+    sheet whose faces cannot be read keeps whatever mask Step 3 gave it, which
+    is what the reader did before this existed (Critical Rule 6).
+    """
+    import cv2
+
+    if not setting(settings, "breaks.punch_before_closing", True):
+        # Kept as evidence even when it is not punched: the gaps are still
+        # placed on the walls afterwards, where the opening reader can weigh
+        # them. What is switched off is only the cutting of the mask.
+        try:
+            return openings_mask, breaks.boxes_for_the_mask(
+                page, scale, paths, settings, rulings=rulings
+            )
+        except Exception as e:
+            logger.exception(f"the breaks in this sheet's faces could not be read: {e}")
+            return openings_mask, []
+    try:
+        boxes = breaks.boxes_for_the_mask(page, scale, paths, settings, rulings=rulings)
+    except Exception as e:
+        logger.exception(f"the breaks in this sheet's faces could not be read: {e}")
+        return openings_mask, []
+    if not boxes:
+        return openings_mask, []
+
+    punched = imaging.draw_mask(page, scale, boxes, 0.0)
+    if openings_mask is None:
+        return punched, boxes
+    try:
+        return cv2.bitwise_or(openings_mask, punched), boxes
+    except Exception:
+        return punched, boxes
 
 
 def _measure(page, scale, ink, source, settings, openings_mask, sheet_name):
@@ -351,11 +407,15 @@ def _measure(page, scale, ink, source, settings, openings_mask, sheet_name):
     band = (distance >= thinnest_px / 2.0).astype(np.uint8) * 255
 
     return _walls_from_band(
-        band, distance, ink, scale, settings, sheet_name, source, thickest_px
+        band, distance, ink, scale, settings, sheet_name, source, thickest_px,
+        openings_mask,
     )
 
 
-def _walls_from_band(band, distance, ink, scale, settings, sheet_name, source, thickest_px):
+def _walls_from_band(
+    band, distance, ink, scale, settings, sheet_name, source, thickest_px,
+    openings_mask=None,
+):
     """Outlines by contour, centrelines by thinning, one component at a time."""
     import cv2
     import numpy as np
@@ -373,6 +433,9 @@ def _walls_from_band(band, distance, ink, scale, settings, sheet_name, source, t
     # hatch dot, every compression artefact. Each one was being padded,
     # thinned, contoured and measured to be thrown away. Computed from the
     # calibrated scale, so it means the same on any sheet at any scale.
+    thinnest_px = max(
+        2.0, scale.px_from_mm(number(settings, "wall.min_thickness_mm", 70.0))
+    )
     smallest_band_px = max(
         _SMALLEST_COMPONENT_PX,
         scale.px_from_mm(number(settings, "wall.min_length_mm", 600.0))
@@ -404,15 +467,53 @@ def _walls_from_band(band, distance, ink, scale, settings, sheet_name, source, t
         ]
         fill_share, drawn_as = _how_the_interior_is_drawn(padded_ink, piece, settings)
 
+        # **A component's bounding box is not its size, and thinning pays for
+        # the box.** The walls of a building are one connected network, so its
+        # component sprawls: measured on one real sheet, two components had
+        # boxes of 7.9 and 8.7 megapixels on an 8.7 megapixel image, and the
+        # boxes of all its components added to **18.7 megapixels on an 8.7
+        # megapixel sheet**. Thinning is iterative and scans the whole box on
+        # every pass, so it took **14.1 of the 15 seconds** that stage took.
+        #
+        # So a box larger than the budget is thinned at a reduced resolution.
+        # **The thickness does not go with it**: that is measured from the
+        # full-resolution distance transform at the centreline's own pixels, so
+        # it is unchanged. Only the *path* down the middle is traced coarsely,
+        # and it is simplified to ``simplify_mm`` afterwards anyway - at 1:100
+        # a divisor of two moves a centreline by at most 17 mm against a 30 mm
+        # simplification tolerance.
+        divisor = _thinning_divisor(piece.shape, thinnest_px, settings)
+        to_thin = piece
+        if divisor > 1:
+            small = cv2.resize(
+                piece,
+                (max(1, piece.shape[1] // divisor), max(1, piece.shape[0] // divisor)),
+                interpolation=cv2.INTER_AREA,
+            )
+            # Anything partly covered stays ink, so a band never breaks apart
+            # on the way down and a wall is not severed by the resizing.
+            to_thin = ((small > 0).astype(np.uint8)) * 255
+
         try:
-            skeleton = cv2.ximgproc.thinning(piece)
+            skeleton = cv2.ximgproc.thinning(to_thin)
         except Exception:
-            skeleton = _thin_without_opencv_contrib(piece)
+            skeleton = _thin_without_opencv_contrib(to_thin)
         if skeleton is None:
             continue
 
         traced = _trace_skeleton(skeleton)
-        traced = _prune_spurs(traced, scale, settings)
+        if divisor > 1:
+            traced = [run * divisor for run in traced]
+        # **A run that stops at a doorway is not a spur.** Spur pruning exists
+        # to remove the whiskers thinning grows off a rounded corner, and it
+        # tests for a short run with an end no other run reaches. But the
+        # breaks punched out before closing deliberately create exactly that:
+        # every wall either side of a door now ends free, at the door. Left
+        # alone, pruning ate the very pieces the breaks had just revealed - and
+        # a wall piece between two doorways is free at both ends.
+        traced = _prune_spurs(
+            traced, scale, settings, _ends_at_an_opening(openings_mask, offset, scale, settings)
+        )
         traced = _join_runs_that_carry_on(traced, scale, settings)
 
         for points in traced:
@@ -451,6 +552,25 @@ def _walls_from_band(band, distance, ink, scale, settings, sheet_name, source, t
             walls.append(wall)
 
     return walls, count - 1
+
+
+def _thinning_divisor(shape, thinnest_px: float, settings: dict) -> int:
+    """How far to reduce a component before thinning it, and never further.
+
+    Two limits, and the second is what keeps it safe. The budget says how big a
+    box may be before it is worth reducing at all. The floor says the thinnest
+    wall the office builds must still be several pixels across after the
+    reduction - below that a band is a line, and thinning a line gives a
+    skeleton that wanders instead of running down the middle.
+    """
+    budget = number(settings, "wall.thinning_pixel_budget", 2_000_000.0)
+    keep_px = number(settings, "wall.thinning_min_wall_px", 4.0)
+    box = float(shape[0]) * float(shape[1])
+    if budget <= 0 or box <= budget:
+        return 1
+    wanted = int(math.ceil(math.sqrt(box / budget)))
+    allowed = int(max(1, thinnest_px // max(keep_px, 1.0)))
+    return max(1, min(wanted, allowed))
 
 
 def _outline_of(piece, offset, scale):
@@ -674,7 +794,33 @@ def _trace_skeleton(skeleton) -> list:
     return traced
 
 
-def _prune_spurs(runs: list, scale, settings: dict) -> list:
+def _ends_at_an_opening(openings_mask, offset, scale, settings):
+    """A test for whether a traced run's end lies where an opening was punched.
+
+    Returns a callable, or None where nothing was punched. The allowance is the
+    same clearance the punching used, so an end anywhere inside the box that
+    made the gap counts as being at the opening rather than free.
+    """
+    if openings_mask is None:
+        return None
+    reach = int(round(max(2.0, scale.px_from_mm(
+        number(settings, "breaks.clearance_mm", 40.0)
+    ))))
+    height, width = openings_mask.shape[:2]
+
+    def at_an_opening(point) -> bool:
+        x = int(round(float(point[0]) + offset[0]))
+        y = int(round(float(point[1]) + offset[1]))
+        low_y, high_y = max(0, y - reach), min(height, y + reach + 1)
+        low_x, high_x = max(0, x - reach), min(width, x + reach + 1)
+        if low_y >= high_y or low_x >= high_x:
+            return False
+        return bool(openings_mask[low_y:high_y, low_x:high_x].any())
+
+    return at_an_opening
+
+
+def _prune_spurs(runs: list, scale, settings: dict, at_an_opening=None) -> list:
     """Drops the short dead-end stubs that closing leaves behind.
 
     Closing a wall's two faces into a solid band rounds its corners, and
@@ -703,9 +849,13 @@ def _prune_spurs(runs: list, scale, settings: dict) -> list:
         for index, run in enumerate(kept):
             if _run_length(run) > longest_spur_px:
                 continue
-            free = sum(
-                1 for end in (run[0], run[-1]) if len(ends.get(_node(end, snap), [])) < 2
-            )
+            free = 0
+            for end in (run[0], run[-1]):
+                if len(ends.get(_node(end, snap), [])) >= 2:
+                    continue
+                if at_an_opening is not None and at_an_opening(end):
+                    continue
+                free += 1
             if free:
                 dropped.add(index)
         if not dropped:

@@ -93,6 +93,8 @@ _DEFAULTS = {
         "spur_mm": 600.0,
         "carry_on_angle_degrees": 25.0,
         "simplify_mm": 30.0,
+        "thinning_pixel_budget": 2000000.0,
+        "thinning_min_wall_px": 4.0,
         "closing_share_of_thickest_wall": 1.0,
         "solid_fill_share": 0.85,
         "hatch_share_of_ink": 0.5,
@@ -114,6 +116,14 @@ _DEFAULTS = {
             "FRAMING PLAN", "LAYOUT PLAN", "REFLECTED CEILING",
             "ELECTRICAL PLAN",
         ],
+    },
+    "breaks": {
+        "punch_before_closing": False,
+        "min_face_overlap_share": 0.5,
+        "min_wall_each_side_mm": 300.0,
+        "collinear_tolerance_pt": 0.6,
+        "clearance_mm": 40.0,
+        "clearance_share_of_thickness": 0.0,
     },
     "crosslink": {
         "max_offset_mm": 200.0,

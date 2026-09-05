@@ -325,6 +325,38 @@ comparable with a reader that reports one wall per pair of drawn faces — this
 one reports each wall **once**, and the metres are centreline rather than drawn
 line.
 
+### The breaks have to be read before the closing
+
+Closing joins a wall's two faces into one band with a kernel the width of the
+thickest wall. A door is 820 mm, so in principle closing cannot bridge it — in
+practice it does, because **a doorway is not empty on a drawing**: the office
+draws the jambs across the wall, the leaf, the swing arc and often a threshold.
+Closing joins the wall to that ink and the ink to the far side, and the band
+comes out continuous. The break is gone before anything can look for it.
+
+`breaks.py` reads them off the **faces** instead, before any rasterising: a
+door goes through the wall, so both faces stop at the same place and start
+again together. `walls.py`'s own face merging, best-first pairing and shared-gap
+test are imported and reused — there must not be two answers in one codebase to
+"what is a break".
+
+**Best-first pairing is the whole difference between a break and an artefact.**
+Pairing every plausible pair lets one face pair with a dozen others, and every
+fragmentation gap in any of them becomes a "shared gap": measured on one sheet
+read as a picture, 69 of them, which punched so much out of the mask that the
+sheet fell from 37 walls to 16.
+
+**Cutting the gaps out of the mask is off by default, and that is measured.**
+Cutting is the obvious way to stop the morphology welding a doorway shut, and
+it does raise the breaks reaching a wall — 18 to 44 on a 23-sheet set. But it
+raised the **openings** on no set and cost two on another, because cutting also
+removes the wall either side of the gap, and *an opening has wall on both sides
+of it* is exactly what `openingevidence` tests before it will call a gap a
+door. The same applies to the clearance: swept on two sets, a clearance share of
+0.0 gives 4 openings and 20 breaks, 0.25 gives 3 and 19, 0.5 gives 1 and 19. So
+the gaps are recorded on the walls and the cutting is left off, with both
+capabilities configurable and the measurements beside them.
+
 ## Performance
 
 Thinning is the expensive step and it is done per connected component:
@@ -333,11 +365,29 @@ Thinning is the expensive step and it is done per connected component:
 |---|---|
 | thinning the whole sheet | **52 s** |
 | thinning each component in its own box | **2.9 s** |
+| a sprawling component, at full resolution | **14.1 s of a 15 s stage** |
+| the same, reduced to a pixel budget | **~1 s** |
 
 Components are 8-disconnected by definition, so thinning one can never depend
 on another, and each one's box is a few per cent of the sheet — 93% of an A3
 plan at 300 DPI is blank paper. The skeleton is unchanged; the saving is
 eighteen-fold.
+
+**But a component's bounding box is not its size.** The walls of a building are
+one connected network, so its component sprawls: measured on one real sheet, two
+components had boxes of 7.9 and 8.7 megapixels on an 8.7 megapixel image, and
+all its components' boxes added to **18.7 megapixels on an 8.7 megapixel
+sheet**. So a box larger than `thinning_pixel_budget` is thinned at a reduced
+resolution — and **the thickness does not go with it**, because that is measured
+from the full-resolution distance transform at the centreline's own pixels. Only
+the path down the middle is traced coarsely, and it is simplified to
+`simplify_mm` afterwards anyway: at 1:100 a divisor of two moves a centreline by
+at most 17 mm against a 30 mm tolerance. The guard is a pixel floor — the
+thinnest wall must still be several pixels across, because thinning a line
+rather than a band gives a skeleton that wanders.
+
+*Measured: the worst sheet's wall stage went from **26.6 s to 8.6 s**, and a
+17-sheet plan set from **55.5 s to 33.5 s** end to end.*
 
 Rendering is bounded rather than assumed. Drawing sizes are not: an A0 sheet at
 300 DPI is 140 megapixels, and on a small server that render is what ends the
@@ -365,7 +415,7 @@ is never cropped, because cropping loses part of the drawing silently.
 
 ## Tests
 
-`backend/tests/test_cvdetect.py` — 63 tests, each naming the mistake it
+`backend/tests/test_cvdetect.py` — 77 tests, each naming the mistake it
 prevents rather than restating what the code does. They include an end-to-end
 run against a **building drawn for the purpose**: a 12 m × 8 m rectangle in
 230 mm wall at 1:100, read back and compared with what was drawn. Scoring a

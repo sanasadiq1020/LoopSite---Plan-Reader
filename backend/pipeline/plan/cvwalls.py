@@ -131,6 +131,16 @@ def detect_walls(
         return []
 
     walls = _rejoin_across_openings(spans, mm_per_point, config)
+    # **The breaks are put on the walls from the evidence, not inferred from
+    # the pieces.** Rejoining split pieces recovers a break only where both
+    # sides survived every later filter, and on a sheet read as a picture they
+    # often do not - measured, 35 real shared gaps found in the faces and none
+    # of them reaching a wall record. The boxes were read off the faces before
+    # anything was closed, so they say exactly where the wall is interrupted;
+    # they are placed on the wall whose own band they interrupt.
+    _put_the_breaks_on_the_walls(
+        walls, diagnostics.get("break_boxes") or [], mm_per_point, config
+    )
     _fill_in_thickness_context(walls, config)
 
     line_source = (
@@ -388,6 +398,77 @@ def _one_wall(run: list, mm_per_point: float, narrowest_break_mm: float) -> dict
         "stroke_pt": 0.0,
         "interior_drawn_as": run[0].get("drawn_as", "outline"),
     }
+
+
+def _put_the_breaks_on_the_walls(walls: list, boxes: list, mm_per_point: float, config: dict):
+    """Records each shared gap on the wall whose run and band it interrupts.
+
+    A break box knows which stretch of paper the two faces both stopped over.
+    A wall knows the band it occupies and the run it covers. Where the box sits
+    inside the band and along the run, that break belongs to that wall - and
+    that is what ``openingevidence`` reads to decide whether the drawing calls
+    it a door, a window, or a gap nobody can account for.
+
+    The clearance the punching added is taken back off, so the gap recorded is
+    the one the drawing shows rather than the padded box that protected it.
+    """
+    if not walls or not boxes:
+        return
+    settings = config.get("walls", {})
+    narrowest = float(settings.get("min_opening_width_mm", 300)) / mm_per_point
+    clearance_mm = cv_settings.number(
+        cv_settings.load_settings(), "breaks.clearance_mm", 40.0
+    )
+    clearance = clearance_mm / mm_per_point
+    # **How near the band has to be, measured in the wall's own thickness.**
+    # The pair of faces that revealed a break is not always the same pair the
+    # band was closed from - a lining or a hatch boundary shifts it - so a
+    # tolerance of one point matched nothing at all on a sheet read as a
+    # picture: 35 real shared gaps, none placed. The same reasoning as the
+    # centreline tolerance: a share of the thickness is scale-free, and two
+    # different walls are a room apart, not half a thickness.
+    share = cv_settings.number(
+        cv_settings.load_settings(), "wall.centreline_tolerance_share_of_thickness", 0.5
+    )
+    placed = 0
+
+    for box in boxes:
+        try:
+            x0, y0, x1, y1 = (float(v) for v in box)
+        except (TypeError, ValueError):
+            continue
+        centre_x, centre_y = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+        for wall in walls:
+            low, high = sorted(wall["face_positions_pt"])
+            if wall["runs_along"] == "x":
+                across, along_low, along_high = centre_y, x0, x1
+                run_low = min(wall["start_point_pt"][0], wall["end_point_pt"][0])
+                run_high = max(wall["start_point_pt"][0], wall["end_point_pt"][0])
+            else:
+                across, along_low, along_high = centre_x, y0, y1
+                run_low = min(wall["start_point_pt"][1], wall["end_point_pt"][1])
+                run_high = max(wall["start_point_pt"][1], wall["end_point_pt"][1])
+            reach = max(clearance, (wall["thickness_mm"] * share) / mm_per_point)
+            if not (low - reach <= across <= high + reach):
+                continue
+            # The clearance is taken back off, and the gap kept inside the wall.
+            gap_low = max(along_low + clearance, run_low)
+            gap_high = min(along_high - clearance, run_high)
+            if gap_high - gap_low < narrowest:
+                continue
+            if any(
+                gap_low < existing[1] and existing[0] < gap_high
+                for existing in wall["gaps_pt"]
+            ):
+                break
+            wall["gaps_pt"].append([round(gap_low, 2), round(gap_high, 2)])
+            placed += 1
+            break
+
+    for wall in walls:
+        wall["gaps_pt"].sort()
+    if placed:
+        logger.info(f"breaks: {placed} of {len(boxes)} shared gaps placed on a wall")
 
 
 def _fill_in_thickness_context(walls: list, config: dict) -> None:

@@ -841,3 +841,116 @@ def test_a_canonical_wall_carries_what_the_pipeline_reads(config):
         "confidence_band", "review_status", "meets_another_wall", "linked_opening_marks",
     ):
         assert field in wall, f"the pipeline reads {field} off every wall"
+
+
+# --------------------------------------------------------------------------
+# Face-level breaks, and the cost of thinning
+# --------------------------------------------------------------------------
+
+def test_a_break_is_read_from_the_faces_of_a_wall(config, scale):
+    """Closing joins a wall to the jambs, the leaf and the swing arc drawn
+    inside its own doorway, so the band comes out continuous and the break is
+    gone before anything can look for it. Both faces stopping together is still
+    readable in the line work at this point."""
+    from pipeline.plan.cvdetect import breaks
+
+    thickness_pt = 230.0 / scale.mm_per_point
+    door_pt = 900.0 / scale.mm_per_point
+    rulings = {"h": [], "v": [], "h_widths": [], "v_widths": []}
+    for position in (100.0, 100.0 + thickness_pt):
+        rulings["h"].append((position, 0.0, 300.0))
+        rulings["h"].append((position, 300.0 + door_pt, 800.0))
+        rulings["h_widths"].extend([0.5, 0.5])
+
+    found = breaks.shared_gaps(rulings, scale, config)
+    assert len(found) == 1, "both faces stop together, so that is one break"
+    x0, _y0, x1, _y1 = found[0]
+    assert (x1 - x0) * scale.mm_per_point == pytest.approx(900.0, abs=200.0)
+
+
+def test_a_break_in_one_face_alone_is_not_an_opening(config, scale):
+    """A break in one face is a cupboard line, a bench, a change of material.
+    A door goes through the wall, so both faces stop."""
+    from pipeline.plan.cvdetect import breaks
+
+    thickness_pt = 230.0 / scale.mm_per_point
+    door_pt = 900.0 / scale.mm_per_point
+    rulings = {"h": [], "v": [], "h_widths": [], "v_widths": []}
+    rulings["h"].append((100.0, 0.0, 300.0))
+    rulings["h"].append((100.0, 300.0 + door_pt, 800.0))
+    rulings["h"].append((100.0 + thickness_pt, 0.0, 800.0))
+    rulings["h_widths"].extend([0.5, 0.5, 0.5])
+
+    assert breaks.shared_gaps(rulings, scale, config) == []
+
+
+def test_a_break_needs_wall_on_both_sides_of_it(config, scale):
+    """A gap running to the end of a wall is where the drawing stopped, or
+    where this wall meets another - not a door."""
+    from pipeline.plan.cvdetect import breaks
+
+    thickness_pt = 230.0 / scale.mm_per_point
+    rulings = {"h": [], "v": [], "h_widths": [], "v_widths": []}
+    for position in (100.0, 100.0 + thickness_pt):
+        # A 1,058 mm gap, but only 176 mm of wall left beyond it - less than
+        # the 300 mm an opening has to have on both sides of it.
+        rulings["h"].append((position, 0.0, 300.0))
+        rulings["h"].append((position, 330.0, 335.0))
+        rulings["h_widths"].extend([0.5, 0.5])
+
+    assert breaks.shared_gaps(rulings, scale, config) == []
+
+
+def test_nothing_is_read_without_a_scale(config):
+    from pipeline.plan.cvdetect import breaks
+
+    unmeasured = Scale(mm_per_point=0.0, dpi=300.0)
+    assert breaks.shared_gaps({"h": [(1, 0, 9)], "v": []}, unmeasured, config) == []
+
+
+def test_a_sprawling_component_is_thinned_at_a_reduced_resolution(config):
+    """The walls of a building are one connected network, so its component
+    sprawls: measured on one real sheet, all its components' boxes added to
+    18.7 megapixels on an 8.7 megapixel sheet, and thinning took 14.1 of that
+    stage's 15 seconds."""
+    thinnest_px = 16.0
+    assert wallgeometry._thinning_divisor((500, 500), thinnest_px, config) == 1
+    big = wallgeometry._thinning_divisor((4000, 4000), thinnest_px, config)
+    assert big > 1, "a box far over the budget must be reduced"
+
+
+def test_the_reduction_never_takes_a_wall_below_a_few_pixels(config):
+    """Thinning a line rather than a band gives a skeleton that wanders instead
+    of running down the middle of the wall."""
+    # A wall only 4 pixels across cannot be reduced at all, however large the box.
+    assert wallgeometry._thinning_divisor((9000, 9000), 4.0, config) == 1
+
+
+def test_the_breaks_are_placed_on_the_wall_they_interrupt(config):
+    """A break box knows the stretch of paper both faces stopped over; a wall
+    knows its band and its run. That is what openingevidence reads."""
+    from pipeline.plan import cvwalls
+
+    mm_per_point = AT_1_TO_100
+    half = (230.0 / mm_per_point) / 2.0
+    wall = {
+        "runs_along": "x", "thickness_mm": 230.0, "gaps_pt": [],
+        "start_point_pt": [0.0, 100.0], "end_point_pt": [800.0, 100.0],
+        "face_positions_pt": [100.0 - half, 100.0 + half],
+    }
+    box = [300.0, 100.0 - half, 330.0, 100.0 + half]
+    cvwalls._put_the_breaks_on_the_walls([wall], [box], mm_per_point, config)
+    assert len(wall["gaps_pt"]) == 1
+
+
+def test_a_break_far_from_any_wall_is_not_placed(config):
+    from pipeline.plan import cvwalls
+
+    mm_per_point = AT_1_TO_100
+    wall = {
+        "runs_along": "x", "thickness_mm": 90.0, "gaps_pt": [],
+        "start_point_pt": [0.0, 100.0], "end_point_pt": [800.0, 100.0],
+        "face_positions_pt": [98.0, 102.0],
+    }
+    cvwalls._put_the_breaks_on_the_walls([wall], [[300.0, 600.0, 330.0, 610.0]], mm_per_point, config)
+    assert wall["gaps_pt"] == []

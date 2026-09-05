@@ -192,19 +192,37 @@ def ink_from_page_lines(page, scale, settings: dict = None) -> np.ndarray:
     sides of a plotted stroke back together - so it is imported and reused
     rather than written a second time (Critical Rule 2).
     """
-    from pipeline.plan import rasterlines
-
-    try:
-        rulings = rasterlines.extract_rulings_from_image(page, {}, scale.mm_per_point)
-    except Exception as e:
-        logger.exception(f"ink_from_page_lines: the page's lines could not be recovered: {e}")
-        return ink_from_page(page, scale)
+    rulings = page_line_work(page, scale)
     if not (rulings.get("h") or rulings.get("v")):
         logger.info(
             "no line work could be recovered from this page, so it is read as a picture"
         )
         return ink_from_page(page, scale)
     return ink_from_rulings(page, scale, rulings)
+
+
+def page_line_work(page, scale) -> dict:
+    """The page's own line work, recovered by LSD and cached on the page.
+
+    Cached because it is wanted twice - once to draw the mask and once to read
+    the breaks in the faces - and recovering it is the most expensive thing
+    done to a sheet stored as a picture.
+    """
+    from pipeline.plan import rasterlines
+
+    cached = getattr(page, "_loopsite_cv_lines", None)
+    if cached is not None:
+        return cached
+    try:
+        rulings = rasterlines.extract_rulings_from_image(page, {}, scale.mm_per_point)
+    except Exception as e:
+        logger.exception(f"page_line_work: the page's lines could not be recovered: {e}")
+        rulings = {"h": [], "v": [], "h_widths": [], "v_widths": []}
+    try:
+        page._loopsite_cv_lines = rulings
+    except AttributeError:
+        pass
+    return rulings
 
 
 def ink_from_rulings(page, scale, rulings: dict) -> np.ndarray:
