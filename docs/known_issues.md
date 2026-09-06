@@ -50,6 +50,164 @@ rewiring only, and no detection logic was changed.
 
 ---
 
+## Phase 2 findings — the thickness measurement is exact, and three faults destroy it
+
+Investigation only; nothing below is fixed. The decisive result is that
+**nothing needs to be invented, only preserved.** Measured on the synthetic plan
+with an 870 mm opening cut into both faces of every wall so face pairs form, the
+pairing reports the drawn thickness to within 0.05 mm:
+
+| axis | faces (pt) | measured | drawn |
+|---|---|---|---|
+| h | 100.00, 106.52 | 230.0111 mm | 230.0 mm |
+| h | 320.25, 326.77 | 230.0111 mm | 230.0 mm |
+| v | 120.00, 126.52 | 230.0111 mm | 230.0 mm |
+| v | 261.73, 264.28 | **89.9583 mm** | **90.0 mm** |
+| v | 453.64, 460.16 | 230.0111 mm | 230.0 mm |
+
+Yet **0 of 6 walls land within the 12 mm tolerance**, on a vector page and on a
+rasterised copy alike (face path mean 38.4 mm, band path 46.7 mm). Three
+separate faults stand between the measurement and the wall.
+
+### P0 — the twin floor rejects an exact 90 mm pair by 42 micrometres
+
+`wall.twin_min_mm` is `90.0` and the measured pair is `89.9583 mm`, so
+`twin_min <= pair["thickness_mm"]` fails and **both 90 mm partitions fall back
+to the band's 135.5 mm**. A floor written as the exact nominal cannot admit a
+measurement *of* that nominal: a real measurement scatters either side of the
+value, and half of that scatter is below it.
+
+### P0 — a single-piece run carries no axis, so it can never consult the faces
+
+`_merge_collinear_runs` returns `pieces[0]` unchanged where a run has one piece
+(`wallgeometry.py:885`), and a gathered piece carries only `points`,
+`fill_share` and `drawn_as` — no `axis`, no `position`, no `thickness_mm`.
+`_thickness_from_the_faces` returns `None` on its first line for exactly that
+(`if not face_pairs or "axis" not in run`). **Measured: 3 of 7 runs on the
+synthetic plan reach the matcher with no axis** and silently take the band's
+figure. The matcher fired 4 times, not 7, and matched 2.
+
+### P0 — the correct measurement is averaged away after being made
+
+`cvwalls.py:351` — `thickness_mm = sum(piece["thickness_mm"] for piece in run) / len(run)`
+— takes an unweighted mean over the pieces rejoined into one wall.
+`wallgeometry` emits the exact `230.011` alongside band readings of `270.933`
+and `287.867` for the same wall, and the mean reports **250.5 and 258.9**. No
+wall in the final reading carries 230.0 although two were measured at it. This
+one destroys the fix for the other two: making the face path reach every wall
+achieves nothing while this mean stands.
+
+---
+
+## P0 — one drawing region spans two separate drawings on a sheet
+
+`drawing_region` (`walls.py:1004`) takes a single bounding box over **all** room
+labels on a sheet. Nothing anywhere partitions a sheet into its separate
+drawings — the multi-caption handling chooses a *title*, never geometry. Given
+two plans side by side, measured:
+
+| | region returned |
+|---|---|
+| one plan (rooms x=100..240) | `[75, 165, 270, 350]` |
+| two plans (rooms x=100..240 and 560..740) | `[75, 165, 770, 350]` |
+
+**195 pt wide becomes 695 pt — 23% of the sheet becomes 83%** — and the 320 pt
+of empty paper between the drawings is now *inside* the region. That is the
+paper the witness lines are printed on, which is the whole reason the region
+exists: Section 4AM of `CLAUDE.md` records a framing sheet where **all 25
+"walls" were witness lines printed between the two drawings**. Two further
+consequences: the sheet's measured extent roughly doubles, so the envelope check
+stops catching a wall running from one drawing into the other; and the scale is
+pooled as **one value per sheet**, so two drawings at different scales give a
+median blended from two populations and correct for neither.
+
+---
+
+## P1 — a watermark reaches the tracing through the picture fallback
+
+`unseen_plan.pdf` carries a "DESIGNER PLANNING" watermark as a single image
+XObject — **xref 881, 663x241 px, one placement, bbox [68, -210, 527, 1052]**,
+identical on all 17 sheets and the only placement overhanging the page box. It
+is cleanly separable from the 20 tiles of 992x876 px that carry the drawing.
+
+It reaches the wall tracing only because that sheet's own vector geometry traces
+2 walls — below the four a building takes — so the sheet is **re-read as a
+picture, and that render bakes the watermark in**. Removing it (xref 881 only):
+
+| | watermark in | watermark out |
+|---|---|---|
+| bands walked | 46 | 14 |
+| centrelines | 30 | 20 |
+| longest wall | 8.22 m | 5.95 m |
+| median wall length | 1.16 m | **1.65 m** |
+
+It **adds** roughly ten spurious runs including the false 8.22 m wall; it does
+not sever real ones — removing it raises the median length and improves the
+long-wall profile. It is not the cause of the under-tracing on that sheet: at 20
+centrelines without it, the sheet still traces far less than the 48 of a
+comparable vector floor plan.
+
+**The generalisation is the P1, not the watermark.** A sheet whose vector
+reading yields too few walls is re-read as a picture, and that render carries
+every overlay, stamp and watermark the vector path would never have seen.
+
+---
+
+## P1/P2 — the dimension reader, traced (and a correction)
+
+**Correction first.** An earlier report of this phase said `unseen_plan.pdf`
+yields *zero dimension strings on every sheet*. That was a probe bug, not a
+finding: the probe read a field named `dimension_strings` and the field is
+`dimension_chains`. The real counts are P03 3 chains, P11 3, P12 1, P13 1, and
+P01/P02 none. The conclusion drawn from it — that the drawing-region trim is
+inert across the file — was wrong with it: on P03 the region trims to
+`[478, 117, 842, 595]`. It is inert on P01 and P02 only.
+
+**What the reader receives.** P02: 135 text lines, 102 reach the dimension
+reader, 47 numeric (44 horizontal, 3 rotated). P03: 308 lines, 275 reach, 160
+numeric (127 horizontal, 30 rotated, 3 at 45 degrees).
+
+**Three suspected causes, all cleared by measurement:**
+
+* *Text rotation is handled correctly.* P03's `3400`, `1690`, `1020` and `800`
+  are rotated text (`dir=(-0.0, -1.0)`) and every one is correctly assigned
+  `axis=y` and lands in a chain.
+* *The table and multi-caption layout is innocent.* Table regions remove 33
+  lines on P02 and 33 on P03, and **not one of them is a bare figure**.
+* *The keyword list is innocent here.* The 41 and 141 `_classify` rejections are
+  genuine notes text — `Stairs are to comply with BCA V2`,
+  `T1 - TRUSSES AS PER MANUFACTURERS`, `BRACING : WIND SPEED: N2`.
+
+**P03 is not broken.** Every figure named on it except `90` reaches the reader,
+classifies as linear, takes the right axis and joins a chain; 3 chains are built
+from groups of 6, 5 and 3 figures.
+
+**P2 — a 90 mm figure is below the plausible floor.** `_classify` accepts no
+bare figure under **100 mm**, so a printed `90` — the thickness of a stud
+partition, and exactly the figure a wall reader would want — is not read as a
+dimension. `365` and above are accepted.
+
+**P1 — P02's setout strings are not in the text layer at all.** Its `820` and
+`720` both reach the reader, classify as linear and take `axis=x`, then fail the
+chain test because **each sits alone at its own coordinate**: all six of P02's
+dimensions sit at six different heights (226, 265, 278, 290, 301, 346), and a
+chain needs two or more sharing a perpendicular coordinate. Those six are the
+scattered door-leaf widths; the sheet's setout strings are drawn inside its 21
+tiled images as pixels. Six isolated figures cannot form a string, and that is
+the correct answer to what the text layer holds — the defect is that the sheet
+is a picture, which is the same root cause as its wall under-tracing.
+
+**Only this file.** `new_sample_plan.pdf` reads **784 dimensions and 151 chains
+across 23 sheets**; `sample_plan.pdf` reads 30 dimensions and 3 chains on each
+of its floor plans. The failure is specific to the sheets stored as pictures.
+
+**The consequence is still real on P01 and P02**: with no chain, scale
+verification has nothing to check against, the envelope check has no measured
+extent, and `drawing_region` falls back to the whole page — three defences
+silently inert on the one sheet of the file that draws the building.
+
+---
+
 ## P1 — the closing-kernel setting is dead, and the config and the code disagree about intent
 
 `config/cv_detection.json` defines **`wall.closing_share_of_thinnest_wall`**.
