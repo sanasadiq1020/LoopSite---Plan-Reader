@@ -745,14 +745,6 @@ def test_a_level_named_in_a_table_does_not_rescue_a_site_plan(tmp_path, config):
 # The adapter that puts the reader into the pipeline
 # --------------------------------------------------------------------------
 
-def test_the_wall_reader_is_a_setting(config):
-    from pipeline.plan import cvwalls
-
-    assert cvwalls.reader_name({"walls": {"reader": "cvdetect"}}) == "cvdetect"
-    assert cvwalls.reader_name({"walls": {"reader": "legacy"}}) == "legacy"
-    # A config that says nothing, or is not a mapping, must not take a run down.
-    assert cvwalls.reader_name({}) == "cvdetect"
-    assert cvwalls.reader_name({"walls": None}) == "cvdetect"
 
 
 def test_the_adapter_measures_nothing_without_a_confirmed_scale():
@@ -1097,24 +1089,23 @@ def test_no_pair_means_the_band_keeps_its_own_measurement(config, scale):
 # A setting has to be changeable on a server that is already running
 # --------------------------------------------------------------------------
 
-def test_the_wall_reader_can_be_changed_without_a_restart(tmp_path, monkeypatch):
+def test_a_wall_setting_can_be_changed_without_a_restart(tmp_path, monkeypatch):
     """The config was read once and cached for the life of the process, so
-    switching the wall reader meant restarting - and on a hosted Space a restart
+    changing a wall setting meant restarting - and on a hosted Space a restart
     wipes the disk and every plan being read."""
     import json
 
-    from pipeline.plan import cvwalls, reading
+    from pipeline.plan import reading
 
     original = reading.WALL_CONFIG_PATH.read_text(encoding="utf-8")
     try:
-        assert cvwalls.reader_name(reading.load_config()) in ("legacy", "cvdetect")
-        for wanted in ("cvdetect", "legacy", "cvdetect"):
+        for wanted in (900, 700, 900):
             settings = json.loads(reading.WALL_CONFIG_PATH.read_text(encoding="utf-8"))
-            settings["reader"] = wanted
+            settings["min_wall_length_mm"] = wanted
             reading.WALL_CONFIG_PATH.write_text(
                 json.dumps(settings, indent=2) + "\n", encoding="utf-8"
             )
-            assert cvwalls.reader_name(reading.load_config()) == wanted
+            assert reading.load_config()["walls"]["min_wall_length_mm"] == wanted
     finally:
         reading.WALL_CONFIG_PATH.write_text(original, encoding="utf-8")
         reading.load_config()

@@ -32,9 +32,11 @@ the opening was. Putting those pieces back together, and recording the space as
 a break, reconstructs the canonical record exactly. Nothing is invented: the
 gap was measured, it was simply expressed the other way round.
 
-Whether the reader is used at all is a setting - ``walls.reader`` in
-``config/wall_config.json`` - so it can be turned off on a deployed server
-without a rebuild, and so the two readers can be compared on the same plan.
+This is the only wall and opening detector in the pipeline. The face-pairing
+reader that once sat beside it has been removed; what survives in ``walls.py``
+is the judgement every wall goes through *after* it is measured - the
+junctions, outside versus inside, the detached structures and the plain-words
+record - and cvdetect's output is what now runs through it.
 """
 
 import math
@@ -56,14 +58,6 @@ logger = get_logger()
 _JOG_SHARE_OF_THICKNESS = 1.0
 
 
-def reader_name(config: dict) -> str:
-    """Which wall reader this run should use: "cvdetect" or "legacy"."""
-    try:
-        return str((config.get("walls") or {}).get("reader", "cvdetect")).strip().lower()
-    except AttributeError:
-        return "cvdetect"
-
-
 def detect_walls(
     rulings: dict,
     calibration: dict,
@@ -78,8 +72,7 @@ def detect_walls(
 ) -> list:
     """Candidate walls for one sheet, measured by the computer-vision reader.
 
-    Deliberately the same signature as ``walls.detect_walls``, so the
-    orchestrator chooses a reader rather than being rewritten around one.
+    This is the only wall detector in the pipeline.
 
     Returns an empty list when the sheet's scale could not be confirmed - a
     length that cannot be trusted is worse than no length at all - and when the
@@ -1297,7 +1290,7 @@ def _through_the_same_post_processing(
     walls, mm_per_point, config, sheet_id, page_number, rooms, line_source,
     structure_labels=None,
 ) -> None:
-    """Everything ``walls.detect_walls`` does once it has its candidates.
+    """The judgement every wall goes through once it has been measured.
 
     Imported and reused rather than reimplemented, so that the two readers
     cannot drift apart in how a wall is *judged* - only in how it was measured.

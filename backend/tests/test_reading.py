@@ -22,7 +22,6 @@ from pipeline.plan import reading, rooms as rooms_module, schedules, textmodel, 
 from pipeline.plan.layout import extract_rulings, joined_text, value_candidates
 from pipeline.plan.sheetindex import cross_check_pages, parse_sheet_index
 from pipeline.plan.titleblock import detect_title_block, sheet_id_for
-from pipeline.plan.walls import detect_walls
 
 PAGE_W, PAGE_H = 1190.0, 842.0  # A3 landscape, points
 NO_RULINGS = {"h": [], "v": []}
@@ -859,40 +858,6 @@ def _image_drawn_page(tmp_path):
     return document, page
 
 
-def test_walls_are_recovered_from_a_sheet_drawn_as_an_image(tmp_path):
-    document, page = _image_drawn_page(tmp_path)
-    try:
-        vector_rulings = extract_rulings(page)
-        # The premise: the wall lines are not in the PDF as lines.
-        assert not detect_walls(vector_rulings, _CALIBRATED, reading.load_config(), "P01")
-
-        walls = detect_walls(vector_rulings, _CALIBRATED, reading.load_config(), "P01", page=page)
-        assert walls, "an image-drawn wall should still be measurable"
-        assert all(wall["line_source"] == "lsd_raster" for wall in walls)
-        longest = max(walls, key=lambda wall: wall["length_mm"])
-        # 400 pt at 1:100 is 14.1 m; measured off pixels, within a percent.
-        assert 13900 < longest["length_mm"] < 14400
-        assert longest["nominal_thickness_mm"] == 230
-    finally:
-        document.close()
-
-
-def test_vector_geometry_is_preferred_when_it_works(tmp_path):
-    """A sheet with real line work is never re-read as pixels."""
-    import fitz
-
-    document = fitz.open()
-    page = document.new_page(width=600, height=400)
-    for offset in (0, 6.52):
-        page.draw_line(fitz.Point(100, 150 + offset), fitz.Point(500, 150 + offset), width=0.7)
-    try:
-        walls = detect_walls(extract_rulings(page), _CALIBRATED, reading.load_config(), "P01", page=page)
-        assert walls
-        assert all(wall["line_source"] == "vector" for wall in walls)
-    finally:
-        document.close()
-
-
 # --- A row is text printed in one direction -------------------------------
 
 
@@ -931,19 +896,6 @@ def test_a_legend_entry_is_bounded_by_the_cells_it_used(config):
     assert legends and len(legends[0]["entries"]) == 4
     right_edge = max(entry["bbox"][2] for entry in legends[0]["entries"])
     assert right_edge < 200, "the legend must not claim the drawing beside it"
-
-
-def test_a_wall_longer_than_the_sheet_measures_is_flagged_not_dropped():
-    """The block boundary pairs into a wall longer than the building. It is
-    reported with a warning rather than deleted, because a sheet may also
-    dimension only part of what it draws."""
-    rulings = {"h": [(100.0, 100.0, 500.0), (106.52, 100.0, 500.0)], "v": []}
-    walls = detect_walls(
-        rulings, _CALIBRATED, reading.load_config(), "A02", sheet_span_mm=5000
-    )
-    assert len(walls) == 1, "the candidate is kept"
-    assert walls[0]["longer_than_sheet_measures"] is True
-    assert walls[0]["confidence_band"] == "review"
 
 
 # --- The checking sheet a person fills in ---------------------------------
@@ -1167,48 +1119,6 @@ def _candidate(wall_id, axis, line, start, end, thickness, breaks=None, nominal=
         "confidence_band": "high",
         "linked_opening_marks": [],
     }
-
-
-def test_two_readings_of_the_same_wall_are_reported_once(config):
-    """Two solids cannot occupy the same space. An external wall is drawn with
-    more lines than its own two faces, so the pairing step produces several
-    overlapping candidates for one wall — which doubled the wall count and left
-    every opening mark with two equally close walls to choose between."""
-    from pipeline.plan.walls import merge_overlapping_walls
-
-    walls = [
-        _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0),
-        _candidate("W2", "x", 200.4, 120.0, 580.0, 95.0),
-    ]
-    merged = merge_overlapping_walls(walls, 10.0, config)
-    assert len(merged) == 1
-    assert merged[0]["merged_from"] == 2
-
-
-def test_a_wall_keeps_every_opening_its_copies_recorded(config):
-    """Each copy holds only some of the wall's breaks, so a door in the wall is
-    invisible to whichever copy did not record it."""
-    from pipeline.plan.walls import merge_overlapping_walls
-
-    walls = [
-        _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0, breaks=[(150.0, 240.0)]),
-        _candidate("W2", "x", 200.4, 100.0, 600.0, 95.0, breaks=[(400.0, 490.0)]),
-    ]
-    merged = merge_overlapping_walls(walls, 10.0, config)
-    assert len(merged) == 1
-    assert merged[0]["gaps_pt"] == [[150.0, 240.0], [400.0, 490.0]]
-
-
-def test_two_real_walls_side_by_side_are_not_merged(config):
-    """A brick skin and a frame drawn beside each other are two walls. Merging
-    them on band overlap alone lost five of one plan set's ten openings."""
-    from pipeline.plan.walls import merge_overlapping_walls
-
-    walls = [
-        _candidate("W1", "x", 200.0, 100.0, 600.0, 80.0),
-        _candidate("W2", "x", 206.0, 100.0, 600.0, 180.0),
-    ]
-    assert len(merge_overlapping_walls(walls, 10.0, config)) == 2
 
 
 # --- where an opening sits on its wall ------------------------------------
@@ -1751,7 +1661,7 @@ def test_one_long_face_can_pair_along_several_stretches(config):
     face up. Marking the whole outer face as used at the first pairing left
     every later stretch with nothing to pair against - which is why a wall was
     marked up for only half its length, with the rest of it bare."""
-    from pipeline.plan.walls import _pair_faces
+    from pipeline.plan.walls import _pair_faces_and_faces
 
     # (position across, start along, end along, breaks). 10 mm per point.
     faces = [
@@ -1759,7 +1669,9 @@ def test_one_long_face_can_pair_along_several_stretches(config):
         (9.0, 0.0, 400.0, [], {}),       # the inside behind the first room
         (9.0, 600.0, 1000.0, [], {}),    # and behind the second
     ]
-    pairs = _pair_faces(faces, 10.0, config, config["walls"]["nominal_thickness_mm"])
+    pairs = _pair_faces_and_faces(
+        faces, 10.0, config, config["walls"]["nominal_thickness_mm"]
+    )[0]
 
     assert len(pairs) == 2, "the outer face was used up by the first room"
     covered = sorted((round(p["start"]), round(p["end"])) for p in pairs)
@@ -1770,14 +1682,16 @@ def test_one_long_face_can_pair_along_several_stretches(config):
 def test_a_stretch_is_never_given_to_two_walls(config):
     """Each pairing takes only what is still free, so the same run of wall is
     never reported twice."""
-    from pipeline.plan.walls import _pair_faces
+    from pipeline.plan.walls import _pair_faces_and_faces
 
     faces = [
         (0.0, 0.0, 1000.0, [], {}),
         (9.0, 0.0, 1000.0, [], {}),
         (9.4, 0.0, 1000.0, [], {}),   # a third line along the same wall
     ]
-    pairs = _pair_faces(faces, 10.0, config, config["walls"]["nominal_thickness_mm"])
+    pairs = _pair_faces_and_faces(
+        faces, 10.0, config, config["walls"]["nominal_thickness_mm"]
+    )[0]
     spans = [(p["start"], p["end"]) for p in pairs]
     for i, (a_start, a_end) in enumerate(spans):
         for b_start, b_end in spans[i + 1 :]:
@@ -1873,30 +1787,6 @@ def test_a_junction_says_where_on_the_sheet_it_happens(config):
 
 
 # --- a short stretch is judged on what it is joined to ---------------------
-
-
-def test_a_short_wall_joined_to_the_building_is_kept(config):
-    """A pier, a return and the nib beside a doorway are all real walls and all
-    short. A plain length floor loses every one of them."""
-    from pipeline.plan.walls import _drop_short_walls_that_meet_nothing
-
-    outer = _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)
-    nib = _candidate("W2", "y", 300.0, 200.0, 230.0, 90.0)
-    kept = _drop_short_walls_that_meet_nothing([outer, nib], config)
-
-    assert {wall["wall_id"] for wall in kept} == {"W1", "W2"}
-
-
-def test_a_short_stretch_joined_to_nothing_is_not_a_wall(config):
-    """A bench top, a wardrobe and a step draw as two parallel lines a plausible
-    thickness apart, and are joined to nothing."""
-    from pipeline.plan.walls import _drop_short_walls_that_meet_nothing
-
-    outer = _candidate("W1", "x", 200.0, 100.0, 600.0, 90.0)
-    joinery = _candidate("W2", "y", 900.0, 700.0, 730.0, 90.0)
-    kept = _drop_short_walls_that_meet_nothing([outer, joinery], config)
-
-    assert [wall["wall_id"] for wall in kept] == ["W1"]
 
 
 # --- outside and inside ----------------------------------------------------
@@ -2039,46 +1929,21 @@ def test_a_wall_reports_the_two_faces_it_was_measured_from(config):
 # --- what the settings must not be allowed to do --------------------------
 
 
-def test_a_fragment_never_replaces_the_wall_it_is_part_of(config):
-    """Once a stretch as short as a nib could be a candidate, a cluster could
-    hold an 8 m wall and a 0.3 m piece of the same wall — and the ranking, which
-    prefers a thickness the office builds over length, kept the piece. On two
-    floor plans that cost about 30 m of traced wall each while the wall count
-    went up, which is the worst shape a change can take: it looks like more and
-    is less."""
-    from pipeline.plan.walls import merge_overlapping_walls
-
-    wall = _candidate("W1", "x", 200.0, 100.0, 900.0, 95.0, nominal=False)
-    fragment = _candidate("W2", "x", 200.4, 400.0, 430.0, 90.0, nominal=True)
-    merged = merge_overlapping_walls([wall, fragment], 10.0, config)
-
-    assert len(merged) == 1
-    assert merged[0]["length_mm"] == 8000.0
-
-
 def test_the_collinear_tolerance_stays_under_the_thinnest_wall(config):
     """A wall **is** two lines a thickness apart. A tolerance for 'the same
     line' that is wider than the thinnest wall the office builds merges a
     wall's own two faces into one, and the wall disappears — measured, going
     from 0.6 to 3 points took the walls at a buildable thickness on one floor
-    plan from 38 of 40 down to 21 of 27."""
-    settings = config["walls"]
-    tolerance_mm = float(settings["collinear_tolerance_points"]) * 35.28  # 1:100
-    assert tolerance_mm < min(float(t) for t in settings["nominal_thickness_mm"])
+    plan from 38 of 40 down to 21 of 27.
 
+    The face pairing now runs from cvdetect's own settings, so the guard reads
+    the setting that is actually in force."""
+    from pipeline.plan.cvdetect.settings import load_settings, number
 
-def test_a_line_with_no_stated_width_is_never_dropped_as_too_thin(config):
-    """A filled shape states no stroke width, and neither does a line recovered
-    from a page read as a picture. Reading zero as thin threw away every wall
-    on an image-drawn sheet."""
-    from pipeline.plan.walls import _drop_lines_that_are_not_wall_faces
-
-    segments = [(200.0, 100.0, 600.0), (210.0, 100.0, 600.0)]
-    # How a line was drawn travels with it as (stroke width, dashed).
-    kept, drawn = _drop_lines_that_are_not_wall_faces(
-        segments, [(0.0, False), (0.2, False)], {"reject_lines_thinner_than_pt": 0.5}
-    )
-    assert kept == [segments[0]] and drawn == [(0.0, False)]
+    detection = load_settings()
+    tolerance_mm = number(detection, "breaks.collinear_tolerance_pt", 0.6) * 35.28  # 1:100
+    assert tolerance_mm < number(detection, "wall.min_thickness_mm", 90.0)
+    assert tolerance_mm < min(float(t) for t in config["walls"]["nominal_thickness_mm"])
 
 
 def test_the_office_wall_settings_are_read_from_their_own_file():
@@ -2110,52 +1975,16 @@ def _chain(axis, x0, y0, x1, y1, members=4):
             "bbox": [x0, y0, x1, y1], "sum_mm": 10000.0}
 
 
-def test_a_printed_word_is_not_a_wall(config):
-    """**The largest source of false walls there was.** A sheet stored as a
-    picture has its lines recovered as continuous runs of dark pixels, and a
-    room name set in capitals is one — so the word became a line, its top and
-    bottom became two parallel lines a wall thickness apart, and every room
-    label on the plan was reported as a wall lying across its own room. On one
-    floor plan 32 of 157 walls were printed words."""
-    from pipeline.plan.walls import _drop_lettering
-
-    label = [200.0, 100.0, 260.0, 108.0]  # the word "KITCHEN"
-    segments = [(100.5, 200.0, 260.0), (107.5, 200.0, 260.0)]
-    assert _drop_lettering(segments, None, "x", [label], config["walls"])[0] == []
-
-
-def test_a_wall_running_under_a_room_label_is_kept(config):
-    """A plan prints its room names on top of its rooms, so every wall of that
-    room passes near one. The test is containment, not overlap: a real wall is
-    many times longer than the label and only a fraction of it is inside."""
-    from pipeline.plan.walls import _drop_lettering
-
-    label = [200.0, 100.0, 260.0, 108.0]
-    wall_face = [(104.0, 60.0, 700.0)]
-    assert _drop_lettering(wall_face, None, "x", [label], config["walls"])[0] == wall_face
-
-
-def test_a_short_line_inside_a_long_note_is_not_lettering(config):
-    """A slab setout plan prints its notes right across the slab. Treating any
-    line inside a printed line of text as lettering threw away 20 of that
-    sheet's 25 walls — the drawn line has to be about the size of the word."""
-    from pipeline.plan.walls import _drop_lettering
-
-    note = [100.0, 100.0, 500.0, 108.0]  # a sentence printed over the plan
-    short = [(104.0, 300.0, 322.0)]
-    assert _drop_lettering(short, None, "x", [note], config["walls"])[0] == short
-
-
 def test_a_square_is_not_a_wall(config):
     """A dining chair is 440 mm across with its back drawn 76 mm behind it, and
     that passed every thickness test there was. A wall is longer than it is
     thick, at any scale and on any size of building."""
-    from pipeline.plan.walls import _pair_faces
+    from pipeline.plan.walls import _pair_faces_and_faces
 
     # two faces 230 mm apart running together for 230 mm
     faces = [(100.0, 500.0, 523.0, [], {}), (123.0, 500.0, 523.0, [], {})]
     settings = {**config["walls"], "min_wall_length_mm": 200, "min_length_to_thickness": 3.0}
-    assert _pair_faces(faces, 10.0, {"walls": settings}, []) == []
+    assert _pair_faces_and_faces(faces, 10.0, {"walls": settings}, [])[0] == []
 
 
 # --- the plan is drawn between its dimension strings -----------------------
@@ -2555,14 +2384,14 @@ def test_a_door_beside_a_partition_is_still_a_door(config):
 def test_the_second_look_widens_the_thickness_and_nothing_else(config):
     """Every other test in the pairing is there for its own reason. Skipping
     them on the second look let a 230 mm square back in as a wall."""
-    from pipeline.plan.walls import _pair_faces
+    from pipeline.plan.walls import _pair_faces_and_faces
 
     faces = [(100.0, 500.0, 523.0, [], {}), (123.0, 500.0, 523.0, [], {})]
     settings = {
         **config["walls"], "min_wall_length_mm": 200,
         "min_length_to_thickness": 3.0, "second_look_widening": 0.2,
     }
-    assert _pair_faces(faces, 10.0, {"walls": settings}, []) == []
+    assert _pair_faces_and_faces(faces, 10.0, {"walls": settings}, [])[0] == []
 
 
 # --- a carport is not part of the house ------------------------------------

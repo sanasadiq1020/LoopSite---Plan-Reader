@@ -46,7 +46,6 @@ from pipeline.plan.pagetype import detect_page_type
 from pipeline.plan.scale import calibrate_page
 from pipeline.plan.walls import (
     building_outline,
-    detect_walls,
     drawing_region,
     arrow_heads,
     mark_walls_in_dead_ground,
@@ -847,22 +846,14 @@ def analyze_page(
         # is printed, the drawing has to look like a building before they are
         # reported: a building is a closed shape, so it takes at least four
         # walls, and enough of them at a thickness the office actually builds.
-        # **Which reader measures the walls is a setting, not a rebuild.** The
-        # computer-vision reader (``cvwalls`` over ``cvdetect``) closes the
-        # drawing into solid bands and skeletonises them, so a wall is reported
-        # once rather than once per pair of drawn faces; the face-pairing
-        # reader (``walls``) is kept and can be switched back to on a deployed
-        # server. Both hand back the same canonical record and both go through
-        # the same junction, outer/inner and description pass, so everything
-        # downstream - the overlay, the model, the CSVs - is unaffected by the
-        # choice.
-        read_walls = (
-            cvwalls.detect_walls
-            if cvwalls.reader_name(config) == "cvdetect"
-            else detect_walls
-        )
+        # **One reader.** ``cvwalls`` over ``cvdetect`` closes the drawing into
+        # solid bands and skeletonises them, so a wall is reported once rather
+        # than once per pair of drawn faces. Its output then goes through the
+        # same junction, outer/inner and description pass that every wall in
+        # this pipeline has always gone through, so the overlay, the model and
+        # the CSVs read exactly the record they always did.
         detected_walls = (
-            read_walls(
+            cvwalls.detect_walls(
                 rulings,
                 calibration,
                 config,
