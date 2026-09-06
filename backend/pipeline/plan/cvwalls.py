@@ -44,6 +44,7 @@ import statistics
 
 from app.logging_setup import get_logger
 from pipeline.plan import walls as legacy
+from pipeline.plan import selfcheck
 from pipeline.plan.cvdetect import junctions as cv_junctions
 from pipeline.plan.cvdetect import openings as cv_openings
 from pipeline.plan.cvdetect import settings as cv_settings
@@ -240,6 +241,7 @@ def _span_of(axis: str, points: list, wall, scale, thickness_pt: float):
         "confidence": wall.confidence,
         "measured_from": wall.extraction_method,
         "drawn_as": wall.drawn_as,
+        "thickness_from": getattr(wall, "thickness_from", "band"),
     }
 
 
@@ -349,6 +351,17 @@ def _one_wall(run: list, mm_per_point: float, narrowest_break_mm: float) -> dict
     end = max(piece["end_pt"] for piece in run)
     position = sum(piece["position_pt"] for piece in run) / len(run)
     thickness_mm = sum(piece["thickness_mm"] for piece in run) / len(run)
+    # **How the reported thickness was arrived at**, recorded rather than
+    # acted on. One piece reports the source it was measured by; several
+    # pieces are averaged above, and an average of a face measurement and a
+    # band measurement is neither - so it says so.
+    sources = {piece.get("thickness_from", "band") for piece in run}
+    if len(run) > 1 and len(sources) > 1:
+        provenance = "averaged_mixed"
+    elif len(run) > 1:
+        provenance = "averaged_" + next(iter(sources))
+    else:
+        provenance = next(iter(sources))
     half = (thickness_mm / mm_per_point) / 2.0
 
     gaps = []
@@ -384,6 +397,7 @@ def _one_wall(run: list, mm_per_point: float, narrowest_break_mm: float) -> dict
         "confidence_band": "high" if confidence >= 0.75 else "review",
         "review_status": "needs_review",
         "merged_from": len(run),
+        "thickness_provenance": provenance,
         "meets_another_wall": True,
         "linked_opening_marks": [],
         "gaps_pt": gaps,
@@ -1301,6 +1315,7 @@ def _through_the_same_post_processing(
     # do.** A centreline stops at the face of the wall it runs into, half a
     # thickness short of its centreline, so without this the junction graph is
     # far too sparse for any circuit to close.
+    selfcheck.attrition_record(sheet_id, "1 traced and rejoined", walls)
     closed = cv_junctions.close_the_graph(
         walls, mm_per_point, cv_settings.load_settings()
     )
@@ -1310,6 +1325,7 @@ def _through_the_same_post_processing(
             f"extended over {closed['passes']} pass(es) to close the wall graph"
         )
 
+    selfcheck.attrition_record(sheet_id, "2 graph closed", walls)
     alone = legacy.mark_walls_that_stand_alone(walls, mm_per_point, config)
     if alone:
         logger.info(
@@ -1322,6 +1338,7 @@ def _through_the_same_post_processing(
         wall["wall_id"] = f"{sheet_id}-W{position:03d}"
         wall["line_source"] = line_source
 
+    selfcheck.attrition_record(sheet_id, "3 standing alone marked", walls)
     legacy.detect_junctions(walls, config)
     tails = legacy.trim_free_tails(walls, rooms or [], mm_per_point, config)
     if tails:
@@ -1330,18 +1347,23 @@ def _through_the_same_post_processing(
             "margin, and were cut back to the last wall they meet"
         )
         legacy.detect_junctions(walls, config)
+    selfcheck.attrition_record(sheet_id, "4 free tails trimmed", walls)
     detached = legacy.mark_detached_structures(walls, config)
     if detached:
         logger.info(
             f"{sheet_id}: {detached} wall(s) belong to a structure standing apart "
             "from the building"
         )
+    selfcheck.attrition_record(sheet_id, "5 detached structures marked", walls)
     legacy.classify_outer_inner(walls, config)
+    selfcheck.attrition_record(sheet_id, "6 outer/inner classified", walls)
     legacy.describe_walls(walls, mm_per_point, config, sheet_id, page_number)
     # **A wall either closes a room or holds up the outside of the building.**
     # Last, and that is not arbitrary: ``describe_walls`` rewrites each record
     # from the geometry, ``not_used_because`` included, so a reason written
     # before it is silently thrown away - measured, the invariant set aside 61
     # candidates and 61 of them came back.
+    selfcheck.attrition_record(sheet_id, "7 reasons written", walls)
     _keep_what_encloses_something(walls, mm_per_point, config, rooms,
                                   structure_labels)
+    selfcheck.attrition_record(sheet_id, "8 enclosure and grid rules", walls)

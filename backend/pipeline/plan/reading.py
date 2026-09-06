@@ -36,6 +36,7 @@ from pipeline.plan import dimensions as dimensions_module
 from pipeline.plan import rooms as rooms_module
 from pipeline.plan import schedules as schedules_module
 from pipeline.plan import cvwalls
+from pipeline.plan import selfcheck
 from pipeline.plan.layout import extract_rulings
 from pipeline.plan.openingevidence import read_openings_from_the_drawing
 from pipeline.plan.openings import (
@@ -852,6 +853,7 @@ def analyze_page(
         # same junction, outer/inner and description pass that every wall in
         # this pipeline has always gone through, so the overlay, the model and
         # the CSVs read exactly the record they always did.
+        selfcheck.attrition_reset(sheet_id)
         detected_walls = (
             cvwalls.detect_walls(
                 rulings,
@@ -905,6 +907,7 @@ def analyze_page(
             "printed_mm_per_point"
         )
         if detected_walls and mm_per_point:
+            selfcheck.attrition_record(sheet_id, "9 before the drawing-area trim", detected_walls)
             trimmed, dropped = trim_walls_to_the_drawing(
                 detected_walls, region, mm_per_point, config
             )
@@ -932,6 +935,7 @@ def analyze_page(
         # drawing scale.
         wall_settings = config.get("walls", {})
         if detected_walls:
+            selfcheck.attrition_record(sheet_id, "10 drawing-area trim", detected_walls)
             dead = mark_walls_in_dead_ground(
                 detected_walls,
                 building_outline(detected_walls, config),
@@ -945,6 +949,7 @@ def analyze_page(
                 )
             # A line finishing in an arrowhead points at something, which a
             # wall never does.
+            selfcheck.attrition_record(sheet_id, "11 dead ground, dashed and panels", detected_walls)
             leaders = mark_walls_with_an_arrow_at_the_end(
                 detected_walls, arrow_heads(page, wall_settings), wall_settings
             )
@@ -954,6 +959,8 @@ def analyze_page(
                     "they are notes' leaders rather than walls"
                 )
 
+        if detected_walls:
+            selfcheck.attrition_record(sheet_id, "12 arrowhead leaders", detected_walls)
         detected_openings = place_openings_on_walls(
             opening_marks, detected_walls, calibration, config, sheet_id
         )

@@ -1168,8 +1168,12 @@ _OVERLAY_FILENAME_RE = re.compile(r"^overlay_\d{3}\.png$")
 # than by a pattern, because these are the only files this route may ever hand
 # out - a filename arriving from a browser never gets to choose a path.
 _DETECTION_PAGE_RE = re.compile(r"^overlay_page_(\d+)\.png$")
-_DETECTION_FILES = {"overlay_legend.png": "image/png",
-                    "detection_summary.json": "application/json"}
+_DETECTION_FILES = {
+    "overlay_legend.png": "image/png",
+    "detection_summary.json": "application/json",
+    "self_check.json": "application/json",
+    "self_check.csv": "text/csv",
+}
 
 
 def resolve_detection_file_path(run_id: str, filename: str):
@@ -1241,11 +1245,14 @@ EXPORTS = {
     "schedule-rows": "schedule_rows.csv",
     "walls": "walls.csv",
     "openings": "openings.csv",
+    # What the reading says about itself, checked against the same PDF.
+    "self-check": "self_check.csv",
 }
 
 JSON_EXPORTS = {
     "walls": "walls.json",
     "wall-graph": "wall_graph.json",
+    "self-check": "self_check.json",
 }
 
 _EXPORT_FILENAMES = (

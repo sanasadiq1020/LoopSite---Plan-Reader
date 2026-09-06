@@ -23,6 +23,7 @@ import {
 } from "@/lib/api";
 import { Card, Tabs } from "@/components/Ui";
 import { RunOverview, SheetIndexCard } from "@/components/RunOverview";
+import { SheetChecksPanel } from "@/components/SheetChecksPanel";
 import {
   DimensionsTable,
   OpeningsTable,
@@ -395,6 +396,10 @@ export default function Home() {
   const tabs = [
     { id: "model", label: "3D model" },
     { id: "sheets", label: "Sheets", count: result?.sheets.length ?? 0 },
+    // Every sheet, drawn, in order, including the ones that produced
+    // nothing - a sheet with nothing on it is a result a reviewer has to
+    // be able to see, so it is never left out of this list.
+    { id: "checks", label: "Sheet checks", count: result?.sheets.length ?? 0 },
     { id: "rooms", label: "Rooms & areas", count: allRooms.length },
     { id: "dimensions", label: "Dimensions", count: allDimensions.length },
     { id: "walls", label: "Walls", count: allWalls.length },
@@ -638,6 +643,18 @@ export default function Home() {
                     description: "Everything worth a second look, with the sheet and position.",
                     href: issuesCsvUrl(result.run_id),
                   },
+                  {
+                    label: "Checks on this reading",
+                    description:
+                      "What the reading says about itself, checked against this PDF alone — one row per sheet per check.",
+                    href: exportCsvUrl(result.run_id, "self-check"),
+                  },
+                  {
+                    label: "Checks on this reading, in full",
+                    description:
+                      "The same checks with every figure behind them, including where each sheet's wall candidates went.",
+                    href: exportJsonUrl(result.run_id, "self-check"),
+                  },
                 ]}
               />
             </div>
@@ -671,6 +688,10 @@ export default function Home() {
                   <SheetRegisterTable sheets={result.sheets} onSelect={openSheet} />
                 </Card>
               </div>
+            )}
+
+            {tab === "checks" && result && (
+              <SheetChecksPanel runId={result.run_id} />
             )}
 
             {tab === "index" && planReading?.sheet_index && (

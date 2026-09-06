@@ -242,6 +242,146 @@ def _as_drawn(page_reading: dict, config: dict) -> list:
         return walls
 
 
+# --- the header every overlay carries ---------------------------------------
+
+
+def _line_source_of(page_reading: dict) -> tuple:
+    """Whether this sheet was read as line work or as a picture, and why.
+
+    A measurement taken off pixels is not hidden behind one taken off exact
+    geometry, so the overlay says which it was on its face.
+    """
+    sources = {w.get("line_source") for w in (page_reading.get("walls") or []) if w.get("line_source")}
+    if not sources:
+        return ("not read", "no walls were traced on this sheet")
+    if any("image" in str(s) or "raster" in str(s) or "picture" in str(s) for s in sources):
+        return ("read as a picture",
+                "the sheet's own geometry did not trace a building, so the page was rendered and read")
+    return ("read as line work", "the sheet's own drawn geometry traced a building")
+
+
+def _header_lines(page_reading: dict) -> list:
+    """What the header states, in the words a plan reader would use."""
+    from pipeline.plan import selfcheck
+
+    title_block = page_reading.get("title_block") or {}
+    page_type = page_reading.get("page_type") or {}
+    calibration = page_reading.get("scale_calibration") or {}
+    walls = page_reading.get("walls") or []
+    kept = [w for w in walls if not w.get("not_used_because")]
+    source, why_source = _line_source_of(page_reading)
+
+    # A title-block field is a record - the value, what was read, how it was
+    # found and how far to trust it - so the value is taken out of it rather
+    # than the whole record being printed.
+    def stated(field):
+        value = title_block.get(field)
+        if isinstance(value, dict):
+            value = value.get("value")
+        text = str(value).strip() if value not in (None, "") else ""
+        return text
+
+    number = stated("sheet_number") or stated("drawing_number") or page_reading.get("sheet_id") or "?"
+    title = stated("sheet_title") or "(no title printed on this sheet)"
+    confidence = page_type.get("confidence")
+    result = (calibration.get("result") or "not checked").replace("_", " ")
+    mm_per_point = (calibration.get("measured_mm_per_point")
+                    or calibration.get("printed_mm_per_point"))
+    scale_text = f"{result}"
+    if mm_per_point:
+        scale_text += f" — {float(mm_per_point):.3f} mm per point"
+    else:
+        scale_text += " — no value established, so nothing on this sheet is measured"
+
+    lines = [
+        f"{number}   {title}",
+        "Sheet type: %s%s     |     %s (%s)" % (
+            page_type.get("value") or "unknown",
+            f" ({float(confidence):.0%} confident)" if confidence is not None else "",
+            source, why_source),
+        f"Scale: {scale_text}",
+        "Found:  %d walls kept, %d set aside  |  %d openings  |  %d rooms  |  %d dimensions in %d strings" % (
+            len(kept), len(walls) - len(kept),
+            len(page_reading.get("openings") or []),
+            len(page_reading.get("rooms") or []),
+            len(page_reading.get("dimensions") or []),
+            len(page_reading.get("dimension_chains") or [])),
+    ]
+    try:
+        why = selfcheck.why_nothing_was_found(page_reading)
+    except Exception:
+        why = ""
+    if why:
+        lines.append("NOTHING WAS FOUND ON THIS SHEET — " + why)
+    return lines
+
+
+def _compose(image, page_reading: dict, colours: dict):
+    """The sheet with a header stating what was read, and the legend beneath it.
+
+    The legend is on every overlay rather than in a file of its own, because a
+    reviewer looking at one sheet should not have to fetch a second picture to
+    find out what a colour means.
+    """
+    from PIL import Image, ImageDraw
+
+    lines = _header_lines(page_reading)
+    draw_probe = ImageDraw.Draw(image)
+    body = _font(max(14, image.width // 110))
+    small = _font(max(12, image.width // 130))
+    pad = 14
+    swatch = 18
+
+    rows = [(key, style, text) for key, style, text in LEGEND_ROWS]
+    # **The column has to fit the longest entry, not an assumed width.** Set by
+    # a fixed divisor the entries ran into one another, so the widest label is
+    # measured and the columns are sized from it.
+    try:
+        widest = max(draw_probe.textlength(text, font=small) for _k, _s, text in rows)
+    except Exception:
+        widest = 320.0
+    column_width = int(widest) + swatch + 34
+    per_row = max(1, min(len(rows), image.width // max(1, column_width)))
+    legend_rows = (len(rows) + per_row - 1) // per_row
+
+    line_h = body.size + 7
+    legend_h = legend_rows * (small.size + 9)
+    height = pad * 2 + len(lines) * line_h + 8 + legend_h
+
+    out = Image.new("RGB", (image.width, image.height + height), (255, 255, 255))
+    draw = ImageDraw.Draw(out)
+    draw.rectangle([0, 0, image.width, height], fill=(246, 246, 248))
+    draw.line([0, height - 1, image.width, height - 1], fill=(150, 150, 155), width=2)
+
+    y = pad
+    for index, text in enumerate(lines):
+        colour = (20, 20, 24)
+        if text.startswith("NOTHING WAS FOUND"):
+            colour = _rgb(colours.get("flagged_wall", "#DC2626"), (220, 38, 38))
+        draw.text((pad, y), text, fill=colour, font=body)
+        y += line_h
+    y += 8
+
+    column = 0
+    row_y = y
+    for key, style, text in rows:
+        x = pad + column * min(column_width, (image.width - pad) // per_row)
+        colour = _rgb(colours.get(key, "#000000"))
+        if style == "dashed":
+            _dashed_rectangle(draw, [x, row_y + 3, x + swatch, row_y + swatch - 3], colour, 2, dash=4)
+        elif style == "dot":
+            draw.ellipse([x + 4, row_y + 5, x + swatch - 4, row_y + swatch - 5], fill=colour)
+        else:
+            draw.rectangle([x, row_y + 3, x + swatch, row_y + swatch - 3], fill=colour)
+        draw.text((x + swatch + 7, row_y + 2), text, fill=(40, 40, 46), font=small)
+        column += 1
+        if column >= per_row:
+            column = 0
+            row_y += small.size + 9
+    out.paste(image, (0, height))
+    return out
+
+
 def render_detection_overlay(page, page_reading: dict, out_path, config: dict) -> bool:
     """Draws one sheet's walls, openings, gaps and junctions over the sheet.
 
@@ -390,6 +530,10 @@ def render_detection_overlay(page, page_reading: dict, out_path, config: dict) -
                       junction_colour)
 
         out_path = str(out_path)
+        try:
+            image = _compose(image, page_reading, colours)
+        except Exception as e:
+            logger.exception(f"the overlay header could not be drawn: {e}")
         image.save(out_path)
         return True
     except Exception as e:
@@ -634,8 +778,12 @@ def write_detection_outputs(doc, pages: list, out_dir, config: dict) -> dict:
     drawn = 0
     for page_reading in pages:
         number = page_reading.get("page_number")
-        if number is None or page_reading.get("error"):
+        if number is None:
             continue
+        # **A sheet that failed still gets a picture.** A reviewer cannot
+        # tell a drawing with nothing on it from a drawing this tool could
+        # not read, so the sheet is drawn with its header saying which it
+        # was. Absence has to be visible, not missing.
         try:
             page = doc[number - 1]
         except Exception as e:
@@ -650,6 +798,26 @@ def write_detection_outputs(doc, pages: list, out_dir, config: dict) -> dict:
 
     summary = detection_summary(pages, config)
     summary["overlays_drawn"] = drawn
+    summary["sheets_in_document"] = len([p for p in pages if p.get("page_number")])
+    # **The reading checked against the same PDF it came from.** Every check
+    # compares what the reader produced against something the drawing states
+    # independently - its own dimension strings, its own overalls, its own
+    # schedule - so it needs no reference file and no per-project setup.
+    try:
+        from pipeline.plan import selfcheck
+
+        report = selfcheck.run(pages, config)
+        selfcheck.write_outputs(report, out_dir)
+        summary["self_check"] = report
+        table = selfcheck.summary_table(report)
+        try:
+            print(table, flush=True)
+        except UnicodeEncodeError:
+            import sys
+            enc = getattr(sys.stdout, "encoding", None) or "ascii"
+            print(table.encode(enc, "replace").decode(enc), flush=True)
+    except Exception as e:
+        logger.exception(f"the self-checks could not be run: {e}")
     # **The pictures are read back off the paper.** Every figure in this summary
     # is computed from the same records the pictures are drawn from, so a figure
     # and its drawing can never disagree - which is exactly why the figures

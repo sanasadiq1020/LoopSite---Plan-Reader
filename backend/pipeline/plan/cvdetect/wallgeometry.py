@@ -104,6 +104,10 @@ class Wall:
     drawn_as: str = "outline"
     opening_ids: list = field(default_factory=list)
     note: str = ""
+    # How this thickness was obtained: "faces" where the wall's own two
+    # drawn faces were paired and measured, "band" where only the closed
+    # band could be measured. Recorded, never acted on here.
+    thickness_from: str = "band"
 
     def as_record(self) -> dict:
         coords = list(self.centreline.coords) if self.centreline is not None else []
@@ -129,6 +133,7 @@ class Wall:
             "opening_ids": list(self.opening_ids),
             "interior_fill_share": round(self.fill_share, 3),
             "interior_drawn_as": self.drawn_as,
+            "thickness_from": self.thickness_from,
             "note": self.note,
         }
 
@@ -690,8 +695,10 @@ def _walls_from_band(
         # thickness, so where a run lies along a pair, the pair's figure is
         # used and the band's is set aside.
         from_faces = _thickness_from_the_faces(run, face_pairs, scale, settings)
+        thickness_from = "band"
         if from_faces:
             thickness_mm = from_faces
+            thickness_from = "faces"
         # **A wall is two faces, so a line with no twin is not a wall.** This
         # is the rule that clears the stray lines running off into the paper:
         # a page border, a grid tick, an extension line and a roof overhang are
@@ -711,7 +718,7 @@ def _walls_from_band(
 
         wall = _wall_from_points(
             simplified, (0, 0), scale, thickness_mm, sheet_name, source,
-            run["fill_share"], run["drawn_as"], len(walls) + 1,
+            run["fill_share"], run["drawn_as"], len(walls) + 1, thickness_from,
         )
         if wall is None:
             continue
@@ -1033,7 +1040,7 @@ def _thickness_along(distance, points, offset) -> float:
     return float(np.median(values))
 
 
-def _wall_from_points(points, offset, scale, thickness_mm, sheet_name, source, fill_share, drawn_as, index):
+def _wall_from_points(points, offset, scale, thickness_mm, sheet_name, source, fill_share, drawn_as, index, thickness_from="band"):
     """One wall record, with its centreline and outline as Shapely geometry."""
     try:
         from shapely.geometry import LineString
@@ -1084,6 +1091,7 @@ def _wall_from_points(points, offset, scale, thickness_mm, sheet_name, source, f
         confidence=max(0.1, min(0.95, confidence)),
         fill_share=fill_share,
         drawn_as=drawn_as,
+        thickness_from=thickness_from,
         note=(
             "Measured from the page image rather than the drawing's own geometry."
             if source == "page_image"

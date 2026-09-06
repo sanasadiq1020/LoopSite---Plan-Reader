@@ -938,7 +938,7 @@ export function sheetRegisterCsvUrl(runId: string): string {
 
 export function exportCsvUrl(
   runId: string,
-  name: "rooms" | "dimensions" | "schedule-rows" | "walls" | "openings"
+  name: "rooms" | "dimensions" | "schedule-rows" | "walls" | "openings" | "self-check"
 ): string {
   return fileUrl(`/api/plan/${runId}/export/${name}.csv`);
 }
@@ -946,7 +946,10 @@ export function exportCsvUrl(
 /** The walls and their junctions as data rather than as a table: the two faces
  *  each wall was measured from, the breaks in it, and which walls it is built
  *  into. A spreadsheet row cannot carry any of that. */
-export function exportJsonUrl(runId: string, name: "walls" | "wall-graph"): string {
+export function exportJsonUrl(
+  runId: string,
+  name: "walls" | "wall-graph" | "self-check"
+): string {
   return fileUrl(`/api/plan/${runId}/export/${name}.json`);
 }
 
@@ -966,6 +969,59 @@ export function groundTruthTemplateUrl(runId: string): string {
 /** The row-by-row comparison against the manually checked reference. */
 export function accuracyCsvUrl(runId: string): string {
   return fileUrl(`/api/plan/${runId}/accuracy-report.csv`);
+}
+
+/** One sheet's detection overlay: what was found, what was set aside and why,
+ *  with a header stating the sheet, its type, its scale and the counts. Drawn
+ *  for every sheet in the document, including the ones that produced nothing —
+ *  a sheet with nothing on it is a result a reviewer has to be able to see. */
+export function detectionOverlayUrl(runId: string, pageNumber: number): string {
+  return fileUrl(`/api/plan/${runId}/detection/overlay_page_${pageNumber}.png`);
+}
+
+/** What the reading says about itself, checked against the same PDF: the
+ *  scale against the sheet's own dimension strings, the traced building
+ *  against its printed overalls, the openings against whatever the document
+ *  states them twice with. Nothing here needs a reference file. */
+export interface SelfCheckResult {
+  status: "pass" | "fail" | "not_applicable" | "unverifiable";
+  detail: string;
+  [key: string]: unknown;
+}
+
+export interface SelfCheckSheet {
+  sheet_id: string;
+  page_number: number;
+  title: string | null;
+  sheet_type: string;
+  nothing_found_because: string;
+  checks: Record<string, SelfCheckResult>;
+}
+
+export interface SelfCheckReport {
+  sheets: SelfCheckSheet[];
+  document: {
+    sheet_count: number;
+    sheet_types_present: string[];
+    sheets_drawing_a_plan: number;
+    sheets_with_a_confirmed_scale: number;
+    schedule_rows_in_document: number;
+    openings_shown_on_elevations: number;
+    outputs_unavailable: Record<string, string>;
+  };
+  totals: Record<string, Record<string, number>>;
+}
+
+export async function fetchSelfCheck(runId: string): Promise<SelfCheckReport | null> {
+  try {
+    return await requestJson<SelfCheckReport>(
+      `/api/plan/${runId}/detection/self_check.json`
+    );
+  } catch {
+    // A run whose checks could not be written still shows its sheets; the
+    // panel says the checks are unavailable rather than the page failing.
+    return null;
+  }
 }
 
 export function issuesCsvUrl(runId: string): string {
