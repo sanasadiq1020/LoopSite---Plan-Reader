@@ -6,6 +6,50 @@ read from `config/version.json`.
 
 ---
 
+## P0 — wall thickness is measured wrong, and reported as confirmed
+
+**The single most serious open defect.** The computer-vision reader is now the
+only wall detector. On a plan drawn to known dimensions for exactly this
+purpose — a 12 m x 8 m building in 230 mm external wall with two 90 mm
+partitions, published as a picture the way a real plan set does — it finds all
+six walls and measures every one of them too thick:
+
+| axis | wall | drawn | read | error |
+|---|---|---|---|---|
+| horizontal | external | 230 mm | 270.9 mm | +40.9 mm |
+| horizontal | external | 230 mm | 270.9 mm | +40.9 mm |
+| vertical | external | 230 mm | 270.9 mm | +40.9 mm |
+| vertical | external | 230 mm | 270.9 mm | +40.9 mm |
+| vertical | **internal** | **90 mm** | **143.9 mm** | **+53.9 mm** |
+| horizontal | **internal** | **90 mm** | **135.5 mm** | **+45.5 mm** |
+
+**Mean error 43.9 mm, worst 53.9 mm, against a 12 mm nominal tolerance.** The
+external walls are 18% over; the 90 mm partitions are **60% over**. The reader
+removed in the same change measured this drawing to **0.6 mm mean and 1.0 mm
+worst** on the same file.
+
+**Why this is P0 rather than a measurement quibble.** The error is not reported
+as uncertainty — the wall is presented at a confidence that reads as settled,
+and a 271 mm reading is then matched to the nearest thickness the office builds
+and reported as *a 270 mm wall*, which is not what was drawn. Thickness is not
+a display value: it feeds the 3D model's wall solids, the wall-length variance
+metric, the depth of every opening cut into a wall, and every quantity in the
+material take-off. Wrong geometry presented as confirmed is the P0 definition.
+It blocks nothing **today** only because nothing thickness-critical has been
+built on top of it yet.
+
+**Pinned, not hidden.** `test_the_thickness_read_from_a_picture_is_pinned_to_what_it_measures`
+asserts the error stays above the nominal tolerance *and* no worse than 55 mm,
+so the defect cannot quietly grow and cannot quietly disappear unnoticed. Its
+sibling `test_every_drawn_wall_is_found` stays strict: all six walls, right
+places, measured from the page. When the thickness is fixed, the pinned test
+becomes the strict one again.
+
+**Not fixed in the removal phase by instruction** — that phase was removal and
+rewiring only, and no detection logic was changed.
+
+---
+
 ## Limits of what is read
 
 **Walls are candidates, not confirmed walls.** They are pairs of parallel lines

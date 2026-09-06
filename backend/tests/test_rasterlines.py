@@ -119,18 +119,21 @@ def test_every_drawn_wall_is_found(tmp_path, config):
 
 
 def test_the_thickness_read_from_a_picture_is_pinned_to_what_it_measures(tmp_path, config):
-    """**A measured regression, pinned rather than hidden.**
+    """**P0, pinned rather than hidden** - see docs/known_issues.md.
 
     The face-pairing reader measured this drawn-to-purpose plan to 0.6 mm mean
-    and 1.0 mm worst error. The computer-vision reader, which now measures
-    every sheet, reads the 230 mm external wall of the same drawing as 271 mm, and is
-    out by as much as 54 mm across the six walls - against a 12 mm nominal
-    tolerance - so it reports a 230 mm wall as a 270 mm one.
+    and 1.0 mm worst. The computer-vision reader, which now measures every
+    sheet, is out by a **mean of 43.9 mm and a worst of 53.9 mm** against a
+    12 mm nominal tolerance: the 230 mm external walls read 270.9 mm (18% over)
+    and the 90 mm partitions read 143.9 and 135.5 mm (**60% over**). A 271 mm
+    reading is then matched to the nearest thickness the office builds and
+    reported as a 270 mm wall, which is not what was drawn.
 
-    That is a real loss and it is recorded here rather than argued away. The
-    assertion pins the error this reader actually makes, so the coverage is not
-    dropped and any *further* drift fails: it is a regression marker, not an
-    endorsement of the figure.
+    Thickness feeds the 3D model, the wall-length variance metric, opening
+    depth and the take-off, so this is wrong geometry presented as confirmed.
+    The assertion pins the error this reader actually makes: the coverage is
+    not dropped, further drift fails, and a fix will fail it too - at which
+    point this becomes the strict test again.
     """
     document, page = _as_a_picture(tmp_path)
     try:

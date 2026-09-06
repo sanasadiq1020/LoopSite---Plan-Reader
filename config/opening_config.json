@@ -44,14 +44,11 @@
     "max_line_width_pt": 0.8,
     "line_tolerance_pt": 0.12,
     "face_inset_pt": 0.15,
-    "min_share_of_the_gap": 0.5,
-    "max_share_of_the_wall": 0.95
+    "min_share_of_the_gap": 0.5
   },
   "_source_4_note": "SCHEDULE ENTRY. The mark read beside the gap is looked up in every schedule table in the whole document, because a door schedule is printed on its own sheet. A row that matches gives the width, the height and the type as the office stated them, and a schedule width that agrees with the width measured across the gap is the strongest agreement this reader can produce. A row whose width disagrees is kept and reported rather than either value being chosen silently.",
   "schedule_entry": {
-    "enabled": true,
-    "width_tolerance_mm": 250,
-    "width_tolerance_share": 0.2
+    "enabled": true
   },
   "_source_5_note": "PRINTED LEAF DIMENSION. An Australian residential plan commonly dimensions each door by printing its leaf width at the opening itself - 870, 920 - rather than only in a schedule. That figure is the drawing stating the opening's own size, and it is already in the reading, so it costs nothing to ask for. Two rules keep it from reading an ordinary dimension as a door. A leaf dimension is printed ACROSS the wall, between its two faces; a wall or setout dimension is printed clear of the building on a dimension string, so the figure's box must overlap the band between the wall's own faces and sit within reach of its line. And the figure must be a size a leaf is actually made in. It is a hint about the KIND as well: on these plans a leaf width printed at an opening is a door convention, so it names a door - but it is the weakest of the readings and never overrules a symbol drawn to size.",
   "leaf_dimension": {
@@ -61,8 +58,7 @@
     "leaf_dim_max_mm": 2500,
     "must_sit_between_the_wall_faces": true,
     "span_slack_mm": 200,
-    "confidence_bonus": 0.3,
-    "type_hint": "door"
+    "confidence_bonus": 0.3
   },
   "_confidence_note": "How many of the four sources spoke decides everything. None of them and it is not an opening - it is written to the issues log as an unresolved gap, with its wall, its width and where on the sheet to look, so a reviewer can see what was set aside rather than being told nothing. One source and it is an opening that a person should look at. Two or more and the drawing has said the same thing twice, which is as good as this reading gets.",
   "confidence": {
