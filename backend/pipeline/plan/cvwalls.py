@@ -729,6 +729,13 @@ def _keep_what_encloses_something(walls: list, mm_per_point: float, config: dict
                 "end - a pergola's rafters, a carport's joists or a roof grid. A "
                 "structure like that is drawn attached to the house and is no part of it."
             )
+            # **Say it the way every other set-aside rule says it.** The
+            # marked-up sheet a reader actually opens draws a candidate unless
+            # this flag is down - it is what ``mark_walls_in_dead_ground`` and
+            # the plan-area trim both set. Writing only the reason left the
+            # rafters drawn as walls on the one picture anybody looks at, so
+            # the reading said one thing and the drawing said another.
+            wall["meets_another_wall"] = False
             wall["review_needed"] = True
             set_aside += 1
             gridded += 1
@@ -740,6 +747,7 @@ def _keep_what_encloses_something(walls: list, mm_per_point: float, config: dict
             "part of the outside of the building. A roof line, an eave, a rafter, a "
             "boundary or a setting-out line looks like this."
         )
+        wall["meets_another_wall"] = False
         wall["review_needed"] = True
         set_aside += 1
 
