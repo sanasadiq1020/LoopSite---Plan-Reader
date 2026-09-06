@@ -148,7 +148,8 @@ def detect_walls(
         "cv_vector" if diagnostics.get("line_source") == "vector_paths" else "cv_raster"
     )
     _through_the_same_post_processing(
-        walls, mm_per_point, config, sheet_id, page_number, rooms, line_source
+        walls, mm_per_point, config, sheet_id, page_number, rooms, line_source,
+        vectorpaths.structure_labels_on(page, detection),
     )
     logger.info(
         f"{sheet_id}: computer-vision reader gave {len(measured)} centrelines -> "
@@ -617,7 +618,8 @@ def _stretch_of(wall: dict, start: float, end: float, mm_per_point: float) -> di
     return piece
 
 
-def _keep_what_encloses_something(walls: list, mm_per_point: float, config: dict) -> int:
+def _keep_what_encloses_something(walls: list, mm_per_point: float, config: dict,
+                                  rooms: list = None, structure_labels: list = None) -> int:
     """Sets aside every candidate that neither closes a room nor holds the outside.
 
     **The invariant is a fact about buildings, not a threshold.** A wall bounds
@@ -711,7 +713,10 @@ def _keep_what_encloses_something(walls: list, mm_per_point: float, config: dict
     #
     # So both must hold: on no circuit, AND running out into open paper.
     shell = _Shell(list(live.values()))
-    on_a_grid = _open_grid_of_walls(live)
+    on_a_grid = _open_grid_of_walls(live, rooms)
+    on_a_grid |= _the_rest_of_that_structure(
+        live, on_a_grid, rooms, structure_labels, mm_per_point
+    )
 
     set_aside, gridded = 0, 0
     for wall_id, wall in live.items():
@@ -747,77 +752,154 @@ def _keep_what_encloses_something(walls: list, mm_per_point: float, config: dict
     return set_aside
 
 
-def _open_grid_of_walls(live: dict) -> set:
-    """The candidates that are a row of evenly spaced parallel cantilevers.
+def _open_grid_of_walls(live: dict, rooms: list = None) -> set:
+    """The candidates that are a row of evenly spaced parallel lines over open paper.
 
     **An attached structure has to be prunable, and the circuit test cannot do
-    it.** A pergola's rafters are drawn joined to the house at one end, so each
-    one has a junction and the detached-structure rule - which looks for a
-    group of walls touching nothing - cannot see them either. What they do have
-    is the shape of a grid, and no part of a house has it: four or more
-    parallel candidates, spanning the same stretch, at one repeated spacing,
-    **each with a free end**. Two walls of a room are not evenly spaced with
-    four more like them, and a wall built into the building at both ends is
-    never a cantilever.
+    it.** A pergola's rafters and a carport's joists are drawn joined to the
+    house, so each one has a junction and neither the detached-structure rule
+    nor the closed-circuit invariant can see them. What they do have is the
+    shape of a grid: three or more parallel candidates, spanning the same
+    stretch, at one repeated spacing.
 
-    Needs no vocabulary, so it reaches a pergola the drawing never labels -
-    which is the half of this that a word list can never do.
+    **What tells a rafter grid from a row of rooms is where it is drawn, not
+    what its members look like.** Two likeness tests were tried first and both
+    were wrong in the same direction - they were tight enough to stop the false
+    positives and tight enough to stop the real thing with them:
+
+    *   *Held at one point at most.* Rafters are commonly drawn between two
+        beams, so they have a junction at each end. Measured on a real carport,
+        this rejected the very grid it was written for - three rafters of 2.88,
+        2.71 and 2.73 m at 49-point centres, standing in the roof strip above
+        every room label.
+    *   *All the same length and thickness.* A verandah's rafters are cut to
+        the roof line, so they are not: 2.19, 2.63, 1.17, 0.78 and 0.78 m off
+        one 6.05 m beam. Requiring likeness rejected that whole run.
+
+    So the members are judged on nothing, and the **grid** is judged on where it
+    stands. A house's walls are drawn where its rooms are named; a roof is drawn
+    over open paper. That one test keeps the partitions this rule wrongly took
+    before - a 7.73 m internal wall among the rooms - and takes the rafters it
+    wrongly kept.
+
+    Where the sheet names too few rooms to say where its building is, nothing is
+    set aside: a sheet that cannot answer the question is not evidence for
+    either answer.
     """
     from pipeline.plan.cvdetect import settings as cv_settings
 
     detection = cv_settings.load_settings()
-    least = int(cv_settings.number(detection, "wall.grid_min_walls", 4))
+    least = int(cv_settings.number(detection, "wall.grid_min_walls", 3))
     regularity = cv_settings.number(detection, "wall.grid_spacing_regularity", 0.25)
     if least < 3 or len(live) < least:
         return set()
 
-    agreement = cv_settings.number(detection, "wall.grid_member_agreement", 0.25)
+    named = _where_the_rooms_are(rooms)
+    if named is None:
+        return set()
 
     found = set()
     try:
         for axis in ("x", "y"):
-            cantilevers = [
-                wall for wall in live.values()
-                if wall.get("runs_along") == axis and _is_a_cantilever(wall)
-            ]
-            for group in _rows_running_together(cantilevers, axis):
+            parallel = [wall for wall in live.values() if wall.get("runs_along") == axis]
+            for group in _rows_running_together(parallel, axis):
                 grid = _evenly_spaced(group, axis, regularity, least)
-                if len(grid) >= least and _all_alike(grid, agreement):
-                    found.update(wall["wall_id"] for wall in grid)
+                if len(grid) < least:
+                    continue
+                if _stands_among(grid, named):
+                    continue
+                found.update(wall["wall_id"] for wall in grid)
     except Exception as e:
         logger.exception(f"the open grids of walls could not be worked out: {e}")
         return set()
     return found
 
 
-def _is_a_cantilever(wall: dict) -> bool:
-    """Whether this candidate is held at one point at most.
+def _the_rest_of_that_structure(live: dict, on_a_grid: set, rooms: list,
+                                structure_labels: list, mm_per_point: float) -> set:
+    """The beams a pruned grid hangs off, and what the sheet names as a roof.
 
-    **A rafter is attached once and free at the other end.** Requiring only
-    *a* free end is not enough and the difference is not academic: measured, it
-    took a 3.5 m partition with four junctions and a 2.8 m one with two, both
-    built into the building along their length. A wall meeting the building at
-    two or more places is part of it, whatever else is true of it.
+    Taking the rafters out leaves what carried them. Measured on one real
+    carport, a 6.77 m line across the top of the sheet met five walls and **all
+    five were rafters this rule had just set aside** - it is the beam they hang
+    from, and nothing else in the building touches it.
+
+    The sheet's own words are read as well, which is the one place a vocabulary
+    earns its keep here: a 6.05 m line printed directly under ``Skillion roof to
+    carport`` and a 4.71 m one two metres from ``Extent of roof`` are named by
+    the drawing as what they are. The words are matched as **plain substrings**
+    so that a phrase inside a longer caption still counts.
+
+    **Both are gated on standing clear of the room labels**, and that gate is
+    what makes either safe. A house's walls are drawn where its rooms are named,
+    so a caption printed over the plan can never take a wall of the building,
+    however the phrase was matched.
     """
-    return len(wall.get("junctions") or []) <= 1
+    named = _where_the_rooms_are(rooms)
+    if named is None:
+        return set()
+
+    from pipeline.plan.cvdetect import settings as cv_settings
+
+    reach = cv_settings.number(
+        cv_settings.load_settings(), "wall.structure_label_reach_mm", 2500.0
+    ) / (mm_per_point or 1.0)
+    boxes = [
+        line["bbox"] for line in (structure_labels or [])
+        if line.get("bbox") and len(line["bbox"]) == 4
+    ]
+
+    also = set()
+    for wall_id, wall in live.items():
+        if wall_id in on_a_grid or wall.get("not_used_because"):
+            continue
+        box = wall.get("bbox")
+        if not box or _stands_among([wall], named):
+            continue
+
+        meets = [w for w in (wall.get("connects_to") or [])]
+        if meets and all(other in on_a_grid for other in meets):
+            also.add(wall_id)
+            continue
+        if any(_within(box, label, reach) for label in boxes):
+            also.add(wall_id)
+    return also
 
 
-def _all_alike(group: list, agreement: float) -> bool:
-    """Whether these candidates are the same member repeated.
+def _within(box, label, reach: float) -> bool:
+    """Whether a wall lies within reach of a printed label."""
+    across = max(label[0] - box[2], box[0] - label[2], 0.0)
+    down = max(label[1] - box[3], box[1] - label[3], 0.0)
+    return math.hypot(across, down) <= reach
 
-    **A grid is one thing drawn several times.** Rafters over a pergola are all
-    the same length and the same size; the partitions of a house are not.
-    Measured, the group this rejects held walls of 7.73 m and 0.78 m at 268 mm
-    and 102 mm - a set of rooms, spaced by chance, not a roof.
+
+def _where_the_rooms_are(rooms: list):
+    """The box the sheet's own room labels occupy, or None if it names too few."""
+    boxes = [
+        room.get("bbox") for room in (rooms or [])
+        if room.get("bbox") and len(room["bbox"]) == 4
+    ]
+    if len(boxes) < 2:
+        return None
+    return (
+        min(b[0] for b in boxes), min(b[1] for b in boxes),
+        max(b[2] for b in boxes), max(b[3] for b in boxes),
+    )
+
+
+def _stands_among(grid: list, named) -> bool:
+    """Whether this grid is drawn where the sheet names its rooms.
+
+    The grid as a whole is judged, not each member: a rafter run reaching down
+    to the wall it lands on touches the rooms at its very edge, and a house's
+    own partitions stand well inside them. So the test is on the middle of the
+    run - where the grid actually lives.
     """
-    for field in ("length_mm", "thickness_mm"):
-        values = [float(wall.get(field) or 0.0) for wall in group]
-        middle = statistics.median(values)
-        if middle <= 0:
-            return False
-        if statistics.pstdev(values) / middle > agreement:
-            return False
-    return True
+    middle_x = sum((min(w["bbox"][0], w["bbox"][2]) + max(w["bbox"][0], w["bbox"][2])) / 2
+                   for w in grid) / len(grid)
+    middle_y = sum((min(w["bbox"][1], w["bbox"][3]) + max(w["bbox"][1], w["bbox"][3])) / 2
+                   for w in grid) / len(grid)
+    return (named[0] <= middle_x <= named[2]) and (named[1] <= middle_y <= named[3])
 
 
 def _rows_running_together(walls: list, axis: str, share: float = 0.6) -> list:
@@ -1204,7 +1286,8 @@ def _fill_in_thickness_context(walls: list, config: dict) -> None:
 
 
 def _through_the_same_post_processing(
-    walls, mm_per_point, config, sheet_id, page_number, rooms, line_source
+    walls, mm_per_point, config, sheet_id, page_number, rooms, line_source,
+    structure_labels=None,
 ) -> None:
     """Everything ``walls.detect_walls`` does once it has its candidates.
 
@@ -1259,4 +1342,5 @@ def _through_the_same_post_processing(
     # from the geometry, ``not_used_because`` included, so a reason written
     # before it is silently thrown away - measured, the invariant set aside 61
     # candidates and 61 of them came back.
-    _keep_what_encloses_something(walls, mm_per_point, config)
+    _keep_what_encloses_something(walls, mm_per_point, config, rooms,
+                                  structure_labels)

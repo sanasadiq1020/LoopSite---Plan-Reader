@@ -1742,23 +1742,24 @@ def _line(x0, y0, x1, y1):
     return vp.Segment(x0, y0, x1, y1, 0.5, False, 0)
 
 
-def test_a_structure_label_is_a_name_not_a_sentence():
-    """Matching the word anywhere in a printed line was measured on the plan
-    sets in use and is unusable: it catches a construction note, a drawing
-    caption, an energy calculation and a line of a specification, each of which
-    would have set aside line work somewhere it has no business being."""
+def test_a_structure_label_is_matched_as_a_plain_substring():
+    """A phrase inside a longer caption still names the structure.
+
+    The first version required the printed line to be a name rather than a
+    sentence, and on the real sheets that refused every label there was:
+    ``Skillion roof to carport`` is four words. What keeps this safe is not the
+    word count but where the line work stands - the grid it is on must be clear
+    of the sheet's own room labels.
+    """
     from pipeline.plan.cvdetect import vectorpaths as vp
 
     words = ["PERGOLA", "CARPORT", "VERANDAH", "EXTENT OF ROOF"]
-    for label in ("PERGOLA", "CARPORT", "PROPOSED CARPORT", "Extent of roof"):
+    for label in ("PERGOLA", "CARPORT", "PROPOSED CARPORT",
+                  "Skillion roof to carport", "Extent of roof",
+                  "200x50 Salvaged timber rafters on pergola"):
         assert vp._names_a_structure(label, words), label
-    for sentence in (
-        "200x50 Salvaged timber rafters on pergola",
-        "TYPICAL DETAIL - RAFTER TO VERANDAH BEAM",
-        "ALLOWABLE WATTAGE - INTERNAL 5W/M2, VERANDAH OR BALCONY 4W/M2",
-        "patio and carport systems this section covers",
-    ):
-        assert not vp._names_a_structure(sentence, words), sentence
+    assert not vp._names_a_structure("BEDROOM No. 2", words)
+    assert not vp._names_a_structure("KITCHEN", words)
 
 
 def test_a_row_of_rafters_is_a_grid_and_two_walls_are_not(config):
@@ -1795,35 +1796,95 @@ def test_a_labelled_grid_gives_up_its_lines_not_the_room_under_it(config):
     assert vp.grids_under_labels(rafters, [away], config) == []
 
 
-def test_a_wall_built_in_at_both_ends_is_never_a_rafter(config):
-    """Requiring only *a* free end took a 3.5 m partition with four junctions
-    and a 2.8 m one with two, both built into the building along their length."""
+def test_rafters_over_open_paper_go_and_partitions_among_the_rooms_stay(config):
+    """**Where a grid is drawn is what tells it from a row of rooms**, not what
+    its members look like.
+
+    Two likeness tests were tried first and both rejected the real thing: a
+    carport's rafters are drawn between two beams, so they have a junction at
+    each end, and a verandah's rafters are cut to the roof line, so they are
+    not the same length. Measured on Josh's House, three rafters of 2.88, 2.71
+    and 2.73 m at 49-point centres stood above every room label and were kept
+    as walls; six partitions of 4.2 m on another sheet were taken as a grid.
+    """
     from pipeline.plan import cvwalls
 
-    held = _walled("W1", "y", 0.0, 300.0, 100.0,
-                   [{"with_wall_id": "W9", "at_pt": [100.0, 0.0]},
-                    {"with_wall_id": "W8", "at_pt": [100.0, 300.0]}])
-    cantilever = _walled("W2", "y", 0.0, 300.0, 200.0,
-                         [{"with_wall_id": "W9", "at_pt": [200.0, 0.0]}])
-    assert not cvwalls._is_a_cantilever(held)
-    assert cvwalls._is_a_cantilever(cantilever)
+    rooms = [{"bbox": [300.0, 300.0, 360.0, 312.0]},
+             {"bbox": [600.0, 400.0, 660.0, 412.0]}]
+
+    # Rafters: parallel, exactly spaced, standing above every room label.
+    rafters = {}
+    for n in range(3):
+        wall = _walled(f"R{n}", "y", 140.0, 220.0, 300.0 + n * 49.0,
+                       [{"with_wall_id": "BEAM", "at_pt": [300.0 + n * 49.0, 140.0]},
+                        {"with_wall_id": "HOUSE", "at_pt": [300.0 + n * 49.0, 220.0]}])
+        rafters[wall["wall_id"]] = wall
+    assert len(cvwalls._open_grid_of_walls(rafters, rooms)) == 3
+
+    # The same shape drawn where the rooms are named is the building.
+    among = {}
+    for n in range(3):
+        wall = _walled(f"P{n}", "y", 320.0, 400.0, 320.0 + n * 49.0, [])
+        among[wall["wall_id"]] = wall
+    assert cvwalls._open_grid_of_walls(among, rooms) == set()
 
 
-def test_walls_of_different_sizes_are_not_one_member_repeated():
-    """The group this rejects held walls of 7.73 m and 0.78 m at 268 mm and
-    102 mm - a set of rooms, spaced by chance, not a roof."""
+def test_a_sheet_that_names_too_few_rooms_prunes_nothing(config):
+    """A sheet that cannot say where its building is, is not evidence either
+    way - so nothing is set aside on it."""
     from pipeline.plan import cvwalls
 
-    rooms = [
-        {"length_mm": 7730.0, "thickness_mm": 268.0},
-        {"length_mm": 780.0, "thickness_mm": 102.0},
-        {"length_mm": 2440.0, "thickness_mm": 184.0},
-        {"length_mm": 1170.0, "thickness_mm": 119.0},
-    ]
-    assert not cvwalls._all_alike(rooms, 0.25)
+    rafters = {}
+    for n in range(4):
+        wall = _walled(f"R{n}", "y", 140.0, 220.0, 300.0 + n * 49.0, [])
+        rafters[wall["wall_id"]] = wall
+    assert cvwalls._open_grid_of_walls(rafters, [{"bbox": [1.0, 1.0, 2.0, 2.0]}]) == set()
 
-    rafters = [{"length_mm": 3000.0, "thickness_mm": 90.0} for _ in range(5)]
-    assert cvwalls._all_alike(rafters, 0.25)
+
+def test_a_beam_holding_only_rafters_goes_with_them(config):
+    """Taking the rafters out leaves what carried them: measured, a 6.77 m line
+    across the top of one sheet met five walls and all five were rafters this
+    rule had just set aside."""
+    from pipeline.plan import cvwalls
+
+    beam = _walled("BEAM", "x", 290.0, 490.0, 145.0, [])
+    beam["connects_to"] = ["R0", "R1", "R2"]
+    live = {"BEAM": beam}
+    rooms = [{"bbox": [300.0, 300.0, 360.0, 312.0]},
+             {"bbox": [600.0, 400.0, 660.0, 412.0]}]
+    also = cvwalls._the_rest_of_that_structure(
+        live, {"R0", "R1", "R2"}, rooms, [], AT_1_TO_100
+    )
+    assert also == {"BEAM"}
+
+    # A wall meeting the building as well as the grid is part of the building.
+    beam["connects_to"] = ["R0", "R1", "W99"]
+    assert cvwalls._the_rest_of_that_structure(
+        live, {"R0", "R1", "R2"}, rooms, [], AT_1_TO_100
+    ) == set()
+
+
+def test_a_wall_named_by_the_sheet_as_a_roof_goes(config):
+    """A 6.05 m line printed directly under ``Skillion roof to carport`` is
+    named by the drawing as what it is - but only where it stands clear of the
+    room labels, so a caption over the plan can never take a wall."""
+    from pipeline.plan import cvwalls
+
+    rooms = [{"bbox": [300.0, 300.0, 360.0, 312.0]},
+             {"bbox": [600.0, 400.0, 660.0, 412.0]}]
+    label = [{"text": "Skillion roof to carport", "bbox": [825.0, 143.0, 902.0, 153.0]}]
+
+    roof = _walled("W7", "x", 808.0, 982.0, 202.0, [])
+    roof["connects_to"] = ["W1", "W2"]
+    assert cvwalls._the_rest_of_that_structure(
+        {"W7": roof}, set(), rooms, label, AT_1_TO_100
+    ) == {"W7"}
+
+    inside = _walled("W8", "x", 310.0, 640.0, 350.0, [])
+    inside["connects_to"] = ["W1", "W2"]
+    assert cvwalls._the_rest_of_that_structure(
+        {"W8": inside}, set(), rooms, label, AT_1_TO_100
+    ) == set()
 
 
 def test_closing_the_graph_stops_when_nothing_moves(config):

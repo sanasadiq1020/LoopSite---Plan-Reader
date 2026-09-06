@@ -394,13 +394,18 @@ def _mark_inside_labelled_structures(page, paths: VectorPaths, settings: dict,
     if not labels:
         return
 
-    grids = _open_grids(paths, settings)
-    if not grids:
+    # Bounded to the line work around each label, for the reason recorded in
+    # ``grids_under_labels``: the pairwise search over a whole vector floor
+    # plan's 45,661 segments cost three minutes a plan set and found the same
+    # grids.
+    members = grids_under_labels(paths.structural, labels, settings)
+    if not members:
         logger.info(
             f"vector paths: {len(labels)} structure label(s) printed, but no open grid "
             "of line work under any of them, so nothing was set aside"
         )
         return
+    grids = [(_box_of(members), members)]
 
     set_aside, named = 0, []
     for region, members in grids:
@@ -436,7 +441,7 @@ def _mark_inside_labelled_structures(page, paths: VectorPaths, settings: dict,
         )
 
 
-def _names_a_structure(text: str, wanted: list, max_extra_words: int = 2) -> bool:
+def _names_a_structure(text: str, wanted: list, max_extra_words: int = 0) -> bool:
     """Whether a printed line *names* one of the configured structures.
 
     **A structure label is a name, not a sentence**, and this is the same rule
@@ -458,8 +463,9 @@ def _names_a_structure(text: str, wanted: list, max_extra_words: int = 2) -> boo
     for word in wanted:
         if f" {word} " not in padded:
             continue
-        extra = len(said.split()) - len(word.split())
-        if extra <= max_extra_words:
+        if max_extra_words <= 0:
+            return True
+        if len(said.split()) - len(word.split()) <= max_extra_words:
             return True
     return False
 
@@ -542,12 +548,36 @@ def grids_under_labels(segments: list, labels: list, settings: dict) -> list:
     """
     if not labels or not segments:
         return []
+
+    # **Only the line work a label could possibly be standing on.** Finding
+    # grids is a pairwise search, and one vector floor plan carries 45,661
+    # structural segments - run over all of them it took a 23-sheet plan set
+    # from 41 seconds to 237. The label has to lie inside the grid for the grid
+    # to count at all, so the search is bounded to the segments around each
+    # label before it starts, and the answer is unchanged.
+    reach = number(settings, "noise.structure_label_reach_pt", 300.0)
+    near = [
+        segment for segment in segments
+        if any(_near_the_label(segment, line["bbox"], reach) for line in labels)
+    ]
+    if not near:
+        return []
+
     found = []
-    holder = VectorPaths(segments=list(segments))
+    holder = VectorPaths(segments=near)
     for region, members in _open_grids(holder, settings):
         if any(_centre_inside(line["bbox"], region) for line in labels):
             found.extend(members)
     return found
+
+
+def _near_the_label(segment: "Segment", box, reach: float) -> bool:
+    low_x, high_x = sorted((segment.x0, segment.x1))
+    low_y, high_y = sorted((segment.y0, segment.y1))
+    return not (
+        high_x < box[0] - reach or low_x > box[2] + reach
+        or high_y < box[1] - reach or low_y > box[3] + reach
+    )
 
 
 def _centre_inside(box, region) -> bool:
