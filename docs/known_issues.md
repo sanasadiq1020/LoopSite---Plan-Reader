@@ -50,6 +50,33 @@ rewiring only, and no detection logic was changed.
 
 ---
 
+## P1 — the closing-kernel setting is dead, and the config and the code disagree about intent
+
+`config/cv_detection.json` defines **`wall.closing_share_of_thinnest_wall`**.
+The code reads **`wall.closing_share_of_thickest_wall`** (`wallgeometry.py:529`),
+which exists only in the built-in defaults. The two names have never met:
+
+* the config key is **never read** — it is the only orphaned key in that file
+  (88 keys, 1 orphan), and an office editing it sees no effect whatsoever;
+* the code always takes its own default of `1.0`;
+* the config's own note describes the **opposite** behaviour — *"a kernel the
+  width of the thinnest wall… 8 pixels on a 1:100 sheet at 300 DPI"* — while
+  the kernel actually used is sized from `max_thickness_mm` and measures
+  **35 px (296 mm)** on exactly that sheet.
+
+**Not fixed, deliberately.** Renaming either side would silently adopt whichever
+behaviour happens to be running, and the two describe genuinely different
+designs: closing at the *thinnest* wall joins a wall's own two faces without
+risking a bridge to its neighbour, while closing at the *thickest* reaches
+across any wall the office builds but can weld a wall to something a room away.
+Which is correct is a decision, not a typo.
+
+Measured on the drawn-to-purpose plan, the kernel is **not** the cause of the
+thickness P0 above — the band is 32 px before closing and 32 px after — so
+nothing here is urgent, only wrong.
+
+---
+
 ## Limits of what is read
 
 **Walls are candidates, not confirmed walls.** They are pairs of parallel lines
