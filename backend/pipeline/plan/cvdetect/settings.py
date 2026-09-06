@@ -53,6 +53,19 @@ _DEFAULTS = {
         "strip_text_and_swings": True,
         "text_padding_pt": 1.0,
         "min_heavy_share_of_length": 0.15,
+        # The words an office prints over a structure that is not a room of the
+        # house. Configuration, never code (Critical Rule 1) - and paired with
+        # the vocabulary-free open-grid rule, because a word list only ever
+        # works on the drawings whose wording is in it.
+        "structure_labels": [
+            "PERGOLA", "CARPORT", "VERANDAH", "VERANDA",
+            "EXTENT OF ROOF", "ROOF OVER", "LINE OF ROOF", "ROOF LINE",
+            "PATIO", "ALFRESCO ROOF", "SHADE STRUCTURE",
+        ],
+        "structure_label_max_extra_words": 2,
+        "grid_min_lines": 4,
+        "grid_spacing_regularity": 0.25,
+        "grid_min_overlap_share": 0.6,
     },
     "scale": {
         "dimension_min_mm": 100.0,
@@ -101,7 +114,10 @@ _DEFAULTS = {
         "require_paired_faces": False,
         "snap_endpoints": True,
         "snap_reach_mm": 150.0,
-        "ray_reach_mm": 250.0,
+        "ray_reach_mm": 1200.0,
+        "snap_passes": 3,
+        "grid_min_walls": 4,
+        "grid_spacing_regularity": 0.25,
         "require_enclosure": True,
         "sever_at_openings": True,
         "twin_min_mm": 90.0,

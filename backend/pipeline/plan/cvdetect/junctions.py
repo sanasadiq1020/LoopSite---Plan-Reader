@@ -63,6 +63,33 @@ def snap_endpoints(walls: list, mm_per_point: float, config: dict) -> int:
     return snapped
 
 
+def close_the_graph(walls: list, mm_per_point: float, config: dict) -> dict:
+    """Snapping and ray casting, repeated until nothing more moves.
+
+    **One pass is not enough, and the reason is geometric rather than a matter
+    of tolerance.** Snapping an end onto the wall it was traced up to *moves
+    that wall*, which can bring a third wall's end inside reach of it for the
+    first time; a ray cast at a wall that has since been extended may now hit
+    something it missed. So both are run again until a pass changes nothing, or
+    the configured number of passes is spent.
+
+    Bounded on purpose: each pass can only move an end by the reach, so an
+    unbounded loop could walk a wall across the sheet a step at a time. The
+    passes are counted and reported.
+    """
+    passes = max(int(number(config, "wall.snap_passes", 3)), 1)
+    moved = {"snapped": 0, "extended": 0, "passes": 0}
+    for _ in range(passes):
+        snapped = snap_endpoints(walls, mm_per_point, config)
+        extended = cast_rays_from_free_ends(walls, mm_per_point, config)
+        moved["snapped"] += snapped
+        moved["extended"] += extended
+        moved["passes"] += 1
+        if not snapped and not extended:
+            break
+    return moved
+
+
 def cast_rays_from_free_ends(walls: list, mm_per_point: float, config: dict) -> int:
     """Extends a wall end that points at another wall's body, up to the reach.
 

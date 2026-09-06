@@ -327,6 +327,60 @@ def detect_walls(
     return walls, diagnostics
 
 
+def _grids_the_sheet_names(page, scale, paths, settings: dict) -> list:
+    """The boxes of every open grid a structure label is printed over.
+
+    The line work is taken from whichever source Step 4 is about to trace: the
+    drafter's own paths where the sheet has them, and the runs recovered from
+    the page where it does not. Measured, that second case is the one that
+    matters - the plan set whose pergola rafters were being reported as walls
+    stores its whole drawing as embedded images, so it has no vector line work
+    to prune and a rule that only read paths would do nothing at all on it.
+    """
+    from pipeline.plan.cvdetect import vectorpaths
+
+    labels = vectorpaths.structure_labels_on(page, settings)
+    if not labels:
+        return []
+
+    # **Both sources, not whichever looks fuller.** A sheet can hold 164 drawn
+    # paths - its frame, its title block, its north point - and still store the
+    # whole building as a picture, which is exactly the sheet whose pergola is
+    # the problem. Counting paths says "line work" there and the rule would
+    # then read the frame and find no grid at all.
+    segments = [
+        segment for segment in getattr(paths, "segments", []) or []
+        if segment.role == "structural"
+    ]
+    members = vectorpaths.grids_under_labels(segments, labels, settings)
+    if imaging.page_is_a_picture(
+        page, number(settings, "openings.picture_share_of_sheet", 0.1)
+    ):
+        members = members + vectorpaths.grids_under_labels(
+            vectorpaths.segments_from_rulings(imaging.page_line_work(page, scale)),
+            labels, settings,
+        )
+    if not members:
+        return []
+
+    # **One thin box per rafter, never the rectangle round the run.** What is
+    # kept out of the tracing has to be the grid itself: the rectangle a rafter
+    # run occupies contains the room it is drawn over, and masking that took a
+    # floor plan from 31 walls to 9.
+    pad = number(settings, "noise.text_padding_pt", 1.0)
+    boxes = [
+        [min(s.x0, s.x1) - pad, min(s.y0, s.y1) - pad,
+         max(s.x0, s.x1) + pad, max(s.y0, s.y1) + pad]
+        for s in members
+    ]
+    named = ", ".join(sorted({str(line.get("text", "")).strip() for line in labels}))
+    logger.info(
+        f"walls: {len(boxes)} grid line(s) kept out of the tracing, under the "
+        f"label(s) {named}"
+    )
+    return boxes
+
+
 def _noise_to_strip(page, scale, paths, settings: dict):
     """Everything that must never reach the wall tracing, as one mask.
 
@@ -376,6 +430,17 @@ def _noise_to_strip(page, scale, paths, settings: dict):
                 boxes.append([x0, y0, x1, y1])
     except Exception as e:
         logger.exception(f"the door swings could not be read off this sheet: {e}")
+
+    # **The roof grid never reaches the skeleton.** A pergola's rafters and a
+    # carport's joists are parallel lines a wall thickness apart, joined to the
+    # house, so nothing downstream can tell them from walls - they have to go
+    # before the ink is made. On a sheet whose drawing is line work Step 1 has
+    # already set them aside; on one stored as a picture the lines come from
+    # the page, which is the plan set where the pergola problem actually is.
+    try:
+        boxes.extend(_grids_the_sheet_names(page, scale, paths, settings))
+    except Exception as e:
+        logger.exception(f"the named structures could not be read off this sheet: {e}")
 
     if not boxes:
         return None

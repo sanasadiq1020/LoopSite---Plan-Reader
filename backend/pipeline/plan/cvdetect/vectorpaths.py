@@ -120,13 +120,13 @@ class VectorPaths:
         return [s for s in self.segments if s.role != "structural"]
 
     def counts(self) -> dict:
-        tally = {"structural": 0, "dashed": 0, "thin": 0}
+        tally = {"structural": 0, "dashed": 0, "thin": 0, "structure": 0}
         for segment in self.segments:
             tally[segment.role] = tally.get(segment.role, 0) + 1
         return tally
 
 
-def parse_paths(page, settings: dict) -> VectorPaths:
+def parse_paths(page, settings: dict, scale=None) -> VectorPaths:
     """Reads the page's drawn paths and marks each one for what it is.
 
     Never raises. A page whose geometry cannot be read comes back empty, and
@@ -151,6 +151,7 @@ def parse_paths(page, settings: dict) -> VectorPaths:
 
     _mark_dashed(result, settings)
     _mark_thin(result, settings)
+    _mark_inside_labelled_structures(page, result, settings, scale)
     logger.info(
         f"vector paths: {len(result.segments)} segments, {len(result.curves)} curved, "
         f"{len(result.fills)} filled; {result.counts()}"
@@ -341,6 +342,338 @@ def _accept_dash_run(run: list, min_pieces: int, regularity: float) -> int:
         segment.role = "dashed"
         segment.reason = "drawn as a dashed line - many short pieces with regular gaps"
     return len(run)
+
+
+def _mark_inside_labelled_structures(page, paths: VectorPaths, settings: dict,
+                                     scale=None) -> None:
+    """Sets aside the line work inside a region the sheet names as not a room.
+
+    **A pergola's rafters are two parallel lines a wall thickness apart**, and
+    they are joined to the house, so neither the thickness test nor the
+    detached-structure test can see them - they arrive at Step 4 as walls and
+    are skeletonised into walls. What the drawing does say is the word printed
+    over them: PERGOLA, CARPORT, EXTENT OF ROOF, VERANDAH.
+
+    **Reading a word is a weaker instrument than reading geometry, and this
+    project has recorded that twice** (Sections 4AR and 4AV): a word is an
+    office's habit, so a rule built on one works on the drawings whose
+    vocabulary is in the list and silently does nothing on the rest. It is
+    therefore paired with a geometric rule that needs no vocabulary - the
+    open-grid test in ``cvwalls`` - and every word lives in
+    ``noise.structure_labels`` in ``/config``, never here (Critical Rule 1).
+
+    **The region is the box the office drew, not a radius round the label.**
+    A radius is the rule that was measured at its worst on this project: at
+    150 points it set aside 99 real walls on one floor plan. So the label's own
+    enclosing rectangle is taken from the sheet's own ruling lines - the same
+    ``drawn_box_around`` that finds a title block, one definition rather than
+    two (Critical Rule 2) - and where the drawing rules no such box, nothing is
+    set aside unless a reach is configured explicitly.
+
+    A segment is only set aside when **both** of its ends are inside the
+    region: a wall of the house running out under a pergola crosses the
+    boundary, and cutting it would take a real wall with the rafters.
+    """
+    words = setting(settings, "noise.structure_labels", None) or []
+    if not words or page is None:
+        return
+    try:
+        from pipeline.plan import textmodel
+
+        lines = textmodel.extract_native_lines(page)
+    except Exception as e:
+        logger.exception(f"the sheet's own labels could not be read: {e}")
+        return
+
+    wanted = [str(word).strip().upper() for word in words if str(word).strip()]
+    extra = int(number(settings, "noise.structure_label_max_extra_words", 2))
+    labels = [
+        line for line in lines
+        if line.get("bbox") and _names_a_structure(line.get("text", ""), wanted, extra)
+    ]
+    if not labels:
+        return
+
+    grids = _open_grids(paths, settings)
+    if not grids:
+        logger.info(
+            f"vector paths: {len(labels)} structure label(s) printed, but no open grid "
+            "of line work under any of them, so nothing was set aside"
+        )
+        return
+
+    set_aside, named = 0, []
+    for region, members in grids:
+        over_it = [
+            line for line in labels if _boxes_meet(line["bbox"], region)
+        ]
+        if not over_it:
+            continue
+        text = str(over_it[0].get("text", "")).strip()
+        marked = 0
+        for segment in members:
+            if segment.role != "structural":
+                continue
+            segment.role = "structure"
+            segment.reason = (
+                f"This is one of a row of evenly spaced parallel lines under the "
+                f"label '{text}', which is a roof or a grid over the house rather "
+                "than a wall of it."
+            )
+            marked += 1
+        if marked:
+            set_aside += marked
+            named.append(f"{text} ({marked})")
+
+    if set_aside:
+        paths.notes.append(
+            f"{set_aside} segment(s) are the open grid of a structure the sheet "
+            f"names rather than a room: {', '.join(named)}."
+        )
+        logger.info(
+            f"vector paths: {set_aside} segment(s) set aside as the grid under "
+            f"{', '.join(named)}"
+        )
+
+
+def _names_a_structure(text: str, wanted: list, max_extra_words: int = 2) -> bool:
+    """Whether a printed line *names* one of the configured structures.
+
+    **A structure label is a name, not a sentence**, and this is the same rule
+    room names already live under (Section 4R). Matching the word anywhere in a
+    line was measured on the plan sets in use and is unusable: it catches
+    ``200x50 Salvaged timber rafters on pergola`` (a construction note),
+    ``TYPICAL DETAIL - RAFTER TO VERANDAH BEAM`` (a drawing caption),
+    ``ALLOWABLE WATTAGE - INTERNAL 5W/M2, VERANDAH OR BALCONY`` (an energy
+    note) and ``patio and carport systems this section`` (a sentence from a
+    specification). Every one of those would have set aside line work somewhere
+    it has no business being.
+
+    So the printed line may carry at most a couple of words beyond the phrase
+    it matched: ``PERGOLA``, ``CARPORT`` and ``PROPOSED CARPORT OVER`` are
+    labels; a sentence is not.
+    """
+    said = " ".join(str(text).upper().replace(".", " ").replace(",", " ").split())
+    padded = f" {said} "
+    for word in wanted:
+        if f" {word} " not in padded:
+            continue
+        extra = len(said.split()) - len(word.split())
+        if extra <= max_extra_words:
+            return True
+    return False
+
+
+def _open_grids(paths: VectorPaths, settings: dict) -> list:
+    """Runs of parallel, evenly spaced lines - a roof grid rather than walls.
+
+    **This is the half of the rule that needs no vocabulary.** A pergola, a
+    carport, a set of roof rafters and a joist layout are all drawn the same
+    way whatever an office calls them: several parallel lines, spanning the
+    same stretch, at the same spacing. A wall has none of those properties -
+    two walls of a house are not evenly spaced with four more like them.
+
+    Measured on the sheets in use, the office rules no rectangle around its
+    pergola at all, so there is no drawn box to read: the grid *is* the region.
+    Each group is returned with the box it occupies and the segments in it.
+    """
+    least = int(number(settings, "noise.grid_min_lines", 4))
+    regularity = number(settings, "noise.grid_spacing_regularity", 0.25)
+    share = number(settings, "noise.grid_min_overlap_share", 0.6)
+    if least < 3:
+        return []
+
+    grids = []
+    try:
+        for axis in ("h", "v"):
+            members = [
+                segment for segment in paths.segments
+                if segment.role == "structural" and _grid_axis(segment) == axis
+            ]
+            for group in _parallel_runs(members, axis, share):
+                if len(group) < least:
+                    continue
+                grid = _regular_stretch(group, axis, regularity, least)
+                if grid:
+                    grids.append((_box_of(grid), grid))
+    except Exception as e:
+        logger.exception(f"the open grids could not be worked out: {e}")
+        return []
+    return grids
+
+
+def structure_labels_on(page, settings: dict) -> list:
+    """Every printed line on this sheet that names a structure, with its box."""
+    words = setting(settings, "noise.structure_labels", None) or []
+    if not words or page is None:
+        return []
+    wanted = [str(word).strip().upper() for word in words if str(word).strip()]
+    extra = int(number(settings, "noise.structure_label_max_extra_words", 2))
+    try:
+        from pipeline.plan import textmodel
+
+        return [
+            line for line in (textmodel.extract_native_lines(page) or [])
+            if line.get("bbox") and _names_a_structure(line.get("text", ""), wanted, extra)
+        ]
+    except Exception as e:
+        logger.exception(f"the sheet's own labels could not be read: {e}")
+        return []
+
+
+def grids_under_labels(segments: list, labels: list, settings: dict) -> list:
+    """The **lines** of every open grid a structure label is printed on.
+
+    Shared by both readers, so a sheet whose drawing is line work and one whose
+    drawing is a picture are judged by the same rule (Critical Rule 2). The
+    picture reader hands in the runs LSD recovered; the vector reader hands in
+    the paths the drafter plotted.
+
+    **The grid's own lines, never the rectangle round them**, and that
+    distinction cost a floor plan when it was got wrong. Masking the bounding
+    box of a rafter run removes everything standing inside it - which is the
+    room the pergola is drawn over, and its walls. Measured: one sheet went from
+    31 walls to 9, and its openings from 5 to 1. A rafter is a line; only the
+    line is taken out.
+
+    **The label has to sit inside the grid, not merely touch its box.** A box
+    that reaches a label printed a centimetre away is a box that reaches most of
+    the drawing.
+    """
+    if not labels or not segments:
+        return []
+    found = []
+    holder = VectorPaths(segments=list(segments))
+    for region, members in _open_grids(holder, settings):
+        if any(_centre_inside(line["bbox"], region) for line in labels):
+            found.extend(members)
+    return found
+
+
+def _centre_inside(box, region) -> bool:
+    x = (box[0] + box[2]) / 2.0
+    y = (box[1] + box[3]) / 2.0
+    return region[0] <= x <= region[2] and region[1] <= y <= region[3]
+
+
+def segments_from_rulings(rulings: dict) -> list:
+    """Axis-aligned ruling runs as segments, so the grid rule can read them.
+
+    ``h`` entries are ``(across, low, high)`` and ``v`` entries the same, which
+    is the shape both ``layout.extract_rulings`` and the picture reader return.
+    """
+    made = []
+    for across, low, high in rulings.get("h", []) or []:
+        made.append(Segment(float(low), float(across), float(high), float(across),
+                            0.0, False, -1))
+    for across, low, high in rulings.get("v", []) or []:
+        made.append(Segment(float(across), float(low), float(across), float(high),
+                            0.0, False, -1))
+    return made
+
+
+def _grid_axis(segment: "Segment"):
+    angle = segment.angle_degrees
+    if angle <= _SAME_DIRECTION_DEGREES or angle >= 180.0 - _SAME_DIRECTION_DEGREES:
+        return "h"
+    if abs(angle - 90.0) <= _SAME_DIRECTION_DEGREES:
+        return "v"
+    return None
+
+
+def _across(segment: "Segment", axis: str) -> float:
+    return (segment.y0 + segment.y1) / 2.0 if axis == "h" else (segment.x0 + segment.x1) / 2.0
+
+
+def _extent(segment: "Segment", axis: str):
+    if axis == "h":
+        return (min(segment.x0, segment.x1), max(segment.x0, segment.x1))
+    return (min(segment.y0, segment.y1), max(segment.y0, segment.y1))
+
+
+def _parallel_runs(members: list, axis: str, share: float) -> list:
+    """Every set of parallel lines that spans the same stretch as one of them.
+
+    **Grouped by what they overlap, not by where they fall in a sorted list.**
+    Sorting the sheet's lines across the page and cutting the list wherever two
+    neighbours do not overlap was the first attempt, and on a floor plan it
+    finds nothing: the rafters of a pergola are interleaved in that order with
+    every wall, fitting and dimension line at the same range of positions, so
+    the run is broken before it starts. Measured, it found one group of six
+    lines thirty points across on a sheet whose pergola is a metre wide.
+    """
+    groups, seen = [], set()
+    for seed in members:
+        low, high = _extent(seed, axis)
+        if high - low <= 0:
+            continue
+        group = [
+            segment for segment in members
+            if _shares_the_run(segment, seed, axis, share)
+        ]
+        if len(group) < 3:
+            continue
+        key = tuple(sorted(round(_across(segment, axis), 2) for segment in group))
+        if key in seen:
+            continue
+        seen.add(key)
+        groups.append(group)
+    return groups
+
+
+def _shares_the_run(one: "Segment", other: "Segment", axis: str, share: float) -> bool:
+    """Whether two parallel lines run alongside each other for most of their length."""
+    first_low, first_high = _extent(one, axis)
+    second_low, second_high = _extent(other, axis)
+    shorter = min(first_high - first_low, second_high - second_low)
+    if shorter <= 0:
+        return False
+    return (min(first_high, second_high) - max(first_low, second_low)) >= share * shorter
+
+
+def _regular_stretch(group: list, axis: str, regularity: float, least: int) -> list:
+    """The longest run of these lines that sits at one repeated spacing.
+
+    **A sub-run, not the whole group**, because the lines that span the same
+    stretch as a rafter include the walls the rafters run between. What makes a
+    grid a grid is that its members are evenly spaced, and that is scale-free:
+    a rafter layout at 450 mm centres and one at 900 mm both pass, and two
+    walls of a house do not.
+    """
+    ordered = sorted(group, key=lambda segment: _across(segment, axis))
+    positions = [_across(segment, axis) for segment in ordered]
+
+    best = []
+    start = 0
+    for index in range(1, len(positions)):
+        gap = positions[index] - positions[index - 1]
+        run = positions[start:index + 1]
+        gaps = [b - a for a, b in zip(run, run[1:])]
+        middle = median(gaps) if gaps else 0.0
+        if gap <= 0.01 or middle <= 0 or pstdev(gaps) / middle > regularity:
+            if index - start >= len(best):
+                best = list(range(start, index))
+            start = index - 1
+    if len(positions) - start > len(best):
+        best = list(range(start, len(positions)))
+
+    if len(best) < least:
+        return []
+    return [ordered[i] for i in best]
+
+
+def _box_of(group: list):
+    return (
+        min(min(s.x0, s.x1) for s in group), min(min(s.y0, s.y1) for s in group),
+        max(max(s.x0, s.x1) for s in group), max(max(s.y0, s.y1) for s in group),
+    )
+
+
+def _boxes_meet(first, second) -> bool:
+    return not (
+        first[2] < second[0] or first[0] > second[2]
+        or first[3] < second[1] or first[1] > second[3]
+    )
 
 
 def _mark_thin(paths: VectorPaths, settings: dict) -> None:

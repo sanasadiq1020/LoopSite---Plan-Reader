@@ -1730,3 +1730,160 @@ def test_the_outermost_wall_of_a_house_is_level_with_it_not_beyond_it(config):
     # And one that genuinely runs out past the end of the building.
     rafter = _walled("W8", "x", 400.0, 700.0, 150.0, [])
     assert cvwalls._runs_out_into_open_paper(rafter, (0.0, 0.0, 400.0, 300.0))
+
+
+# --------------------------------------------------------------------------
+# Roof grids: the words a sheet prints, and the shape a grid has
+# --------------------------------------------------------------------------
+
+def _line(x0, y0, x1, y1):
+    from pipeline.plan.cvdetect import vectorpaths as vp
+
+    return vp.Segment(x0, y0, x1, y1, 0.5, False, 0)
+
+
+def test_a_structure_label_is_a_name_not_a_sentence():
+    """Matching the word anywhere in a printed line was measured on the plan
+    sets in use and is unusable: it catches a construction note, a drawing
+    caption, an energy calculation and a line of a specification, each of which
+    would have set aside line work somewhere it has no business being."""
+    from pipeline.plan.cvdetect import vectorpaths as vp
+
+    words = ["PERGOLA", "CARPORT", "VERANDAH", "EXTENT OF ROOF"]
+    for label in ("PERGOLA", "CARPORT", "PROPOSED CARPORT", "Extent of roof"):
+        assert vp._names_a_structure(label, words), label
+    for sentence in (
+        "200x50 Salvaged timber rafters on pergola",
+        "TYPICAL DETAIL - RAFTER TO VERANDAH BEAM",
+        "ALLOWABLE WATTAGE - INTERNAL 5W/M2, VERANDAH OR BALCONY 4W/M2",
+        "patio and carport systems this section covers",
+    ):
+        assert not vp._names_a_structure(sentence, words), sentence
+
+
+def test_a_row_of_rafters_is_a_grid_and_two_walls_are_not(config):
+    """A grid is one member repeated: parallel, spanning the same stretch, at
+    one repeated spacing. No part of a house has that shape."""
+    from pipeline.plan.cvdetect import vectorpaths as vp
+
+    rafters = [_line(100.0, 200.0 + n * 20.0, 400.0, 200.0 + n * 20.0) for n in range(6)]
+    grids = vp._open_grids(vp.VectorPaths(segments=rafters), config)
+    assert grids and len(grids[0][1]) == 6
+
+    # The two faces of one wall, and one wall crossing them, are not a grid.
+    walls = [
+        _line(100.0, 200.0, 400.0, 200.0),
+        _line(100.0, 206.0, 400.0, 206.0),
+        _line(100.0, 500.0, 400.0, 500.0),
+    ]
+    assert not vp._open_grids(vp.VectorPaths(segments=walls), config)
+
+
+def test_a_labelled_grid_gives_up_its_lines_not_the_room_under_it(config):
+    """Masking the rectangle a rafter run occupies removes the room it is drawn
+    over, and its walls: measured, one floor plan went from 31 walls to 9 and
+    its openings from 5 to 1. A rafter is a line; only the line is taken out."""
+    from pipeline.plan.cvdetect import vectorpaths as vp
+
+    rafters = [_line(100.0, 200.0 + n * 20.0, 400.0, 200.0 + n * 20.0) for n in range(6)]
+    label = {"text": "PERGOLA", "bbox": [240.0, 250.0, 280.0, 262.0]}
+    taken = vp.grids_under_labels(rafters, [label], config)
+    assert len(taken) == 6
+    assert all(isinstance(segment, vp.Segment) for segment in taken)
+
+    away = {"text": "PERGOLA", "bbox": [900.0, 700.0, 940.0, 712.0]}
+    assert vp.grids_under_labels(rafters, [away], config) == []
+
+
+def test_a_wall_built_in_at_both_ends_is_never_a_rafter(config):
+    """Requiring only *a* free end took a 3.5 m partition with four junctions
+    and a 2.8 m one with two, both built into the building along their length."""
+    from pipeline.plan import cvwalls
+
+    held = _walled("W1", "y", 0.0, 300.0, 100.0,
+                   [{"with_wall_id": "W9", "at_pt": [100.0, 0.0]},
+                    {"with_wall_id": "W8", "at_pt": [100.0, 300.0]}])
+    cantilever = _walled("W2", "y", 0.0, 300.0, 200.0,
+                         [{"with_wall_id": "W9", "at_pt": [200.0, 0.0]}])
+    assert not cvwalls._is_a_cantilever(held)
+    assert cvwalls._is_a_cantilever(cantilever)
+
+
+def test_walls_of_different_sizes_are_not_one_member_repeated():
+    """The group this rejects held walls of 7.73 m and 0.78 m at 268 mm and
+    102 mm - a set of rooms, spaced by chance, not a roof."""
+    from pipeline.plan import cvwalls
+
+    rooms = [
+        {"length_mm": 7730.0, "thickness_mm": 268.0},
+        {"length_mm": 780.0, "thickness_mm": 102.0},
+        {"length_mm": 2440.0, "thickness_mm": 184.0},
+        {"length_mm": 1170.0, "thickness_mm": 119.0},
+    ]
+    assert not cvwalls._all_alike(rooms, 0.25)
+
+    rafters = [{"length_mm": 3000.0, "thickness_mm": 90.0} for _ in range(5)]
+    assert cvwalls._all_alike(rafters, 0.25)
+
+
+def test_closing_the_graph_stops_when_nothing_moves(config):
+    """Snapping moves a wall, which can bring a third wall inside reach for the
+    first time - so both passes are repeated. Bounded on purpose: each pass can
+    only move an end by the reach."""
+    from pipeline.plan.cvdetect import junctions
+
+    walls = [
+        _walled("W1", "x", 0.0, 400.0, 0.0, []),
+        _walled("W2", "y", 0.0, 300.0, 400.0, []),
+    ]
+    moved = junctions.close_the_graph(walls, AT_1_TO_100, config)
+    assert moved["passes"] >= 1
+    assert moved["passes"] <= int(cv_settings.number(config, "wall.snap_passes", 3))
+
+
+def test_the_picture_check_sees_a_roof_grid_drawn_over_open_ground():
+    """The margin is not the only place a roof gets drawn as walls: a pergola is
+    drawn *over* the plan, inside the part of the sheet the building occupies,
+    so a check that only looks at the margin passes it without seeing it."""
+    from pipeline.plan.cvdetect import overlaycheck
+
+    colour = list(overlaycheck._rgb(overlaycheck.WALL_COLOURS[0]))
+    image = np.full((700, 900, 3), 255, dtype=int)
+    # Eight rafters, 300 px long, 20 px apart, clear of where the rooms are.
+    for n in range(8):
+        image[100 + n * 20:103 + n * 20, 500:800] = colour
+    ink = overlaycheck._wall_ink(image, None, np)
+
+    reading = {"rooms": [{"bbox": [20.0, 400.0, 80.0, 412.0]},
+                         {"bbox": [200.0, 500.0, 260.0, 512.0]}]}
+    grids, note = overlaycheck._grids_drawn_as_walls(
+        ink, reading, (0.0, 0.0), 1.0, 60.0, np
+    )
+    assert not note and len(grids) == 1 and grids[0]["lines"] >= 4
+
+    # The same grid where the rooms are named is the building, not a roof.
+    among_the_rooms = {"rooms": [{"bbox": [520.0, 90.0, 580.0, 102.0]},
+                                 {"bbox": [700.0, 240.0, 760.0, 252.0]}]}
+    grids, _note = overlaycheck._grids_drawn_as_walls(
+        ink, among_the_rooms, (0.0, 0.0), 1.0, 60.0, np
+    )
+    assert grids == []
+
+
+def test_the_picture_check_ignores_two_small_walls_standing_near_each_other():
+    """Without a size floor the rule reported eight "grids" on one sheet, the
+    largest 45 by 11 points - a foot and a half of paper. A roof grid is a
+    structure, and a structure is bigger than a car."""
+    from pipeline.plan.cvdetect import overlaycheck
+
+    colour = list(overlaycheck._rgb(overlaycheck.WALL_COLOURS[1]))
+    image = np.full((700, 900, 3), 255, dtype=int)
+    for n in range(4):
+        image[100 + n * 5:102 + n * 5, 500:545] = colour
+    ink = overlaycheck._wall_ink(image, None, np)
+    reading = {"rooms": [{"bbox": [20.0, 400.0, 80.0, 412.0]},
+                         {"bbox": [200.0, 500.0, 260.0, 512.0]}]}
+    grids, _note = overlaycheck._grids_drawn_as_walls(
+        ink, reading, (0.0, 0.0), 1.0, 60.0, np
+    )
+    assert grids == []

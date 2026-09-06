@@ -38,6 +38,7 @@ without a rebuild, and so the two readers can be compared on the same plan.
 """
 
 import math
+import statistics
 
 from app.logging_setup import get_logger
 from pipeline.plan import walls as legacy
@@ -110,7 +111,7 @@ def detect_walls(
             note="Measured by the sheet's own scale check.",
         )
 
-        paths = vectorpaths.parse_paths(page, detection)
+        paths = vectorpaths.parse_paths(page, detection, scale)
         found_openings = cv_openings.detect_openings(page, scale, paths, detection)
         mask = cv_openings.openings_mask(page, scale, found_openings, detection)
         measured, diagnostics = wallgeometry.detect_walls(
@@ -710,10 +711,22 @@ def _keep_what_encloses_something(walls: list, mm_per_point: float, config: dict
     #
     # So both must hold: on no circuit, AND running out into open paper.
     shell = _Shell(list(live.values()))
+    on_a_grid = _open_grid_of_walls(live)
 
-    set_aside = 0
+    set_aside, gridded = 0, 0
     for wall_id, wall in live.items():
         if wall_id in on_a_circuit or wall.get("terminates_at_an_opening"):
+            if wall_id not in on_a_grid:
+                continue
+        if wall_id in on_a_grid:
+            wall["not_used_because"] = (
+                "This is one of a row of evenly spaced parallel lines, each with a free "
+                "end - a pergola's rafters, a carport's joists or a roof grid. A "
+                "structure like that is drawn attached to the house and is no part of it."
+            )
+            wall["review_needed"] = True
+            set_aside += 1
+            gridded += 1
             continue
         if not _runs_out_into_open_paper(wall, shell.without(wall_id)):
             continue
@@ -727,10 +740,141 @@ def _keep_what_encloses_something(walls: list, mm_per_point: float, config: dict
 
     if set_aside:
         logger.info(
-            f"walls: {set_aside} candidate(s) lie on no closed circuit and were set "
-            f"aside; {len(live) - set_aside} bound a room or the outside of the building"
+            f"walls: {set_aside} candidate(s) set aside - {set_aside - gridded} on no "
+            f"closed circuit, {gridded} an open grid attached to the building; "
+            f"{len(live) - set_aside} bound a room or the outside of it"
         )
     return set_aside
+
+
+def _open_grid_of_walls(live: dict) -> set:
+    """The candidates that are a row of evenly spaced parallel cantilevers.
+
+    **An attached structure has to be prunable, and the circuit test cannot do
+    it.** A pergola's rafters are drawn joined to the house at one end, so each
+    one has a junction and the detached-structure rule - which looks for a
+    group of walls touching nothing - cannot see them either. What they do have
+    is the shape of a grid, and no part of a house has it: four or more
+    parallel candidates, spanning the same stretch, at one repeated spacing,
+    **each with a free end**. Two walls of a room are not evenly spaced with
+    four more like them, and a wall built into the building at both ends is
+    never a cantilever.
+
+    Needs no vocabulary, so it reaches a pergola the drawing never labels -
+    which is the half of this that a word list can never do.
+    """
+    from pipeline.plan.cvdetect import settings as cv_settings
+
+    detection = cv_settings.load_settings()
+    least = int(cv_settings.number(detection, "wall.grid_min_walls", 4))
+    regularity = cv_settings.number(detection, "wall.grid_spacing_regularity", 0.25)
+    if least < 3 or len(live) < least:
+        return set()
+
+    agreement = cv_settings.number(detection, "wall.grid_member_agreement", 0.25)
+
+    found = set()
+    try:
+        for axis in ("x", "y"):
+            cantilevers = [
+                wall for wall in live.values()
+                if wall.get("runs_along") == axis and _is_a_cantilever(wall)
+            ]
+            for group in _rows_running_together(cantilevers, axis):
+                grid = _evenly_spaced(group, axis, regularity, least)
+                if len(grid) >= least and _all_alike(grid, agreement):
+                    found.update(wall["wall_id"] for wall in grid)
+    except Exception as e:
+        logger.exception(f"the open grids of walls could not be worked out: {e}")
+        return set()
+    return found
+
+
+def _is_a_cantilever(wall: dict) -> bool:
+    """Whether this candidate is held at one point at most.
+
+    **A rafter is attached once and free at the other end.** Requiring only
+    *a* free end is not enough and the difference is not academic: measured, it
+    took a 3.5 m partition with four junctions and a 2.8 m one with two, both
+    built into the building along their length. A wall meeting the building at
+    two or more places is part of it, whatever else is true of it.
+    """
+    return len(wall.get("junctions") or []) <= 1
+
+
+def _all_alike(group: list, agreement: float) -> bool:
+    """Whether these candidates are the same member repeated.
+
+    **A grid is one thing drawn several times.** Rafters over a pergola are all
+    the same length and the same size; the partitions of a house are not.
+    Measured, the group this rejects held walls of 7.73 m and 0.78 m at 268 mm
+    and 102 mm - a set of rooms, spaced by chance, not a roof.
+    """
+    for field in ("length_mm", "thickness_mm"):
+        values = [float(wall.get(field) or 0.0) for wall in group]
+        middle = statistics.median(values)
+        if middle <= 0:
+            return False
+        if statistics.pstdev(values) / middle > agreement:
+            return False
+    return True
+
+
+def _rows_running_together(walls: list, axis: str, share: float = 0.6) -> list:
+    """Parallel walls that span the same stretch as one of them."""
+    along = 0 if axis == "x" else 1
+    groups, seen = [], set()
+    for seed in walls:
+        seed_low, seed_high = _stretch_along(seed, along)
+        if seed_high - seed_low <= 0:
+            continue
+        group = []
+        for wall in walls:
+            low, high = _stretch_along(wall, along)
+            shorter = min(high - low, seed_high - seed_low)
+            if shorter <= 0:
+                continue
+            if (min(high, seed_high) - max(low, seed_low)) >= share * shorter:
+                group.append(wall)
+        if len(group) < 3:
+            continue
+        key = tuple(sorted(wall["wall_id"] for wall in group))
+        if key in seen:
+            continue
+        seen.add(key)
+        groups.append(group)
+    return groups
+
+
+def _stretch_along(wall: dict, along: int):
+    return (
+        min(wall["start_point_pt"][along], wall["end_point_pt"][along]),
+        max(wall["start_point_pt"][along], wall["end_point_pt"][along]),
+    )
+
+
+def _evenly_spaced(group: list, axis: str, regularity: float, least: int) -> list:
+    """The longest run of these parallel walls that sits at one repeated spacing."""
+    across = 1 if axis == "x" else 0
+    ordered = sorted(group, key=lambda wall: wall["start_point_pt"][across])
+    positions = [wall["start_point_pt"][across] for wall in ordered]
+
+    best, start = [], 0
+    for index in range(1, len(positions)):
+        run = positions[start:index + 1]
+        gaps = [b - a for a, b in zip(run, run[1:])]
+        middle = statistics.median(gaps) if gaps else 0.0
+        spread = statistics.pstdev(gaps) if len(gaps) > 1 else 0.0
+        if middle <= 0 or (len(gaps) > 1 and spread / middle > regularity):
+            if index - start >= len(best):
+                best = list(range(start, index))
+            start = index - 1
+    if len(positions) - start > len(best):
+        best = list(range(start, len(positions)))
+
+    if len(best) < least:
+        return []
+    return [ordered[i] for i in best]
 
 
 class _Shell:
@@ -1073,10 +1217,14 @@ def _through_the_same_post_processing(
     # do.** A centreline stops at the face of the wall it runs into, half a
     # thickness short of its centreline, so without this the junction graph is
     # far too sparse for any circuit to close.
-    cv_junctions.snap_endpoints(walls, mm_per_point, cv_settings.load_settings())
-    cv_junctions.cast_rays_from_free_ends(
+    closed = cv_junctions.close_the_graph(
         walls, mm_per_point, cv_settings.load_settings()
     )
+    if closed["snapped"] or closed["extended"]:
+        logger.info(
+            f"{sheet_id}: {closed['snapped']} end(s) snapped and {closed['extended']} "
+            f"extended over {closed['passes']} pass(es) to close the wall graph"
+        )
 
     alone = legacy.mark_walls_that_stand_alone(walls, mm_per_point, config)
     if alone:

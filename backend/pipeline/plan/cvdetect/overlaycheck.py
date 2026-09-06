@@ -81,6 +81,8 @@ def check_sheet(png_path, page_reading: dict, page_rect, config: dict,
         "note": "",
         "wall_runs_outside_the_drawing": None,
         "outside_at": [],
+        "wall_grids_over_open_ground": None,
+        "grids_at": [],
         "openings_checked": 0,
         "openings_drawn_through": 0,
         "drawn_through": [],
@@ -117,6 +119,15 @@ def check_sheet(png_path, page_reading: dict, page_rect, config: dict,
         runs = _runs_outside(wall_ink, region, origin, scale, shortest * scale, np)
         result["wall_runs_outside_the_drawing"] = len(runs)
         result["outside_at"] = runs[:6]
+
+    grids, grid_note = _grids_drawn_as_walls(
+        wall_ink, page_reading, origin, scale,
+        _structure_points(page_reading, config), np
+    )
+    result["wall_grids_over_open_ground"] = None if grid_note else len(grids)
+    result["grids_at"] = grids[:4]
+    if grid_note and not result["note"]:
+        result["note"] = grid_note
 
     checked, through, where = _openings_drawn_through(
         wall_ink, page_reading, origin, scale, np
@@ -235,6 +246,151 @@ def _runs_outside(wall_ink, region, origin, scale, shortest_px, np):
         })
     found.sort(key=lambda run: -run["run_pt"])
     return found
+
+
+def _grids_drawn_as_walls(wall_ink, page_reading, origin, scale, structure_pt, np):
+    """Rows of evenly spaced parallel wall lines drawn where no room is.
+
+    **The margin is not the only place a roof gets drawn as walls.** A pergola,
+    a carport and a roof-batten layout are drawn *over* the plan, inside the
+    part of the sheet the building occupies, so a check that only looks at the
+    margin passes them without seeing them. What they are is a grid: four or
+    more parallel lines, spanning the same stretch, at one repeated spacing -
+    and no part of a house has that shape.
+
+    **Over open ground**, because a house's own walls are drawn where its rooms
+    are named. A run of parallel lines standing clear of every room label is
+    over a carport, a deck or a roof; one among the room names is the building.
+    A sheet that names fewer than two rooms cannot say where its rooms are, and
+    is reported as unable to answer rather than as passing.
+    """
+    rooms = [
+        room.get("bbox") for room in (page_reading.get("rooms") or [])
+        if room.get("bbox") and len(room["bbox"]) == 4
+    ]
+    if len(rooms) < 2:
+        return [], (
+            "This sheet names too few rooms to say which part of it the building "
+            "occupies, so a roof grid drawn over the plan cannot be told from a wall."
+        )
+    named = (
+        min(b[0] for b in rooms), min(b[1] for b in rooms),
+        max(b[2] for b in rooms), max(b[3] for b in rooms),
+    )
+
+    try:
+        from pipeline.plan.cvdetect import settings as cv_settings, vectorpaths
+
+        detection = cv_settings.load_settings()
+    except Exception as e:
+        logger.exception(f"overlay check: the grid rule could not be loaded: {e}")
+        return [], ""
+
+    segments, thinnest = [], 2.0
+    for box, _size in _connected_runs(wall_ink, np):
+        across = box[2] - box[0]
+        down = box[3] - box[1]
+        long_side, short_side = max(across, down), min(across, down)
+        # A drawn wall line is long and a few pixels thick. A blob is neither.
+        if long_side < 8 or short_side > max(thinnest * 6, 12):
+            continue
+        made = vectorpaths.Segment(
+            box[0] / scale + origin[0], box[1] / scale + origin[1],
+            (box[0] + across) / scale + origin[0], (box[1] + down) / scale + origin[1],
+            0.0, False, -1,
+        )
+        if across < down:
+            made.x1 = made.x0
+        else:
+            made.y1 = made.y0
+        segments.append(made)
+
+    if len(segments) < 4:
+        return [], ""
+
+    found, seen = [], set()
+    try:
+        holder = vectorpaths.VectorPaths(segments=segments)
+        for region, members in vectorpaths._open_grids(holder, detection):
+            if _overlaps(region, named):
+                continue
+            across = region[2] - region[0]
+            down = region[3] - region[1]
+            # **A roof grid is a structure, and a structure is bigger than a
+            # car.** Without a floor the rule reports the two parallel edges of
+            # a couple of small wall rectangles standing near each other:
+            # measured, eight "grids" on one sheet, the largest 45 by 11 points
+            # - a foot and a half of paper. The floor is the size this reader
+            # already requires of a carport or a shed before it will call it a
+            # structure at all, so it is one definition rather than two
+            # (Critical Rule 2).
+            if min(across, down) < structure_pt:
+                continue
+            if not _members_alike(members):
+                continue
+            key = (round(region[0]), round(region[1]), round(region[2]), round(region[3]))
+            if key in seen:
+                continue
+            seen.add(key)
+            found.append({
+                "lines": len(members),
+                "at_pt": [round(region[0], 1), round(region[1], 1)],
+                "size_pt": [round(across, 1), round(down, 1)],
+            })
+    except Exception as e:
+        logger.exception(f"overlay check: the grids could not be worked out: {e}")
+        return [], ""
+
+    found.sort(key=lambda grid: -grid["lines"])
+    return found, ""
+
+
+def _structure_points(page_reading: dict, config: dict) -> float:
+    """The smallest a thing can be and still be a structure, in points here.
+
+    Taken through this sheet's own scale from ``min_detached_structure_mm``,
+    the figure the reader already uses to tell a carport from the car parked
+    in it.
+    """
+    calibration = page_reading.get("scale_calibration") or {}
+    mm_per_point = (
+        calibration.get("measured_mm_per_point")
+        or calibration.get("printed_mm_per_point")
+    )
+    try:
+        smallest = float(
+            (config.get("walls") or {}).get("min_detached_structure_mm", 2000)
+        )
+        return smallest / float(mm_per_point)
+    except (TypeError, ValueError, ZeroDivisionError, AttributeError):
+        # No scale on this sheet: fall back to a size on the paper that no pair
+        # of wall edges reaches, rather than reporting every one of them.
+        return 60.0
+
+
+def _members_alike(members, agreement: float = 0.25) -> bool:
+    """Whether these lines are the same member drawn several times.
+
+    A rafter run is one thing repeated - the lines are the same length. Two
+    walls that happen to be parallel are not, and this is what tells them apart
+    once the size floor has removed the small stuff.
+    """
+    import statistics
+
+    lengths = [
+        max(abs(s.x1 - s.x0), abs(s.y1 - s.y0)) for s in members
+    ]
+    middle = statistics.median(lengths)
+    if middle <= 0:
+        return False
+    return statistics.pstdev(lengths) / middle <= agreement
+
+
+def _overlaps(first, second) -> bool:
+    return not (
+        first[2] < second[0] or first[0] > second[2]
+        or first[3] < second[1] or first[1] > second[3]
+    )
 
 
 def _connected_runs(mask, np):
@@ -404,17 +560,20 @@ def check_pages(document, run_dir, pages: list, config: dict) -> dict:
     outside = sum(s.get("wall_runs_outside_the_drawing") or 0 for s in sheets)
     through = sum(s.get("openings_drawn_through") or 0 for s in sheets)
     checked = sum(s.get("openings_checked") or 0 for s in sheets)
+    grids = sum(s.get("wall_grids_over_open_ground") or 0 for s in sheets)
     if sheets:
         logger.info(
             f"overlay check: {len(sheets)} picture(s) read back - {outside} wall line(s) "
-            f"drawn outside the plan, {through} of {checked} opening(s) drawn through"
+            f"drawn outside the plan, {grids} roof grid(s) drawn as walls, "
+            f"{through} of {checked} opening(s) drawn through"
         )
     return {
         "sheets_checked": len(sheets),
         "wall_runs_outside_the_drawing": outside,
+        "wall_grids_over_open_ground": grids,
         "openings_checked": checked,
         "openings_drawn_through": through,
-        "passes": outside == 0 and through == 0,
+        "passes": outside == 0 and through == 0 and grids == 0,
         "sheets": sheets,
     }
 
