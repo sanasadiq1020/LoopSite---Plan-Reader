@@ -194,7 +194,12 @@ def check_scale(page: dict) -> dict:
         "strings_agreeing": strings_agreeing,
         "usable_for_measurement": usable,
         # Everything measured off this sheet is only as good as this answer.
-        "scale_dependent_outputs_verified": result == "confirmed",
+        "source": calibration.get("source"),
+        "unverified_reason": calibration.get("unverified_reason"),
+        "sheet_size_named": calibration.get("sheet_size_named"),
+        "sheet_size_correction": calibration.get("sheet_size_correction"),
+        # A scale is verified only where two independent sources agree.
+        "scale_dependent_outputs_verified": bool(calibration.get("verified")),
     }
 
     if result == "confirmed":
@@ -206,11 +211,22 @@ def check_scale(page: dict) -> dict:
             "so every length taken from it is unverified.",
             **fields,
         )
-    if result in ("inconclusive", "not_checked", "none", ""):
+    if result == "printed_only":
+        # Not a pass. The sheet states a scale and nothing on the sheet checked
+        # it, so every length measured from it is unverified.
         return _result(
             UNVERIFIABLE,
-            "This sheet does not print enough dimension strings to check its own scale, "
-            "so every length taken from it is unverified.",
+            calibration.get("unverified_reason")
+            or "This sheet's printed scale was used and nothing on the sheet confirmed it, "
+               "so every length taken from it is unverified.",
+            **fields,
+        )
+    if result in ("inconclusive", "not_checked", "unknown", "none", ""):
+        return _result(
+            UNVERIFIABLE,
+            calibration.get("unverified_reason")
+            or "This sheet does not print enough dimension strings to check its own scale, "
+               "so every length taken from it is unverified.",
             **fields,
         )
     return _result(UNVERIFIABLE, f"The scale check reported '{result}'.", **fields)

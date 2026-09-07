@@ -830,6 +830,8 @@
       "min": 100,
       "max": 100000
     },
+    "_small_figure_note": "A wall thickness, a nib or a rebate is printed as a bare 90, 70 or 45, and the normal floor of 100 mm throws every one of them away - which is exactly the figure a wall reader most needs. A figure between this small floor and the normal one is accepted ONLY when it sits in a dimension string beside at least one full-size dimension: same axis, same dimension line, within the chain gap. A page number, a note reference and a stray numeral never sit in such a run, which is what keeps this from reading them as measurements. Set this to the normal floor to switch the behaviour off.",
+    "bare_number_small_min_mm": 25,
     "_chain_note": "Dimensions printed along one line form a dimension string. Where the drawing also prints the total for that string, the individual figures must add up to it: that is a real arithmetic test of the extraction and uses the tight tolerance below. Two separate strings that happen to span the same distance are compared as well, but with a wider tolerance, because two strings can legitimately measure to different faces of the same wall and differ by a wall thickness.",
     "chain_alignment_tolerance_pt": 6.0,
     "chain_max_gap_pt": 140.0,
@@ -1204,9 +1206,12 @@
   "scale_calibration": {
     "_comment": "The printed scale is checked against the drawing own dimension strings before anything is measured with it. Each figure in a string is centred on the segment it describes, so the distance between the first and last figure centres is known from the printed numbers alone and can be compared with the distance measured on the page. A sheet that disagrees by more than the tolerance is flagged and its lengths are not used.",
     "tolerance_pct": 5.0,
-    "min_strings_for_check": 3,
+    "_minimum_strings_note": "A building is set out on two axes, so the dimensioning apparatus of a plan carries at minimum one string across it and one down it - that is what it takes to locate every wall in the plane. Requiring three requires a sheet to print two strings on one axis, which is a drafting habit rather than anything dimensioning needs. Two is therefore the number the convention guarantees. It is a weaker basis than three and the code treats it as one: at exactly two, both strings must agree, because there is no majority to outvote a bad one, and a sheet whose two strings disagree falls back to its printed scale as 'printed_only' rather than publishing a median neither string measured.",
+    "min_strings_for_check": 2,
     "_agreement_note": "The individual strings must also agree with each other before any conclusion is drawn. Where they do not, the result is 'inconclusive' rather than 'contradicted': one badly grouped string is not evidence that the printed scale is wrong.",
-    "sample_agreement_pct": 10.0
+    "sample_agreement_pct": 10.0,
+    "_two_populations_note": "A sheet may carry two drawings at two scales - a floor plan at 1:100 with an enlarged detail beside it. Their strings pool into one median that is correct for neither. The sorted ratios are split at their widest relative gap; it counts as two scales only when that gap exceeds sample_agreement_pct AND the smaller group holds at least this share of the strings, so one stray reading is not mistaken for a second drawing.",
+    "second_population_min_share": 0.25
   },
   "walls": {
     "_comment": "A wall is drawn as two parallel lines a wall thickness apart. Repeated and broken-up drawings of the same line are merged into one face first, then each face is paired with its nearest plausible partner and only if that partner nearest is the same face, so one wall produces one record. These are candidates for review, not confirmed walls.",

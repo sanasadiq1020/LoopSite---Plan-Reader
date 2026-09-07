@@ -231,10 +231,21 @@ def _classify(text: str, config: dict):
             value = float(match.group(1).replace(",", ""))
         except ValueError:
             return None
+        # **A small bare figure is a candidate, not a dimension.** A wall
+        # thickness is printed as a bare 90 and the normal floor throws it away,
+        # so figures down to the small floor are admitted here and then have to
+        # be vouched for by the string they sit in (``build_chains``). Admitting
+        # them unconditionally would read page numbers and note references as
+        # measurements, which is what the floor was there to stop.
+        small_floor = float(dimension_config.get("bare_number_small_min_mm", bare_range["min"]))
+        provisional = False
         if not (bare_range["min"] <= value <= bare_range["max"]):
-            return None
+            if not (small_floor <= value < bare_range["min"]):
+                return None
+            provisional = True
         return {
             "kind": "linear",
+            "needs_a_string_to_vouch_for_it": provisional,
             "value_mm": value,
             "width_mm": None,
             "height_mm": None,
@@ -286,6 +297,9 @@ def detect_dimensions(lines: list, config: dict, sheet_id: str, exclude_bboxes=N
                 "dimension_id": "",
                 "text": line["text"].strip(),
                 "kind": reading["kind"],
+                "needs_a_string_to_vouch_for_it": bool(
+                    reading.get("needs_a_string_to_vouch_for_it")
+                ),
                 "measures_axis": axis if reading["kind"] != "level" else "z",
                 "value_mm": reading["value_mm"],
                 "width_mm": reading["width_mm"],
@@ -321,6 +335,41 @@ def detect_dimensions(lines: list, config: dict, sheet_id: str, exclude_bboxes=N
 # --- Chains ---------------------------------------------------------------
 
 
+def drop_small_figures_no_string_vouched_for(dimensions: list, chains: list) -> int:
+    """Removes small bare figures that no dimension string stands behind.
+
+    **The context a small figure has to earn.** A bare 90 is a wall thickness
+    when it sits in a run of dimension figures - same axis, same dimension line,
+    inside the chain gap - and is a page number, a note reference or a stray
+    numeral anywhere else. The string is the context, so a small figure that
+    joined no string is dropped, and one that joined a string carrying no
+    full-size dimension is dropped too: a run made only of small figures is as
+    likely to be a list of note numbers as a setout.
+
+    Returns how many were dropped. Mutates ``dimensions`` in place.
+    """
+    vouched = set()
+    for chain in chains:
+        members = chain.get("member_dimension_ids") or []
+        by_id = {d["dimension_id"]: d for d in dimensions}
+        full_size = [
+            i for i in members
+            if i in by_id and not by_id[i].get("needs_a_string_to_vouch_for_it")
+        ]
+        if not full_size:
+            continue
+        vouched.update(members)
+
+    dropped = [
+        d for d in dimensions
+        if d.get("needs_a_string_to_vouch_for_it") and d["dimension_id"] not in vouched
+    ]
+    if dropped:
+        remove = {d["dimension_id"] for d in dropped}
+        dimensions[:] = [d for d in dimensions if d["dimension_id"] not in remove]
+    return len(dropped)
+
+
 def _chain_key(dimension: dict) -> float:
     """The coordinate a chain shares: the perpendicular one. A horizontal
     string of dimensions all sit at the same y; a vertical string at the same
@@ -334,7 +383,56 @@ def _chain_position(dimension: dict) -> float:
     return cx if dimension["measures_axis"] == "x" else cy
 
 
-def build_chains(dimensions: list, config: dict, sheet_id: str) -> list:
+def _printed_clear_of_the_plan(members: list, rooms: list) -> bool:
+    """Whether this run of figures is printed clear of the drawing it measures.
+
+    **The convention.** A setout dimension string is part of a dimensioning
+    apparatus laid *outside* the thing it measures - a drafter puts it in the
+    margin so it does not obscure the drawing, and the building is drawn between
+    its strings rather than through them. A figure printed among the room names
+    is on the building: a door or window leaf width at its own opening, a
+    fitting size, a level. Both are real dimensions and both belong in the
+    dimensions table; only the first is evidence of the sheet's scale.
+
+    **Why this signal and not a stronger one.** A dimension line, its witness
+    lines and its ticks are the textbook way to recognise a string, and on a
+    sheet published as vector line work they are all there. They are *not* there
+    on a sheet whose drawing is an embedded image - measured, one such floor
+    plan carries 33 horizontal and 42 vertical rulings in total, being its frame
+    and title block, and none of them belongs to a dimension. A rule built on
+    witness lines therefore does nothing at all on exactly the plan sets that
+    need it most. Where the figures are printed is readable on every sheet that
+    carries text, whatever the drawing is stored as.
+
+    **What would break it.** A plan set that dimensions internally - printing
+    its setout strings across the drawing rather than round it, which some
+    renovation and setout drawings do - and a sheet whose room names are placed
+    well outside the building they belong to. Both would have a real string
+    refused as evidence; neither loses the dimension itself. Where a sheet names
+    fewer than two rooms there is no envelope to judge against and this returns
+    True, so nothing is refused on evidence that does not exist.
+    """
+    boxes = [r["bbox"] for r in (rooms or []) if r.get("bbox")]
+    if len(boxes) < 2 or not members:
+        return True
+    left = min(b[0] for b in boxes)
+    top = min(b[1] for b in boxes)
+    right = max(b[2] for b in boxes)
+    bottom = max(b[3] for b in boxes)
+    for member in members:
+        box = member.get("bbox")
+        if not box:
+            continue
+        x = (box[0] + box[2]) / 2.0
+        y = (box[1] + box[3]) / 2.0
+        if not (left <= x <= right and top <= y <= bottom):
+            # One figure clear of the plan is enough: a string laid in the
+            # margin may still have an end figure overlapping the drawing.
+            return True
+    return False
+
+
+def build_chains(dimensions: list, config: dict, sheet_id: str, rooms: list = None) -> list:
     """Groups dimensions printed as one string, and checks each string adds up.
 
     A chain is a run of dimensions on the same axis, sharing a common
@@ -483,6 +581,12 @@ def build_chains(dimensions: list, config: dict, sheet_id: str) -> list:
                 "member_count": len(members),
                 "sum_mm": round(total, 1),
                 "bbox": [round(v, 2) for v in extent],
+                # **Every figure here is a real dimension; not every one is
+                # evidence of the sheet's scale.** A run of leaf widths printed
+                # at their own openings is a run of true measurements sitting on
+                # the building, and calibrating from it measures the spacing of
+                # the doors rather than the scale of the drawing.
+                "printed_clear_of_the_plan": _printed_clear_of_the_plan(members, rooms),
                 "check": check,
                 "parallel_check": None,
             }

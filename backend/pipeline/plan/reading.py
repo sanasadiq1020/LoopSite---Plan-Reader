@@ -456,7 +456,9 @@ def _collect_unresolved(page: dict, text_evidence: dict) -> list:
         add("scale.contradicted", "P1", calibration.get("note") or "")
     elif calibration.get("result") == "inconclusive":
         add("scale.inconclusive", "P1", calibration.get("note") or "")
-    elif calibration.get("result") == "not_checked" and calibration.get("note"):
+    elif calibration.get("result") in ("not_checked", "printed_only", "unknown") and calibration.get("note"):
+        # A printed scale nothing checked is a finding, not a pass: every length
+        # on the sheet rests on a claim.
         add("scale.not_checked", "P2", calibration["note"])
 
     # **A break in a wall that nothing confirmed is not an opening**, and it is
@@ -764,7 +766,18 @@ def analyze_page(
         detected_dimensions = dimensions_module.detect_dimensions(
             drawing_lines, config, sheet_id
         )
-        chains = dimensions_module.build_chains(detected_dimensions, config, sheet_id)
+        chains = dimensions_module.build_chains(
+            detected_dimensions, config, sheet_id, rooms=detected_rooms
+        )
+        # A small bare figure is only a dimension where a string vouches for it.
+        _unvouched = dimensions_module.drop_small_figures_no_string_vouched_for(
+            detected_dimensions, chains
+        )
+        if _unvouched:
+            logger.info(
+                f"{sheet_id}: {_unvouched} small figure(s) sat in no dimension string, "
+                "so they were not read as dimensions"
+            )
         dimensions_module.link_dimensions_to_rooms(detected_dimensions, detected_rooms, config)
         opening_marks = _detect_opening_marks(drawing_lines, config, sheet_id)
 
@@ -783,7 +796,8 @@ def analyze_page(
         # walls are only produced when it holds up — a length taken from an
         # unconfirmed scale is worse than no length at all.
         calibration = calibrate_page(
-            fields["scale"]["value"], detected_dimensions, chains, config
+            fields["scale"]["value"], detected_dimensions, chains, config,
+            page_size_pt=(page_width, page_height),
         )
         # Walls are looked for only on sheets that draw the building in plan.
         # Two parallel lines a wall thickness apart mean something on a floor
@@ -853,6 +867,11 @@ def analyze_page(
         # same junction, outer/inner and description pass that every wall in
         # this pipeline has always gone through, so the overlay, the model and
         # the CSVs read exactly the record they always did.
+        # **Every length on this sheet carries the standing of the scale it was
+        # measured with.** A wall measured from a scale nothing confirmed is not
+        # a wrong wall, but it is not a checked one either, and the record has to
+        # say which - otherwise an unverified length is indistinguishable from a
+        # confirmed one everywhere downstream.
         selfcheck.attrition_reset(sheet_id)
         detected_walls = (
             cvwalls.detect_walls(
@@ -961,6 +980,11 @@ def analyze_page(
 
         if detected_walls:
             selfcheck.attrition_record(sheet_id, "12 arrowhead leaders", detected_walls)
+        for _wall in detected_walls or []:
+            _wall["scale_verified"] = bool(calibration.get("verified"))
+            _wall["scale_source"] = calibration.get("source")
+            _wall["length_is_unverified"] = not calibration.get("verified")
+
         detected_openings = place_openings_on_walls(
             opening_marks, detected_walls, calibration, config, sheet_id
         )

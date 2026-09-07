@@ -50,6 +50,65 @@ rewiring only, and no detection logic was changed.
 
 ---
 
+## Phase 4 — scale calibration: what was found outside its own scope
+
+Recorded here rather than fixed, because the scale phase was scoped to
+`calibration.py`, `titleblockscale.py`, `dimensions.py` and their config.
+
+### P1 — the ranked title-block scale reader is not in the pipeline that runs
+
+`cvdetect/titleblockscale.py` implements the ranked reading recorded in Section
+4AZ of `CLAUDE.md` — the four edge strips, the confidence ranks, the five traps
+(`1:100MM FALL ON SPANDECK`, `DO NOT SCALE DRAWING`, the drawing-index column,
+label-above-value, `NTS`). It is imported by `cvdetect/calibration.py`, and
+**`cvdetect/calibration.py` is imported only by `cvdetect/detector.py`**, which
+is the standalone command-line reader. The web pipeline calibrates through
+`pipeline/plan/scale.py` and hands that record to `cvwalls.detect_walls`, so
+none of that ranking or trap-avoidance is applied to an upload. The ISO
+paper-size correction was reimplemented in `scale.py` during this phase for
+that reason; the rest of the ranked reading was left alone as out of scope.
+
+### P1 — the printed-clear-of-the-plan rule refuses real internal setout strings
+
+The rule that stops a run of door-leaf widths being read as a dimension string
+(Phase 4, Step 1) works on the convention that a setout string is laid clear of
+the drawing it measures. Some offices dimension internally, and those strings
+are refused as scale evidence even though they are real. Measured across the
+three plan sets, 14 chains were refused, and the following are genuine setout
+strings rather than annotations:
+
+| sheet | chain | figures |
+|---|---|---|
+| A06 | CH05 | `90, 620, 90, 2910, 90, 610, 1190, 90, …` |
+| A18 | CH08, CH10 | `500, 1000, 300, 900` and `100, 200, 100, 1700` |
+| A19 | CH07, CH08 | `300, 900, 600, 900` |
+
+**No sheet lost its confirmation as a result** — each still had ten or more
+strings printed clear of the plan. The cost is real but currently free, and it
+would stop being free on a sheet that dimensions internally and carries few
+strings. The rule degrades gracefully by design: a sheet that lays *no* string
+clear of the plan falls back to its internal strings and says so in
+`strings_from`.
+
+### P2 — two calibration constants are in code, not config
+
+`scale.py` holds `_MIN_MEMBERS = 3` and `_MIN_SPAN_MM = 1000.0` as module
+constants. Both decide whether a printed string counts as evidence, which is
+the kind of threshold Critical Rule 1 puts in `/config`. `_MIN_MEMBERS = 3` is
+the reason `P01-CH03` (a real two-figure string) is not counted, which is part
+of why that sheet has only one usable string.
+
+### P1 — a picture-drawn floor plan reports an envelope 508% over
+
+`unseen_plan` P02 traces an envelope 507.9% wider than the largest figure the
+sheet prints. It predates this phase and is unchanged by it. The sheet is
+traced from pixels and its setout strings are not in the text layer at all, so
+the envelope check is comparing a badly traced building against a door width —
+both halves are weak. It is recorded because it is the largest single
+disagreement the self-checks report anywhere.
+
+---
+
 ## Phase 2 findings — the thickness measurement is exact, and three faults destroy it
 
 Investigation only; nothing below is fixed. The decisive result is that
