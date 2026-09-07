@@ -117,6 +117,11 @@ _DEFAULTS = {
         "snap_reach_mm": 150.0,
         "ray_reach_mm": 1200.0,
         "snap_passes": 3,
+        # Carries a wall end on to the wall it meets, for as long as the sheet
+        # draws that wall - both of its faces - the whole way there. It has no
+        # reach of its own on purpose: the drawing is the bound, and where the
+        # ink stops the end stops. See junctions.extend_along_the_ink.
+        "extend_along_the_ink": True,
         "grid_min_walls": 3,
         "structure_label_reach_mm": 2500.0,
         "grid_spacing_regularity": 0.08,

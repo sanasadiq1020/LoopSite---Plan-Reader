@@ -141,9 +141,16 @@ def detect_walls(
     line_source = (
         "cv_vector" if diagnostics.get("line_source") == "vector_paths" else "cv_raster"
     )
+    # **The drawing gets to confirm a wall end before it is moved.** Rebuilt
+    # from whichever image the walls were actually traced from, so the evidence
+    # and the measurement come from one reading (Critical Rule 2).
     _through_the_same_post_processing(
         walls, mm_per_point, config, sheet_id, page_number, rooms, line_source,
         vectorpaths.structure_labels_on(page, detection),
+        ink=wallgeometry.ink_as_traced(
+            page, scale, paths, detection, diagnostics.get("line_source")
+        ),
+        scale=scale,
     )
     logger.info(
         f"{sheet_id}: computer-vision reader gave {len(measured)} centrelines -> "
@@ -1496,7 +1503,7 @@ def _fill_in_thickness_context(walls: list, config: dict) -> None:
 
 def _through_the_same_post_processing(
     walls, mm_per_point, config, sheet_id, page_number, rooms, line_source,
-    structure_labels=None,
+    structure_labels=None, ink=None, scale=None,
 ) -> None:
     """The judgement every wall goes through once it has been measured.
 
@@ -1511,12 +1518,14 @@ def _through_the_same_post_processing(
     # far too sparse for any circuit to close.
     selfcheck.attrition_record(sheet_id, "1 traced and rejoined", walls)
     closed = cv_junctions.close_the_graph(
-        walls, mm_per_point, cv_settings.load_settings()
+        walls, mm_per_point, cv_settings.load_settings(),
+        ink=ink, scale=scale, junction_slack=legacy._junction_tolerance(config),
     )
-    if closed["snapped"] or closed["extended"]:
+    if closed["snapped"] or closed["extended"] or closed["carried"]:
         logger.info(
-            f"{sheet_id}: {closed['snapped']} end(s) snapped and {closed['extended']} "
-            f"extended over {closed['passes']} pass(es) to close the wall graph"
+            f"{sheet_id}: {closed['snapped']} end(s) snapped, {closed['extended']} "
+            f"extended and {closed['carried']} carried along the sheet's own ink "
+            f"over {closed['passes']} pass(es) to close the wall graph"
         )
 
     selfcheck.attrition_record(sheet_id, "2 graph closed", walls)

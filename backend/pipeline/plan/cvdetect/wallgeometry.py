@@ -219,6 +219,27 @@ def build_ink(page, scale, paths, settings: dict):
     return imaging.ink_from_page_lines(page, scale, settings), "page_image"
 
 
+def ink_as_traced(page, scale, paths, settings: dict, line_source: str):
+    """The same ink the walls on this sheet were actually traced from.
+
+    ``detect_walls`` may start on the drawing's own line work and then re-read
+    the page as a picture when that traces no building, so which image the walls
+    came from is a fact about the run rather than about the sheet. Anything
+    asking the drawing to confirm a wall has to ask the image the wall was
+    measured from, or it is checking one reading against another's evidence.
+
+    Never raises: without an image the caller does without one.
+    """
+    try:
+        if line_source == "page_image":
+            return imaging.ink_from_page_lines(page, scale, settings)
+        structural = paths.structural if paths else []
+        return imaging.ink_from_paths(page, scale, structural, paths.fills if paths else None)
+    except Exception as e:
+        logger.exception(f"the sheet's own ink could not be rebuilt: {e}")
+        return None
+
+
 def detect_walls(
     page,
     scale,

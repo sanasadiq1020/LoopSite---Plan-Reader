@@ -1948,6 +1948,152 @@ def test_a_wall_carrying_partitions_is_not_a_rafter_however_it_is_captioned(conf
     assert taken == {"G1", "G2", "G3"}
 
 
+# --- carrying a wall end on, where the drawing draws the wall ---------------
+
+
+def _sheet_with_a_wall_drawn_past_its_traced_end(scale, faces, along, drawn_to,
+                                                 second_face=True, size=(700, 700)):
+    """A blank sheet with one wall's faces inked from 0 to ``drawn_to``.
+
+    ``second_face`` off draws a single line instead of a wall - a roof line, an
+    eave, a grid tick - which is the case the two-face rule exists to refuse.
+    """
+    import numpy as np
+
+    k = scale.pixels_per_point
+    ink = np.zeros(size, dtype=np.uint8)
+    lines = faces if second_face else faces[:1]
+    for face in lines:
+        row = int(round(face * k))
+        for step in range(int(round(drawn_to * k))):
+            if along == 0:
+                ink[row, step] = 255
+            else:
+                ink[step, row] = 255
+    return ink
+
+
+def _traced(wall_id, along, faces, low, high):
+    across = (faces[0] + faces[1]) / 2.0
+    first = [low, across] if along == 0 else [across, low]
+    last = [high, across] if along == 0 else [across, high]
+    box = ([low, faces[0], high, faces[1]] if along == 0
+           else [faces[0], low, faces[1], high])
+    return {
+        "wall_id": wall_id, "runs_along": "x" if along == 0 else "y",
+        "start_point_pt": first, "end_point_pt": last,
+        "face_positions_pt": list(faces), "bbox": box,
+        "length_mm": (high - low) * AT_1_TO_100, "thickness_mm": 230.0,
+        "junctions": [], "connects_to": [],
+    }
+
+
+def test_a_wall_end_is_carried_on_where_the_sheet_draws_the_wall(config, scale):
+    """A traced end is short of the truth wherever the drawing keeps drawing the
+    same wall. Measured on real sheets, 35 of 69 free ends pointing along their
+    own line at a wall have that wall drawn in the gap, 14 of them unbroken over
+    1.8 to 14.8 m - and none of them was reaching it."""
+    from pipeline.plan.cvdetect import junctions
+
+    faces = (100.0, 106.5)
+    wall = _traced("W1", 0, faces, 10.0, 60.0)
+    target = _traced("W2", 1, (140.0, 146.5), 40.0, 170.0)
+    ink = _sheet_with_a_wall_drawn_past_its_traced_end(scale, faces, 0, 160.0)
+
+    moved = junctions.extend_along_the_ink(
+        [wall, target], AT_1_TO_100, config, ink=ink, scale=scale, junction_slack=10.0
+    )
+    assert moved == 1
+    assert wall["end_point_pt"][0] == pytest.approx(143.25, abs=0.5), (
+        "the end should be carried on to the centreline of the wall it meets"
+    )
+
+
+def test_a_single_line_is_not_a_wall_to_be_carried_along(config, scale):
+    """The mistake this prevents, named.
+
+    Asking only whether *any* ink lay in the band carried a partition's end up
+    off the top of a real house and into the pergola drawn above it - a pergola
+    beam is a line, and it happened to lie on that partition's own line. The
+    reading gained a 4.7 m "external wall" in the roof strip and the traced
+    building went from 17% under what the sheet prints to 11% over.
+
+    A wall is two parallel faces; a roof line, an eave, a setback and a grid
+    tick are each one line."""
+    from pipeline.plan.cvdetect import junctions
+
+    faces = (100.0, 106.5)
+    wall = _traced("W1", 0, faces, 10.0, 60.0)
+    target = _traced("W2", 1, (140.0, 146.5), 40.0, 170.0)
+    ink = _sheet_with_a_wall_drawn_past_its_traced_end(
+        scale, faces, 0, 160.0, second_face=False
+    )
+
+    assert junctions.extend_along_the_ink(
+        [wall, target], AT_1_TO_100, config, ink=ink, scale=scale, junction_slack=10.0
+    ) == 0
+    assert wall["end_point_pt"][0] == 60.0
+
+
+def test_nothing_is_carried_into_open_paper(config, scale):
+    """Where the sheet stops drawing the wall, the end stops. The ink is the
+    bound, which is why this rule needs no reach of its own."""
+    from pipeline.plan.cvdetect import junctions
+
+    faces = (100.0, 106.5)
+    wall = _traced("W1", 0, faces, 10.0, 60.0)
+    target = _traced("W2", 1, (140.0, 146.5), 40.0, 170.0)
+    # The wall is drawn only a little past its traced end, then stops.
+    ink = _sheet_with_a_wall_drawn_past_its_traced_end(scale, faces, 0, 75.0)
+
+    assert junctions.extend_along_the_ink(
+        [wall, target], AT_1_TO_100, config, ink=ink, scale=scale, junction_slack=10.0
+    ) == 0
+
+    # And with nothing on its line to meet, there is nothing to reach for.
+    lone = _traced("W1", 0, faces, 10.0, 60.0)
+    full = _sheet_with_a_wall_drawn_past_its_traced_end(scale, faces, 0, 160.0)
+    assert junctions.extend_along_the_ink(
+        [lone], AT_1_TO_100, config, ink=full, scale=scale, junction_slack=10.0
+    ) == 0
+
+
+def test_a_doorway_is_never_bridged_but_a_crossing_wall_is(config, scale):
+    """A wall's band is broken where another wall crosses it, and at a doorway.
+    The first must be stepped over and the second must never be, or a wall is
+    reported running through its own opening. The longest void allowed is the
+    wall's own thickness: a crossing wall of like thickness fits inside it and
+    the narrowest doorway an office builds does not."""
+    import numpy as np
+    from pipeline.plan.cvdetect import junctions
+
+    faces = (100.0, 106.5)
+    k = scale.pixels_per_point
+
+    def inked_with_a_void(void_pt):
+        ink = _sheet_with_a_wall_drawn_past_its_traced_end(scale, faces, 0, 160.0)
+        start = int(round(80.0 * k))
+        for face in faces:
+            row = int(round(face * k))
+            ink[row, start:start + int(round(void_pt * k))] = 0
+        return ink
+
+    thickness = faces[1] - faces[0]
+    crossing = _traced("W1", 0, faces, 10.0, 60.0)
+    target = _traced("W2", 1, (140.0, 146.5), 40.0, 170.0)
+    assert junctions.extend_along_the_ink(
+        [crossing, target], AT_1_TO_100, config,
+        ink=inked_with_a_void(thickness * 0.8), scale=scale, junction_slack=10.0
+    ) == 1
+
+    door = _traced("W1", 0, faces, 10.0, 60.0)
+    target2 = _traced("W2", 1, (140.0, 146.5), 40.0, 170.0)
+    assert junctions.extend_along_the_ink(
+        [door, target2], AT_1_TO_100, config,
+        ink=inked_with_a_void(870.0 / AT_1_TO_100), scale=scale, junction_slack=10.0
+    ) == 0, "a doorway must never be bridged"
+
+
 def test_closing_the_graph_stops_when_nothing_moves(config):
     """Snapping moves a wall, which can bring a third wall inside reach for the
     first time - so both passes are repeated. Bounded on purpose: each pass can
