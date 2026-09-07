@@ -108,6 +108,8 @@ class Wall:
     # drawn faces were paired and measured, "band" where only the closed
     # band could be measured. Recorded, never acted on here.
     thickness_from: str = "band"
+    # How far the cuts taken along this wall disagreed about its thickness.
+    thickness_uncertainty_mm: float = 0.0
 
     def as_record(self) -> dict:
         coords = list(self.centreline.coords) if self.centreline is not None else []
@@ -134,6 +136,7 @@ class Wall:
             "interior_fill_share": round(self.fill_share, 3),
             "interior_drawn_as": self.drawn_as,
             "thickness_from": self.thickness_from,
+            "thickness_uncertainty_mm": round(self.thickness_uncertainty_mm, 2),
             "note": self.note,
         }
 
@@ -542,15 +545,26 @@ def _measure(
     distance = cv2.distanceTransform(closed, cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
     band = (distance >= thinnest_px / 2.0).astype(np.uint8) * 255
 
+    # **The page's own grey, for locating a face inside a pixel.** Rendered once
+    # per sheet, in the same coordinate system and at the same canonical size as
+    # every other image of this page. A sheet that cannot be rendered gives None
+    # and the band measurement stands.
+    grey = None
+    if setting(settings, "wall.thickness_from_the_page_faces", True):
+        try:
+            grey = imaging.render_page(page, scale)
+        except Exception as e:
+            logger.exception(f"the page could not be rendered for its grey profile: {e}")
+
     return _walls_from_band(
         band, distance, ink, scale, settings, sheet_name, source, thickest_px,
-        openings_mask, face_pairs,
+        openings_mask, face_pairs, grey=grey,
     )
 
 
 def _walls_from_band(
     band, distance, ink, scale, settings, sheet_name, source, thickest_px,
-    openings_mask=None, face_pairs=None,
+    openings_mask=None, face_pairs=None, grey=None,
 ):
     """Outlines by contour, centrelines by thinning, one component at a time."""
     import cv2
@@ -670,7 +684,7 @@ def _walls_from_band(
                     }
                 )
 
-    for run in _merge_collinear_runs(gathered, distance, scale, settings, ink=ink):
+    for run in _merge_collinear_runs(gathered, distance, scale, settings, ink=ink, grey=grey):
         points = run["points"]
         simplified = cv2.approxPolyDP(
             points.reshape(-1, 1, 2).astype(np.int32), simplify_px, False
@@ -681,9 +695,10 @@ def _walls_from_band(
         thickness_mm = run.get("thickness_mm")
         uncertainty_mm = run.get("thickness_uncertainty_mm") or 0.0
         if thickness_mm is None:
-            thickness_mm, uncertainty_mm, _stroke = _band_thickness_mm(
-                distance, ink, points, run.get("axis") or "h", scale, settings
+            thickness_mm, uncertainty_mm, how = _band_thickness_mm(
+                distance, ink, grey, points, run.get("axis") or "h", scale, settings
             )
+            run["thickness_how"] = how
         # **A wall's thickness is the distance between its two drawn faces.**
         # The band is only a stand-in for that, and on a sheet read as a
         # picture it is a poor one: closing with a kernel the width of the
@@ -696,10 +711,11 @@ def _walls_from_band(
         # thickness, so where a run lies along a pair, the pair's figure is
         # used and the band's is set aside.
         from_faces = _thickness_from_the_faces(run, face_pairs, scale, settings)
-        thickness_from = "band"
+        thickness_from = run.get("thickness_how") or "band"
         if from_faces:
             thickness_mm = from_faces
             thickness_from = "faces"
+            uncertainty_mm = 0.0
         # **A wall is two faces, so a line with no twin is not a wall.** This
         # is the rule that clears the stray lines running off into the paper:
         # a page border, a grid tick, an extension line and a roof overhang are
@@ -718,7 +734,9 @@ def _walls_from_band(
         # a kernel, a band threshold and a snap radius, none of which compares a
         # nominal against a measurement, and widening those would change how the
         # band is built rather than what is admitted from it.
-        reportable_slack = _nominal_slack_mm(scale, settings)
+        reportable_slack = _nominal_slack_mm(
+            scale, settings, from_pixels=(thickness_from != "faces")
+        )
         if not (
             number(settings, "wall.min_thickness_mm", 70.0) - reportable_slack
             <= thickness_mm
@@ -729,6 +747,7 @@ def _walls_from_band(
         wall = _wall_from_points(
             simplified, (0, 0), scale, thickness_mm, sheet_name, source,
             run["fill_share"], run["drawn_as"], len(walls) + 1, thickness_from,
+            uncertainty_mm,
         )
         if wall is None:
             continue
@@ -745,7 +764,7 @@ def _walls_from_band(
     return walls, count - 1
 
 
-def _nominal_slack_mm(scale, settings: dict) -> float:
+def _nominal_slack_mm(scale, settings: dict, from_pixels: bool = False) -> float:
     """How far a measurement may sit outside a bound written as a nominal.
 
     **A bound written as a nominal thickness bounds a measurement of it.** A
@@ -772,7 +791,20 @@ def _nominal_slack_mm(scale, settings: dict) -> float:
     thickness being refused again.
     """
     precision_pt = number(settings, "wall.coordinate_precision_pt", 0.0)
-    return 2.0 * precision_pt * scale.mm_per_point
+    slack = 2.0 * precision_pt * scale.mm_per_point
+    if not from_pixels:
+        return slack
+    # **A measurement off an image cannot be finer than the image.** The figure
+    # above is the precision of a coordinate the PDF states, which is right for
+    # a thickness measured between two vector faces. A thickness measured off
+    # the rendered page is quantised at the pixel however carefully the profile
+    # is weighed, so a bound written as a nominal has to admit a measurement
+    # that is a pixel away from it - at 300 DPI and 1:100 that is 8.5 mm, and at
+    # 1:200 it is 16.9 mm, which is the honest statement that the two cannot be
+    # told apart at that resolution. Demanding more precision than the
+    # instrument has is how a real 90 mm wall measured at 87 came to be dropped
+    # entirely rather than reported three millimetres out.
+    return max(slack, scale.mm_per_pixel)
 
 
 def _thickness_from_the_faces(run: dict, face_pairs, scale, settings: dict):
@@ -929,7 +961,7 @@ def _origin_across(scale, axis: str) -> float:
     return scale.origin[0] if axis == "h" else scale.origin[1]
 
 
-def _merge_collinear_runs(gathered: list, distance, scale, settings: dict, ink=None) -> list:
+def _merge_collinear_runs(gathered: list, distance, scale, settings: dict, ink=None, grey=None) -> list:
     """Pieces of one wall, traced separately, put back into one run.
 
     **A wall is one thing; a picture traces it as several.** On a sheet whose
@@ -976,12 +1008,12 @@ def _merge_collinear_runs(gathered: list, distance, scale, settings: dict, ink=N
         else:
             bent.append(run)
             continue
-        thickness_mm, uncertainty_mm, stroke_px = _band_thickness_mm(
-            distance, ink, points, run["axis"], scale, settings
+        thickness_mm, uncertainty_mm, how = _band_thickness_mm(
+            distance, ink, grey, points, run["axis"], scale, settings
         )
         run["thickness_mm"] = thickness_mm
         run["thickness_uncertainty_mm"] = uncertainty_mm
-        run["stroke_px"] = stroke_px
+        run["thickness_how"] = how
         straight.append(run)
 
     merged = []
@@ -1049,6 +1081,17 @@ def _one_run(pieces: list, axis: str, np) -> dict:
         "start": start,
         "end": end,
         "thickness_mm": thickness,
+        # How the pieces were measured travels with the run they become. Where
+        # they were not all measured the same way the weaker word wins, because
+        # a run is only as well measured as its worst piece.
+        "thickness_how": (
+            pieces[0].get("thickness_how")
+            if len({p.get("thickness_how") for p in pieces}) == 1
+            else "band"
+        ),
+        "thickness_uncertainty_mm": max(
+            (p.get("thickness_uncertainty_mm") or 0.0) for p in pieces
+        ),
     }
 
 
@@ -1164,35 +1207,159 @@ def _line_kernel(angle_degrees: float, length: int):
     return kernel
 
 
-def _band_thickness_mm(distance, ink, points, axis, scale, settings):
-    """The wall's thickness from its band, with the plotted stroke taken off.
+def _grey_cut_across(grey, x, y, axis, reach_px):
+    """The greyscale line taken across a wall, as ink darkness above paper."""
+    import numpy as np
 
-    **A band is measured outer edge to outer edge.** The distance transform runs
-    on the closed ink, so twice its value spans from the far side of one drawn
-    face to the far side of the other - which is the wall's thickness plus one
-    whole stroke, because each face contributes half a stroke at each end. A
-    stroke is symmetric about the line it draws, so subtracting one mean stroke
-    puts the measurement back between the two lines. That is geometry, not a
-    correction factor: it holds for any stroke width, any resolution and any
-    scale.
+    height, width = grey.shape[:2]
+    reach = int(max(2, round(reach_px)))
+    px, py = int(round(x)), int(round(y))
+    if axis == "h":
+        lo, hi = max(0, py - reach), min(height, py + reach + 1)
+        if hi - lo < 3 or not (0 <= px < width):
+            return None, 0
+        line = grey[lo:hi, px]
+        origin = lo
+    else:
+        lo, hi = max(0, px - reach), min(width, px + reach + 1)
+        if hi - lo < 3 or not (0 <= py < height):
+            return None, 0
+        line = grey[py, lo:hi]
+        origin = lo
+    # Paper is the brightest thing on the cut, so darkness is measured from it
+    # rather than from an assumed white. A scanned or compressed sheet whose
+    # paper is grey is then read the same way as a clean render.
+    paper = float(line.max())
+    return paper - line.astype(np.float64), origin
 
-    Returns ``(thickness_mm, uncertainty_mm, stroke_px)``; the stroke is None
-    where the wall's two faces could not be found as separate ink runs, and the
-    band's own figure then stands unchanged.
+
+def _face_centres_thickness(grey, points, axis, band_px, scale, settings, samples: int = 9):
+    """A wall's thickness from where its two faces actually are, sub-pixel.
+
+    **The raster equivalent of pairing two drawn faces.** The vector reader
+    measures a wall between the centres of its two drawn face lines. On a
+    rendered sheet those two lines are still two distinct runs of ink separated
+    by paper - what is lost is only the exactness of a coordinate, and that is
+    recoverable: a plotted stroke is symmetric about the line it draws, and
+    rendering spreads it symmetrically through anti-aliasing, so the
+    **intensity-weighted centroid of a run is the line's own position**, to a
+    fraction of a pixel. That is the standard sub-pixel edge localisation
+    result, and it is why this beats anything measured off a binarised mask:
+    thresholding throws away exactly the grey that says where inside a pixel
+    the line fell.
+
+    **It needs no correction for stroke width.** A centroid is the line's
+    position, not its edge, so measuring between two centroids gives
+    centre-to-centre directly - there is no stroke to subtract, and subtracting
+    one as well would remove a width that was never included.
+
+    **The truncation does not matter.** Ink is counted where it is darker than
+    a share of the cut's own peak, so the floor scales with the sheet's own
+    contrast rather than assuming white paper. The centroid of a symmetric
+    profile is unchanged by symmetric truncation, so the exact share only has
+    to exclude a neighbouring feature, not to be tuned.
+
+    Returns ``(thickness_mm, uncertainty_mm, samples_used)`` or ``None``.
+
+    Relies on: a greyscale render being available; a stroke being symmetric
+    about its centre; and a wall's two faces being separable by paper. It
+    returns None - and the band measurement stands - where a sheet is bi-level
+    with no grey to weigh, where a wall is drawn solid or its faces have been
+    welded together so only one run is found, and where a face is lost to
+    thresholding upstream. It degrades rather than misreporting: heavy JPEG
+    ringing makes a run's profile asymmetric and biases the centroid toward the
+    ringing, which widens the spread between samples and is reported as
+    uncertainty rather than hidden.
+    """
+    import numpy as np
+
+    if grey is None or len(points) < 2:
+        return None
+    share = number(settings, "wall.face_profile_share_of_peak", 0.5)
+    reach = max(4.0, band_px)
+    separations = []
+    step = max(1, len(points) // max(1, samples))
+    for index in range(0, len(points), step):
+        x, y = points[index]
+        cut, _origin = _grey_cut_across(grey, x, y, axis, reach)
+        if cut is None:
+            continue
+        peak = float(cut.max())
+        if peak <= 0:
+            continue
+        floor = peak * share
+        runs, start = [], None
+        for position, value in enumerate(cut):
+            if value >= floor and start is None:
+                start = position
+            elif value < floor and start is not None:
+                runs.append((start, position - 1))
+                start = None
+        if start is not None:
+            runs.append((start, len(cut) - 1))
+        if len(runs) < 2:
+            # One run: the faces touch, the wall is drawn solid, or the cut
+            # missed. Nothing here can be called a face pair.
+            continue
+        centres = []
+        for first, last in (runs[0], runs[-1]):
+            window = cut[first:last + 1]
+            weight = float(window.sum())
+            if weight <= 0:
+                centres = []
+                break
+            centres.append(float((np.arange(first, last + 1) * window).sum() / weight))
+        if len(centres) != 2:
+            continue
+        separations.append(centres[1] - centres[0])
+        if len(separations) >= samples:
+            break
+    if not separations:
+        return None
+    separations.sort()
+    middle = separations[len(separations) // 2]
+    # How much the cuts along one wall disagreed, carried as a plus-or-minus.
+    spread = (separations[-1] - separations[0]) / 2.0
+    return scale.mm_from_px(middle), scale.mm_from_px(spread), len(separations)
+
+
+def _band_thickness_mm(distance, ink, grey, points, axis, scale, settings):
+    """A wall's thickness from the picture, by the best method the sheet allows.
+
+    **Two answers to one question, and only ever one of them applied.** A
+    centroid measured on the greyscale render gives the distance between the two
+    face lines directly, so there is no stroke in it to remove. A stroke
+    subtracted from the binarised band is an approximation of the same quantity,
+    arrived at from the outside edges. Applying both would take a stroke off a
+    measurement that never contained one, so the first is used wherever the
+    profile can be read and the second only where it cannot.
+
+    Returns ``(thickness_mm, uncertainty_mm, how)``, where ``how`` names which
+    of the three was used and travels with the wall.
     """
     band_px = _thickness_along(distance, points, (0, 0)) * 2.0
-    if not setting(settings, "wall.subtract_stroke_from_band", True):
-        return scale.mm_from_px(band_px), 0.0, None
-    measured = _stroke_px_across(ink, points, axis, band_px)
-    if measured is None:
-        return scale.mm_from_px(band_px), 0.0, None
-    stroke_px, uncertainty_px, _samples = measured
-    # A stroke wider than the band is not a stroke: the faces have been welded
-    # into one run and there is nothing to subtract.
-    if stroke_px >= band_px:
-        return scale.mm_from_px(band_px), 0.0, None
-    return (scale.mm_from_px(band_px - stroke_px),
-            scale.mm_from_px(uncertainty_px), stroke_px)
+
+    # 1. Where the page's own grey can be read, the faces are located directly.
+    if setting(settings, "wall.thickness_from_the_page_faces", True):
+        found = _face_centres_thickness(grey, points, axis, band_px, scale, settings)
+        if found is not None:
+            thickness_mm, uncertainty_mm, _samples = found
+            # A pair of centres further apart than the band they were found in
+            # is not this wall's two faces; the cut reached a neighbour.
+            if 0 < thickness_mm <= scale.mm_from_px(band_px) + scale.mm_from_px(2.0):
+                return thickness_mm, uncertainty_mm, "page_faces"
+
+    # 2. Otherwise the band, with the plotted stroke taken off it.
+    if setting(settings, "wall.subtract_stroke_from_band", True):
+        measured = _stroke_px_across(ink, points, axis, band_px)
+        if measured is not None:
+            stroke_px, uncertainty_px, _samples = measured
+            if stroke_px < band_px:
+                return (scale.mm_from_px(band_px - stroke_px),
+                        scale.mm_from_px(uncertainty_px), "band_less_stroke")
+
+    # 3. And failing both, the band as it stands, which reads wide.
+    return scale.mm_from_px(band_px), 0.0, "band"
 
 
 def _ink_runs_across(ink, x, y, axis, reach_px):
@@ -1306,7 +1473,7 @@ def _thickness_along(distance, points, offset) -> float:
     return float(np.median(values))
 
 
-def _wall_from_points(points, offset, scale, thickness_mm, sheet_name, source, fill_share, drawn_as, index, thickness_from="band"):
+def _wall_from_points(points, offset, scale, thickness_mm, sheet_name, source, fill_share, drawn_as, index, thickness_from="band", thickness_uncertainty_mm=0.0):
     """One wall record, with its centreline and outline as Shapely geometry."""
     try:
         from shapely.geometry import LineString
@@ -1358,6 +1525,7 @@ def _wall_from_points(points, offset, scale, thickness_mm, sheet_name, source, f
         fill_share=fill_share,
         drawn_as=drawn_as,
         thickness_from=thickness_from,
+        thickness_uncertainty_mm=thickness_uncertainty_mm,
         note=(
             "Measured from the page image rather than the drawing's own geometry."
             if source == "page_image"

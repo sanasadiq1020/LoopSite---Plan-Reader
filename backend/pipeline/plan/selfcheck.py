@@ -589,12 +589,14 @@ def check_provenance(page: dict) -> dict:
         key = wall.get("thickness_provenance") or "unrecorded"
         counts[key] = counts.get(key, 0) + 1
     exact = sum(v for k, v in counts.items() if k.startswith("faces"))
+    from_page = sum(v for k, v in counts.items() if "page_faces" in k)
     averaged = sum(v for k, v in counts.items() if k.startswith("averaged"))
     mixed = counts.get("averaged_mixed", 0)
     stand_in = sum(1 for w in walls if w.get("thickness_is_a_stand_in"))
     fields = {
         "counts": counts,
         "face_derived": exact,
+        "page_face_derived": from_page,
         "band_derived": counts.get("band", 0),
         "averaged": averaged,
         "averaged_across_different_sources": mixed,
@@ -609,8 +611,9 @@ def check_provenance(page: dict) -> dict:
             "measurement, which is neither of them.",
             **fields,
         )
-    detail = (f"{exact} wall(s) measured between their own drawn faces, "
-              f"{stand_in} from the inked band as a stand-in, {averaged} combined across pieces.")
+    detail = (f"{exact} wall(s) measured between their own drawn faces, {from_page} between the "
+              f"centres of their two runs of ink on the rendered page, {stand_in} from the inked "
+              f"band as a stand-in, {averaged} combined across pieces.")
     if stand_in:
         detail += (" A band is measured outer edge to outer edge, so it carries the plotted "
                    "stroke on both sides and reads wider than the wall is.")

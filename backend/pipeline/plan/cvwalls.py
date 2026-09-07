@@ -242,6 +242,7 @@ def _span_of(axis: str, points: list, wall, scale, thickness_pt: float):
         "measured_from": wall.extraction_method,
         "drawn_as": wall.drawn_as,
         "thickness_from": getattr(wall, "thickness_from", "band"),
+        "thickness_uncertainty_mm": getattr(wall, "thickness_uncertainty_mm", 0.0),
     }
 
 
@@ -374,7 +375,20 @@ def _one_wall(run: list, mm_per_point: float, narrowest_break_mm: float,
     start = min(piece["start_pt"] for piece in run)
     end = max(piece["end_pt"] for piece in run)
     position = sum(piece["position_pt"] for piece in run) / len(run)
-    faced = [p for p in run if p.get("thickness_from") == "faces"]
+    # **Pieces measured the better way decide the wall.** The ways of measuring
+    # a thickness are not equally good and must not be averaged together: the
+    # distance between two drawn faces is the wall itself; the distance between
+    # the centres of its two runs of ink on the rendered page is the same
+    # quantity recovered to a fraction of a pixel; a band with the stroke taken
+    # off it is an approximation from the outside edges; and a raw band carries
+    # the stroke and reads wide. So the best class present decides, and the
+    # weaker pieces are recorded as set aside rather than blended in.
+    for _best in ("faces", "page_faces", "band_less_stroke"):
+        faced = [p for p in run if p.get("thickness_from") == _best]
+        if faced:
+            break
+    else:
+        faced = []
     deciding = faced or run
     weight = sum(max(p.get("length_mm") or 0.0, 1.0) for p in deciding)
     thickness_mm = sum(
@@ -446,6 +460,9 @@ def _one_wall(run: list, mm_per_point: float, narrowest_break_mm: float,
         # stroke on both sides and reads wide. That is stated on the record
         # rather than left for a reader to discover.
         "thickness_is_a_stand_in": not faced,
+        "thickness_uncertainty_mm": round(
+            max((p.get("thickness_uncertainty_mm") or 0.0) for p in deciding), 2
+        ) if deciding else 0.0,
         "thickness_note": (
             ""
             if faced else

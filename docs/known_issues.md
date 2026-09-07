@@ -50,6 +50,99 @@ rewiring only, and no detection logic was changed.
 
 ---
 
+## Phase 7 — the raster path measures between face centres, sub-pixel
+
+The vector reader measures a wall between the centres of its two drawn face
+lines. On a rendered sheet those two lines are still two runs of ink separated
+by paper; what is lost is only the exactness of a coordinate, and that is
+recoverable. A plotted stroke is symmetric about the line it draws and rendering
+spreads it symmetrically through anti-aliasing, so the **intensity-weighted
+centroid of a run is that line's own position**, to a fraction of a pixel. That
+is the standard sub-pixel edge localisation result, and it is why weighing the
+grey beats anything measured off a binarised mask: thresholding discards exactly
+the grey that says where inside a pixel the line fell.
+
+| the plan drawn to purpose | outer-to-outer | band less stroke | **face centres** |
+|---|---|---|---|
+| rasterised, mean error | 42.4 mm | 2.0 mm | **1.7 mm** |
+| rasterised, worst error | 45.5 mm | 3.1 mm | **2.1 mm** |
+| rasterised, within 12 mm | 0 of 6 | 6 of 6 | **6 of 6** |
+| vector, mean error | — | 0.5 mm | **0.5 mm** |
+
+### The two corrections are exclusive, never layered
+
+A centroid is a **position**, not an edge, so measuring between two centroids
+gives centre-to-centre directly and there is no stroke in it to remove.
+Subtracting one as well would take off a width that was never included. So
+`_band_thickness_mm` picks exactly one of three, in order, and the choice
+travels with the wall as its provenance:
+
+1. `page_faces` — the two ink runs' centroids on the greyscale render;
+2. `band_less_stroke` — where the profile cannot be read, the binarised band
+   with the plotted stroke measured off it and subtracted;
+3. `band` — where neither is possible, the raw band, which reads wide.
+
+Stroke subtraction is therefore **retained as the stated fallback, not
+superseded outright**: it fired 16 times on one plan set, 10 on another and 5 on
+the third, on runs where the profile gave fewer than two ink runs.
+
+**What the centroid relies on**: a greyscale render being available; a stroke
+being symmetric about its centre; a wall's two faces being separable by paper.
+**What breaks it**, in each case falling back rather than misreporting: a
+bi-level scan with no grey to weigh; a wall drawn solid or with its faces welded
+together, giving one run instead of two; a face lost to thresholding upstream.
+Heavy JPEG ringing makes a run asymmetric and biases its centroid, which widens
+the disagreement between cuts along the wall and is reported as uncertainty.
+
+Ink is counted where it is darker than a share of each cut's **own peak**, so
+the floor scales with the sheet's contrast rather than assuming white paper. The
+centroid of a symmetric profile is unchanged by symmetric truncation, so that
+share only has to exclude a neighbouring feature; it is not a tuned number.
+
+### A measurement may not be held to a precision the instrument lacks
+
+The reportable buildable range is a nominal bound on a measurement, and Phase 5
+gave it an allowance drawn from the PDF's **coordinate** precision — right for a
+thickness measured between two vector faces, wrong for one measured off an
+image, which is quantised at the pixel however carefully the profile is weighed.
+A real 90 mm wall measured at 87.0 was dropped entirely rather than reported
+three millimetres out. The allowance is now the measurement's own precision: a
+pixel where the value came from pixels, which is 8.5 mm at 300 DPI and 1:100 and
+16.9 mm at 1:200 — the honest statement that at that resolution the two cannot
+be told apart.
+
+### P1 — right on ground truth, and mixed across the plan sets
+
+**Derbyshire A05 recovered**, which is what this change was taken up to test:
+closure back from 72.0% to **96.2%** with its envelope unchanged, undoing the
+Phase 6 regression exactly. A06 improved too, 42.4% to **58.6%**.
+
+But two plan sets lost walls:
+
+| | walls | closure |
+|---|---|---|
+| sample P01 | 34 → 25 | 61.8% → 44.0% |
+| sample P04 | 36 → 24 | 47.2% → 37.5% |
+| Derbyshire A02 | 48 → 48 | 81.2% → 79.2% |
+| **Derbyshire A05** | 25 → 26 | **72.0% → 96.2%** |
+| Derbyshire A06 | 33 → 29 | 42.4% → **58.6%** |
+| unseen P02 | 13 → 4 | 0% → 0% |
+
+**Where the walls went, measured.** On one plan set the buildable-range gate
+rejected 77 candidates, **56 of them as too thin, measuring 39 to 59 mm**. Those
+are pairs of lines genuinely closer together than any wall an office builds -
+linings, hatch boundaries, joinery - which the inflated band reading used to
+push up into the 90-300 mm range and report as walls. Measuring them correctly
+is why they are gone.
+
+**That does not settle it, and it is not claimed to.** Closure fell on both
+sheets of that set, and a spurious candidate can be part of a real circuit, so a
+correct removal can still break one. Whether the count fell because false walls
+went or because real ones did is not established here, and the overlays are the
+place to settle it. Stopped and reported rather than proceeding.
+
+---
+
 ## Phase 6 — the band's stroke is subtracted; the raster path measures for the first time
 
 Measured on the plan drawn to purpose, published as a picture — the only ground
@@ -220,7 +313,7 @@ Until then a band reading is labelled: every such wall carries
 to outer edge and reads wider than the wall is, and the per-sheet provenance
 check repeats it.
 
-### P2 (PARTLY ADDRESSED in Phase 6) — the raster path has no face measurement at all
+### P2 (ADDRESSED in Phase 7) — the raster path has no face measurement at all
 
 On the drawn-to-purpose plan published as a picture, all six walls still read
 from the band and none lands within tolerance. That is not a regression and not
