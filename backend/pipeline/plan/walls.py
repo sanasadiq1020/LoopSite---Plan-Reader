@@ -1313,7 +1313,8 @@ def break_is_a_junction(
 # --- Fix 2: what is drawn beyond the building -----------------------------
 
 
-def building_outline(walls: list, config: dict):
+def building_outline(walls: list, config: dict, printed_overalls: dict = None,
+                     mm_per_point: float = None):
     """The box the building's own connected walls occupy, or None.
 
     **The outline is the walls that hold each other up.** Everything that
@@ -1324,6 +1325,42 @@ def building_outline(walls: list, config: dict):
 
     Returned as None where no group is big enough to be a building, so a sheet
     that traced very little loses nothing.
+
+    **The circularity, and what breaks it.** That premise fails in exactly one
+    way, and it is the way that matters: an external wall is the one a house has
+    fewest junctions on, so where the tracing is fragmented the envelope is the
+    part *left out* of the largest connected group. The outline then shrinks to
+    the building's interior and every external wall tests "outside the building"
+    — a boundary drawn from the walls that are not the envelope, judging the
+    envelope. Measured on one real floor plan, the group's box was **4.4 m
+    narrower than the building on the west and 4.8 m on the east**, and the rule
+    set aside ten external walls carrying 35 m between them, 44% of that sheet's
+    traced wall.
+
+    Counting the walls in the group cannot see this — that group held 40% of the
+    sheet's candidates and passed every count test here. **What the group cannot
+    supply is a statement of how big the building is, so it is asked of the
+    drawing instead**: the sheet prints its own overall dimensions, and those
+    come from the drafter rather than from any wall. A group whose box is
+    materially shorter than the printed overall on an axis is not the building
+    on that axis, and its bound there is not used.
+
+    The comparison is one-sided, and the asymmetry has a reason: an outline that
+    is too *large* rejects less than it might and is safe, while one that is too
+    *small* deletes real building. An axis with no overall printed on it cannot
+    be checked, so it is not used either — an unverifiable boundary may not
+    judge the envelope, which is the whole point of this repair.
+
+    **What this now relies on**: that a sheet drawing a building in plan states
+    its overall size, which is a drafting convention rather than a habit, and
+    that the largest connected group of walls is the building when it spans what
+    the sheet says the building spans. **What would break it**: a sheet printing
+    no overall and no dimension-string total, where the rule now does nothing
+    and roof lines drawn inside the plan area are left to the dashed-line rule,
+    the detached-structure rule and the closed-circuit invariant; and an overall
+    that measures only one wing of an L-shaped building, which would understate
+    the building and disable an axis that was working. Both fail towards keeping
+    a candidate, which is the safe direction (Critical Rule 5).
     """
     settings = config.get("walls", {})
     if not settings.get("reject_outside_the_building", True) or not walls:
@@ -1381,7 +1418,54 @@ def building_outline(walls: list, config: dict):
     least = float(settings.get("outline_share_of_the_drawing", 0.25))
     if whole_area > 0 and outline_area / whole_area < least:
         return None
-    return outline
+    return _outline_the_sheet_agrees_with(outline, printed_overalls, mm_per_point)
+
+
+def _outline_the_sheet_agrees_with(outline, printed_overalls: dict, mm_per_point: float):
+    """Each bound of the outline, kept only where the sheet's own figures back it.
+
+    An axis is used when the connected group spans what the drawing says the
+    building spans; otherwise that axis's bounds become infinite, so the rule
+    stops judging on it while the other axis carries on working. Returns None
+    only if neither axis survives, which is the existing "nothing is judged"
+    answer.
+
+    The allowance is the one the product already applies to exactly this
+    comparison, imported rather than restated so the two cannot drift: a printed
+    overall is measured to a face and a traced extent to a bounding box, so they
+    differ even when both are right.
+    """
+    if not printed_overalls or not mm_per_point or mm_per_point <= 0:
+        return None
+
+    from pipeline.plan.selfcheck import ENVELOPE_TOLERANCE_PCT
+
+    shortest = 1.0 - ENVELOPE_TOLERANCE_PCT / 100.0
+    low = [outline[0], outline[1]]
+    high = [outline[2], outline[3]]
+    usable = False
+    for index, axis in enumerate(("x", "y")):
+        try:
+            printed = float(printed_overalls.get(axis) or 0.0)
+        except (TypeError, ValueError):
+            printed = 0.0
+        spanned = (high[index] - low[index]) * mm_per_point
+        if printed > 0 and spanned >= printed * shortest:
+            usable = True
+            continue
+        # Either the sheet states no overall on this axis, or the group falls
+        # short of it. Both mean this bound has not been shown to be the
+        # building's, so it judges nothing.
+        low[index], high[index] = float("-inf"), float("inf")
+        if printed > 0:
+            logger.info(
+                f"walls: the connected walls span {spanned:.0f} mm on {axis} against a "
+                f"printed {printed:.0f} mm, so they are not this building's outline on "
+                f"that axis and nothing is set aside by it"
+            )
+    if not usable:
+        return None
+    return (low[0], low[1], high[0], high[1])
 
 
 def _mm_per_point_of(walls: list, fallback_thickness: float) -> float:

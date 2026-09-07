@@ -264,6 +264,27 @@ def _printed_overalls(page: dict) -> dict:
     return {"printed": best, "printed_from": kind}
 
 
+def printed_overalls(page: dict) -> dict:
+    """How big the sheet says its building is, per axis, or None on that axis.
+
+    Only a figure that really states the whole building counts — an overall the
+    drafter marked as one, or the total of a dimension string, both of which
+    span the building by construction. **The largest single figure on an axis is
+    deliberately excluded**: it is a reasonable stand-in when reporting a
+    variance to a reader, and it is dangerous as a bound on where the building
+    is. Measured on one real sheet, the only figure printed anywhere on it is an
+    820 mm door leaf, and a building judged against that would have almost every
+    wall outside it.
+    """
+    found = _printed_overalls(page)
+    states_the_building = ("printed_overall", "dimension_string_total")
+    return {
+        axis: (found["printed"].get(axis)
+               if found["printed_from"].get(axis) in states_the_building else None)
+        for axis in ("x", "y")
+    }
+
+
 def check_envelope(page: dict) -> dict:
     """Does the building the walls describe measure what the sheet says it does?
 

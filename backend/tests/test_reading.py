@@ -2469,6 +2469,137 @@ def test_nothing_is_called_detached_where_there_is_no_building_to_detach_from(co
     assert all(w["building"] == "main" for w in scattered)
 
 
+# --- the building outline, and the circularity it used to carry -------------
+
+
+def _envelope_walls():
+    """The four external walls of a 6 m x 2 m building, at 10 mm per point."""
+    return [
+        _candidate("E0", "y", 100.0, 150.0, 350.0, 230.0),   # west
+        _candidate("E1", "y", 700.0, 150.0, 350.0, 230.0),   # east
+        _candidate("E2", "x", 150.0, 100.0, 700.0, 230.0),   # north
+        _candidate("E3", "x", 350.0, 100.0, 700.0, 230.0),   # south
+    ]
+
+
+def _interior_and_envelope():
+    """An interior that holds together and an envelope that does not.
+
+    Nine interior partitions meeting each other in the middle of the plan, and
+    the four external walls standing off from them the way a fragmented tracing
+    leaves them - too far to form a junction, so they are no part of the largest
+    connected group. This is the real shape of the defect, not an invented one.
+    """
+    interior = []
+    for n in range(5):
+        interior.append(_candidate(f"I{n}", "x", 200.0 + n * 20.0, 300.0, 500.0, 90.0))
+    for n in range(4):
+        interior.append(_candidate(f"J{n}", "y", 300.0 + n * 50.0, 200.0, 280.0, 90.0))
+    return interior + _envelope_walls()
+
+
+def _a_building_that_holds_together():
+    """The same building where the tracing did join it up: the four external
+    walls meeting at their corners, with partitions landing on them."""
+    walls = _envelope_walls()
+    walls.append(_candidate("P0", "y", 300.0, 150.0, 350.0, 90.0))
+    walls.append(_candidate("P1", "y", 500.0, 150.0, 350.0, 90.0))
+    return walls
+
+
+def test_an_outline_drawn_from_the_interior_may_not_judge_the_envelope(config):
+    """The mistake this prevents, named.
+
+    An external wall is the one a house has fewest junctions on, so where the
+    tracing is fragmented the envelope is exactly what the largest connected
+    group leaves out. The outline then shrinks to the interior and every
+    external wall tests "outside the building" - a boundary drawn from the walls
+    that are not the envelope, judging the envelope. Measured on one real floor
+    plan the group's box was 4.4 m narrower than the building on the west and
+    4.8 m on the east, and it set aside ten external walls carrying 35 m, 44% of
+    that sheet's traced wall.
+
+    Counting the walls in the group cannot see this. What settles it is the
+    sheet's own printed overall, which comes from the drafter rather than from
+    any wall.
+    """
+    from pipeline.plan.walls import building_outline, mark_walls_in_dead_ground
+
+    walls = _interior_and_envelope()
+    # The interior alone spans 300..500 pt on x. At 10 mm per point that is
+    # 2 m, against a building the sheet says is 6 m across.
+    outline = building_outline(
+        walls, config, printed_overalls={"x": 6000.0, "y": 2000.0}, mm_per_point=10.0
+    )
+    dead = mark_walls_in_dead_ground(walls, outline, [])
+    for wall in walls:
+        if wall["wall_id"].startswith("E"):
+            assert not wall.get("not_used_because"), (
+                f"{wall['wall_id']} is an external wall of the building the sheet "
+                "describes, and an outline taken from the interior set it aside"
+            )
+    assert dead == 0
+
+
+def test_the_outline_still_judges_the_axis_the_sheet_agrees_with(config):
+    """Repairing the circularity may not disarm the rule.
+
+    Where the connected walls do span what the sheet says the building spans,
+    the group *is* the building and the outline is used exactly as before - so
+    an eave line drawn beyond it still goes.
+    """
+    from pipeline.plan.walls import building_outline, mark_walls_in_dead_ground
+
+    walls = _a_building_that_holds_together()
+    eave = _candidate("EAVE", "x", 460.0, 100.0, 700.0, 230.0)
+    walls.append(eave)
+    # The connected walls span the 6 m x 2 m the sheet says the building is.
+    outline = building_outline(
+        walls, config, printed_overalls={"x": 6000.0, "y": 2000.0}, mm_per_point=10.0
+    )
+    assert outline is not None
+    mark_walls_in_dead_ground(walls, outline, [])
+    assert "outside the outline" in (eave.get("not_used_because") or "")
+
+
+def test_an_unverifiable_outline_judges_nothing(config):
+    """A boundary that cannot be checked may not judge the envelope.
+
+    A sheet printing no overall and no dimension-string total says nothing about
+    how big its building is, so the connected group cannot be confirmed to be
+    the building and its box sets nothing aside. The candidates it would have
+    taken are left to the rules that read the drawing rather than the walls.
+    """
+    from pipeline.plan.walls import building_outline
+
+    walls = _interior_and_envelope()
+    assert building_outline(walls, config, printed_overalls=None, mm_per_point=10.0) is None
+    assert building_outline(
+        walls, config, printed_overalls={"x": None, "y": None}, mm_per_point=10.0
+    ) is None
+
+
+def test_the_only_figure_on_a_sheet_is_not_an_overall(config):
+    """One real sheet prints a single 820 mm door leaf and nothing else.
+
+    Reporting a variance against it is reasonable; bounding a building with it
+    would put almost every wall outside. So only a figure that states the whole
+    building - an overall, or a dimension string's total - is offered here.
+    """
+    from pipeline.plan.selfcheck import printed_overalls
+
+    assert printed_overalls(
+        {"dimension_chains": [], "dimensions": [{"measures_axis": "x", "value_mm": 820.0}]}
+    ) == {"x": None, "y": None}
+    assert printed_overalls(
+        {"dimension_chains": [], "dimensions": [
+            {"measures_axis": "x", "value_mm": 19920.0, "is_overall": True}]}
+    )["x"] == 19920.0
+    assert printed_overalls(
+        {"dimension_chains": [{"axis": "y", "sum_mm": 11030.0}], "dimensions": []}
+    )["y"] == 11030.0
+
+
 # --- what is not a wall, read from the drawing and not from the words ------
 
 

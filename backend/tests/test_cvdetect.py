@@ -1855,27 +1855,97 @@ def test_a_beam_holding_only_rafters_goes_with_them(config):
     ) == set()
 
 
-def test_a_wall_named_by_the_sheet_as_a_roof_goes(config):
-    """A 6.05 m line printed directly under ``Skillion roof to carport`` is
-    named by the drawing as what it is - but only where it stands clear of the
-    room labels, so a caption over the plan can never take a wall."""
+def test_a_roof_grid_the_sheet_names_goes_and_a_lone_captioned_line_stays(config):
+    """A printed word may confirm a roof, never declare one.
+
+    A run of rafters set out at centres under ``Skillion roof to carport`` is
+    named by the drawing as what it is, and goes. A **single** line carrying the
+    same caption does not: a caption says what the drafter was labelling, not
+    that the line beneath it is a roof member, and a roof is never framed with
+    one member. That capability is deliberately given up - see the sibling test
+    below for the 13.2 m external wall it was deleting.
+    """
     from pipeline.plan import cvwalls
 
     rooms = [{"bbox": [300.0, 300.0, 360.0, 312.0]},
              {"bbox": [600.0, 400.0, 660.0, 412.0]}]
     label = [{"text": "Skillion roof to carport", "bbox": [825.0, 143.0, 902.0, 153.0]}]
 
-    roof = _walled("W7", "x", 808.0, 982.0, 202.0, [])
-    roof["connects_to"] = ["W1", "W2"]
+    # Four rafters spanning the same stretch at one repeated spacing - 17 pt is
+    # 600 mm centres at 1:100 - held only at their ends, standing clear of the
+    # rooms and inside the caption's reach.
+    rafters = {}
+    for index in range(4):
+        across = 170.0 + index * 17.0
+        rafter = _walled(f"R{index}", "x", 808.0, 982.0, across, [])
+        rafter["connects_to"] = ["BEAM"]
+        rafters[rafter["wall_id"]] = rafter
     assert cvwalls._the_rest_of_that_structure(
-        {"W7": roof}, set(), rooms, label, AT_1_TO_100
-    ) == {"W7"}
+        rafters, set(), rooms, label, AT_1_TO_100
+    ) == set(rafters)
 
+    # The same line, alone. No repetition, so no grid, so the word decides
+    # nothing.
+    lone = _walled("W7", "x", 808.0, 982.0, 202.0, [])
+    lone["connects_to"] = ["W1", "W2"]
+    assert cvwalls._the_rest_of_that_structure(
+        {"W7": lone}, set(), rooms, label, AT_1_TO_100
+    ) == set()
+
+    # And a captioned line drawn among the rooms is still never taken.
     inside = _walled("W8", "x", 310.0, 640.0, 350.0, [])
     inside["connects_to"] = ["W1", "W2"]
     assert cvwalls._the_rest_of_that_structure(
         {"W8": inside}, set(), rooms, label, AT_1_TO_100
     ) == set()
+
+
+def test_a_wall_carrying_partitions_is_not_a_rafter_however_it_is_captioned(config):
+    """The mistake this prevents, named.
+
+    On a real floor plan the building's whole 13.2 m south external wall - a
+    wall carrying **nine junctions to interior partitions** - was set aside as
+    "a pergola's rafters, a carport's joists or a roof grid" because ``Extent
+    of roof`` was printed 564 mm below it. The guard that was supposed to stop
+    that is that a house's walls are drawn where its rooms are named, and it is
+    **false by construction for the outside of a building**: room labels sit
+    inside rooms, so their box always falls inside the outermost walls. It
+    missed by 0.9 pt of paper - 32 mm - and cost that sheet 22% of its traced
+    wall.
+
+    A roof member spans between its supports and carries nothing along its
+    length. Anything with a partition landing on it mid-span is built into the
+    building, whatever the sheet prints beside it.
+    """
+    from pipeline.plan import cvwalls
+
+    rooms = [{"bbox": [306.0, 226.0, 360.0, 240.0]},
+             {"bbox": [600.0, 500.0, 660.0, 529.0]}]
+    label = [{"text": "Extent of roof", "bbox": [618.0, 548.0, 665.0, 558.0]}]
+
+    # A row of parallel candidates at one repeated spacing, so the grid
+    # evidence is present - and one of them carries partitions mid-span.
+    walls = {}
+    for index in range(4):
+        across = 530.0 + index * 24.0
+        wall = _walled(f"G{index}", "x", 405.0, 780.0, across, [])
+        wall["connects_to"] = ["P1"]
+        walls[wall["wall_id"]] = wall
+    external = walls["G0"]
+    external["junctions"] = [
+        {"with_wall_id": f"P{n}", "at_pt": [x, 530.0]}
+        for n, x in enumerate((405.0, 470.0, 520.0, 616.0, 664.0, 745.0, 780.0))
+    ]
+
+    taken = cvwalls._the_rest_of_that_structure(
+        walls, set(), rooms, label, AT_1_TO_100, junction_slack=10.0
+    )
+    assert "G0" not in taken, (
+        "a 13.2 m run with partitions landing on it mid-span is a wall of the "
+        "building, not a rafter, whatever word is printed near it"
+    )
+    # Its neighbours carry nothing and are a genuine grid, so they still go.
+    assert taken == {"G1", "G2", "G3"}
 
 
 def test_closing_the_graph_stops_when_nothing_moves(config):

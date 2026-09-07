@@ -955,9 +955,23 @@ def analyze_page(
         wall_settings = config.get("walls", {})
         if detected_walls:
             selfcheck.attrition_record(sheet_id, "10 drawing-area trim", detected_walls)
+            # **The outline is checked against what the sheet says its building
+            # measures.** The largest connected group of walls is the building
+            # only when it spans that; where the tracing is fragmented the
+            # envelope is precisely what the group leaves out, and an outline
+            # drawn from the interior deletes the outside. The printed overalls
+            # come from the drafter rather than from any wall, which is what
+            # makes the check independent of the thing it is checking.
             dead = mark_walls_in_dead_ground(
                 detected_walls,
-                building_outline(detected_walls, config),
+                building_outline(
+                    detected_walls,
+                    config,
+                    printed_overalls=selfcheck.printed_overalls(
+                        {"dimension_chains": chains, "dimensions": detected_dimensions}
+                    ),
+                    mm_per_point=mm_per_point,
+                ),
                 printed_panels(lines, page_width, page_height, wall_settings),
                 wall_settings,
             )

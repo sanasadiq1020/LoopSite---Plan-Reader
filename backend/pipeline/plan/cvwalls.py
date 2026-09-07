@@ -795,7 +795,7 @@ def _keep_what_encloses_something(walls: list, mm_per_point: float, config: dict
     shell = _Shell(list(live.values()))
     on_a_grid = _open_grid_of_walls(live, rooms)
     on_a_grid |= _the_rest_of_that_structure(
-        live, on_a_grid, rooms, structure_labels, mm_per_point
+        live, on_a_grid, rooms, structure_labels, mm_per_point, junction_slack=slack
     )
 
     set_aside, gridded = 0, 0
@@ -904,29 +904,66 @@ def _open_grid_of_walls(live: dict, rooms: list = None) -> set:
 
 
 def _the_rest_of_that_structure(live: dict, on_a_grid: set, rooms: list,
-                                structure_labels: list, mm_per_point: float) -> set:
+                                structure_labels: list, mm_per_point: float,
+                                junction_slack: float = 10.0) -> set:
     """The beams a pruned grid hangs off, and what the sheet names as a roof.
 
     Taking the rafters out leaves what carried them. Measured on one real
     carport, a 6.77 m line across the top of the sheet met five walls and **all
     five were rafters this rule had just set aside** - it is the beam they hang
-    from, and nothing else in the building touches it.
+    from, and nothing else in the building touches it. That is the first branch
+    below, and it is unchanged: every wall it meets has already been *proved* a
+    grid member, which is as much evidence as this module ever has.
 
-    The sheet's own words are read as well, which is the one place a vocabulary
-    earns its keep here: a 6.05 m line printed directly under ``Skillion roof to
-    carport`` and a 4.71 m one two metres from ``Extent of roof`` are named by
-    the drawing as what they are. The words are matched as **plain substrings**
-    so that a phrase inside a longer caption still counts.
+    **The second branch reads the sheet's own words, and a word is the weakest
+    evidence there is.** A caption near a line says what the drafter was
+    labelling; it does not say that the line under it is a roof member. Standing
+    clear of the room labels was the guard that made it safe, and that guard is
+    **false by construction for the outside of a building**: room labels are
+    printed inside rooms, so the box they occupy always falls inside the
+    outermost walls, and every external wall stands clear of it. Measured on one
+    real floor plan, the guard missed by **0.9 pt of paper - 32 mm** and the
+    rule deleted the building's whole 13.2 m south external wall, a wall
+    carrying **nine junctions to interior partitions**, because ``Extent of
+    roof`` was printed 564 mm below it. It cost that sheet 22% of its traced
+    wall.
 
-    **Both are gated on standing clear of the room labels**, and that gate is
-    what makes either safe. A house's walls are drawn where its rooms are named,
-    so a caption printed over the plan can never take a wall of the building,
-    however the phrase was matched.
+    So the word no longer decides anything on its own. **The position guard is
+    kept** - it is useless as a protection but it costs nothing, and taking it
+    out as well was measured and reverted: with only the tests below in force,
+    three real walls standing among the rooms were set aside that the guard had
+    been holding (a 5.75 m interior wall on one sheet, two short ones on
+    another). What is added is a requirement *on top of* it, so this branch can
+    now only ever take fewer candidates than it did, never more.
+
+    The geometry must show all three things a roof member has and a wall of a
+    house does not:
+
+    1.  **Parallel companions.** A rafter, a joist and a batten are never
+        drawn alone; a roof is framed with a run of them. So the candidate must
+        belong to a row of parallel candidates spanning the same stretch.
+    2.  **One repeated spacing.** A roof is *set out at centres*; a row of
+        rooms is whatever size the plan needs.
+    3.  **Nothing landing on it between its ends.** A roof member spans between
+        its supports and carries nothing along its length, so its junctions are
+        at its two extremities. A wall built into a house has partitions landing
+        on it mid-span, and that is the fact that separates a 13.2 m external
+        wall from a rafter however the sheet is captioned.
+
+    (1) and (2) are decided by the very functions ``_open_grid_of_walls`` uses,
+    so the two can never disagree about what a grid is; (3) uses the junction
+    tolerance the junction reader itself works to, so "at an end" means here
+    what it means everywhere else.
+
+    **What this now relies on**, stated so it can be argued with: that a roof
+    structure is a repeating member set out at centres, and that a wall of a
+    building has other walls landing on it. **What would break it**: a roof
+    framed with a single member, or one so irregularly spaced that it is not a
+    grid - such a line is no longer taken here and has to be caught by the
+    dashed-line rule, the no-junction rule or the closed-circuit invariant.
+    That is the deliberate trade, because the alternative is a rule that
+    deletes external walls on a printed word.
     """
-    named = _where_the_rooms_are(rooms)
-    if named is None:
-        return set()
-
     from pipeline.plan.cvdetect import settings as cv_settings
 
     reach = cv_settings.number(
@@ -937,6 +974,11 @@ def _the_rest_of_that_structure(live: dict, on_a_grid: set, rooms: list,
         if line.get("bbox") and len(line["bbox"]) == 4
     ]
 
+    named = _where_the_rooms_are(rooms)
+    if named is None:
+        return set()
+    grid_like = _walls_set_out_at_centres(live)
+
     also = set()
     for wall_id, wall in live.items():
         if wall_id in on_a_grid or wall.get("not_used_because"):
@@ -945,13 +987,87 @@ def _the_rest_of_that_structure(live: dict, on_a_grid: set, rooms: list,
         if not box or _stands_among([wall], named):
             continue
 
+        # The beam a pruned grid hangs off. Unchanged: every wall it meets has
+        # been proved a grid member, and nothing else in the building touches it.
         meets = [w for w in (wall.get("connects_to") or [])]
         if meets and all(other in on_a_grid for other in meets):
             also.add(wall_id)
             continue
+
+        # What the sheet names as a roof - and only where the drawing has
+        # already shown it to be one.
+        if wall_id not in grid_like:
+            continue
+        if _carries_something_between_its_ends(wall, junction_slack):
+            continue
         if any(_within(box, label, reach) for label in boxes):
             also.add(wall_id)
     return also
+
+
+def _walls_set_out_at_centres(live: dict) -> set:
+    """Every candidate belonging to a row of parallel walls at one repeated spacing.
+
+    The same two functions ``_open_grid_of_walls`` uses, so "a grid" means one
+    thing in this module. What differs is only what is then done with the
+    answer: that rule sets a grid aside on where it stands, this one requires
+    grid membership before a printed word may be believed.
+    """
+    from pipeline.plan.cvdetect import settings as cv_settings
+
+    detection = cv_settings.load_settings()
+    least = int(cv_settings.number(detection, "wall.grid_min_walls", 3))
+    regularity = cv_settings.number(detection, "wall.grid_spacing_regularity", 0.25)
+    if least < 3 or len(live) < least:
+        return set()
+
+    members = set()
+    try:
+        for axis in ("x", "y"):
+            parallel = [wall for wall in live.values() if wall.get("runs_along") == axis]
+            for group in _rows_running_together(parallel, axis):
+                grid = _evenly_spaced(group, axis, regularity, least)
+                if len(grid) >= least:
+                    members.update(wall["wall_id"] for wall in grid)
+    except Exception as e:
+        logger.exception(f"the rows of walls set out at centres could not be worked out: {e}")
+        return set()
+    return members
+
+
+def _carries_something_between_its_ends(wall: dict, junction_slack: float = 10.0) -> bool:
+    """Whether another wall lands on this one anywhere but at its two ends.
+
+    A roof member spans between its supports and carries nothing, so every
+    junction on it is at an extremity. A wall of a building has partitions
+    landing on it along its length. "At an end" is measured with the same
+    junction tolerance the junction graph itself is built to, passed in rather
+    than read again, so the two cannot drift apart about what meeting at a
+    point means.
+    """
+    junctions = wall.get("junctions") or []
+    if not junctions:
+        return False
+    along = 0 if wall.get("runs_along") == "x" else 1
+    try:
+        start = float(wall["start_point_pt"][along])
+        end = float(wall["end_point_pt"][along])
+    except (KeyError, IndexError, TypeError, ValueError):
+        return False
+    low, high = min(start, end), max(start, end)
+    slack = max(float(junction_slack), 1.0)
+
+    for junction in junctions:
+        point = junction.get("at_pt")
+        if not point or len(point) <= along:
+            continue
+        try:
+            at = float(point[along])
+        except (TypeError, ValueError):
+            continue
+        if low + slack < at < high - slack:
+            return True
+    return False
 
 
 def _within(box, label, reach: float) -> bool:

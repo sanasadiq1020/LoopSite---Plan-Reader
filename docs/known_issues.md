@@ -6,6 +6,103 @@ read from `config/version.json`.
 
 ---
 
+## P0 (FIXED) — the building envelope was detected at full length and then deleted
+
+The reader was tracing every external wall and two downstream rules were
+setting them aside. Both rested on a premise that is **structurally false for
+the outside of a building**, so neither could be repaired by widening a
+threshold.
+
+**The structure-word rule** (`cvwalls._the_rest_of_that_structure`) set a
+candidate aside when a roof word was printed near it and it stood clear of the
+box the room labels occupy. That guard is false by construction: room labels sit
+inside rooms, so their box always falls inside the outermost walls, and **every**
+external wall stands clear of it. On one floor plan it missed by **0.9 pt of
+paper — 32 mm** and deleted the building's whole **13.2 m south external wall, a
+wall carrying nine junctions to interior partitions**, because `Extent of roof`
+was printed 564 mm below it. Cost: 22% of that sheet's traced wall.
+
+*Fixed* by requiring the geometry to show a roof member before a printed word is
+believed: parallel companions, one repeated spacing, and nothing landing on the
+candidate between its two ends. The word may now only confirm what the drawing
+has already shown.
+
+**The building outline** (`walls.building_outline`) was the bounding box of the
+largest connected group of walls. An external wall is the one a house has fewest
+junctions on, so where the tracing is fragmented the envelope is exactly what
+that group leaves out; the outline shrank to the interior and the envelope then
+tested "outside the building". Measured on one sheet the box was **4.4 m
+narrower than the building on the west and 4.8 m on the east**, and it set aside
+ten external walls carrying 35 m — 44% of that sheet's traced wall.
+
+*Fixed* by checking the group against the sheet's own printed overall
+dimensions, which come from the drafter rather than from any wall. An axis whose
+group falls materially short of what the drawing says the building measures, or
+which prints no overall at all, no longer judges anything.
+
+*Measured, end to end on all three plan sets:* P01 63.3 → 76.5 m and closure
+44.0% → 57.7%; P04 62.6 → 90.9 m with the envelope check going **fail → pass**
+(x −25.0% → −5.0%). `new_sample_plan.pdf` is byte-identical on all four of its
+drawn sheets. Ten candidates changed verdict across the corpus and every one of
+them is now kept; nothing was lost anywhere.
+
+---
+
+## P1 — a carport drawn attached to the house is reported as walls of the house
+
+`sample_plan.pdf` P04 draws its carport joined to the building, so the
+detached-structure rule cannot see it (the same limitation recorded in
+CLAUDE.md 4AP for a pergola). Four of that sheet's candidates — 17.6 m — are the
+carport's own outline and are reported as walls.
+
+This is pre-existing in kind, and the envelope repair above made four more of
+them visible rather than creating them. It is arguably not even wrong on this
+sheet: the sheet's own `23,530 OVERALL` dimension string spans the house *and*
+the carport, which is why the envelope check passes with them included. It will
+be wrong for the take-off, where a carport post is not a wall.
+
+Telling an attached structure from the building it is attached to needs
+something the wall graph does not carry — the roof line, or the absence of
+enclosure — and is a separate piece of work.
+
+---
+
+## P1 — walls are traced on a sheet whose scale is contradicted
+
+`unseen_plan.pdf` P03 is classified `notes`, reports its scale as
+**contradicted**, and still produces fourteen wall candidates with lengths in
+millimetres. Four are kept and **not one of them is a wall**: they are the
+sheet's own drawing border and the ruled lines of its notes tables. The envelope
+check on it reads +39% and +131%, which is the reading correctly saying the
+result is meaningless.
+
+Two separate faults sit behind it. The sheet plainly carries a complete
+`PROPOSED FLOOR PLAN` and a `PROPOSED SUB-FLOOR FRAMING` plan but is classified
+from a title that names neither (CLAUDE.md 4Q). And a sheet that could not
+establish a scale should report no lengths at all, which is what
+`wall.min_walls_for_vector` and the scale gate are supposed to guarantee.
+
+The envelope repair above added one more such line to that sheet — a 21.66 m
+run which is the sheet's right-hand border. It is a symptom of this defect
+rather than a new one, but it is named here rather than buried.
+
+---
+
+## P1 — external walls form too few junctions, so closure stays low
+
+Measured while diagnosing the P0 above: traced centrelines stop **0.2 m to
+4.4 m short of the wall they should meet**, against a junction tolerance of
+353 mm at 1:100. On one sheet a wall's two ends sat 356 mm and 364 mm from their
+neighbours — two junctions missed by 3 mm and 11 mm.
+
+This is why closure sits at 57.7% and 37.5% even with the envelope restored: the
+walls are there, the graph that would close them is not. Widening the tolerance
+is not the answer — it must stay well under the thinnest wall the office builds
+— so what is missing is wall the tracing never found. It belongs with the
+tracing, not with the rules that judge it.
+
+---
+
 ## P0 — wall thickness is measured wrong, and reported as confirmed
 
 **The single most serious open defect.** The computer-vision reader is now the
