@@ -128,6 +128,17 @@ export function SheetDetailModal({
                   {reading?.scale_calibration?.result === "inconclusive" && (
                     <span className="font-medium text-amber-700"> (could not be checked)</span>
                   )}
+                  {/* A printed scale nothing checked is not a confirmed one, and
+                      a reader has to be able to tell them apart at a glance. */}
+                  {reading?.scale_calibration?.result === "printed_only" && (
+                    <span className="font-medium text-amber-700">
+                      {" "}
+                      (as printed — nothing on this sheet confirms it)
+                    </span>
+                  )}
+                  {reading?.scale_calibration?.result === "unknown" && (
+                    <span className="font-medium text-amber-700"> (unknown)</span>
+                  )}
                 </>
               )}
               {sheet.revision && <> · revision {sheet.revision}</>}

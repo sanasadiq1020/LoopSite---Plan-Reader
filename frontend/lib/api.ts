@@ -294,7 +294,23 @@ export interface ScaleCalibration {
   strings_used: number;
   strings_agreeing: number;
   usable_for_measurement: boolean;
-  result: "confirmed" | "contradicted" | "inconclusive" | "not_checked";
+  /** "confirmed" means two independent sources agree - the ratio the title
+   *  block claims and the ratio the sheet's own dimension strings measure.
+   *  "printed_only" means the sheet states a scale and nothing on the sheet
+   *  checked it, so every length taken from it is unverified. The two must
+   *  never be shown alike. */
+  result:
+    | "confirmed"
+    | "contradicted"
+    | "inconclusive"
+    | "printed_only"
+    | "not_checked"
+    | "unknown";
+  /** Where the number came from, in a reader's words. */
+  source?: string;
+  /** True only where two independent sources agree. */
+  verified?: boolean;
+  unverified_reason?: string | null;
   note: string | null;
 }
 
