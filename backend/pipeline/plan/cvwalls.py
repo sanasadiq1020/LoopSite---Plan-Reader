@@ -274,6 +274,13 @@ def _rejoin_across_openings(spans: list, mm_per_point: float, config: dict) -> l
     detection = cv_settings.load_settings()
     widest_opening_mm = float(settings.get("face_join_gap_mm", 6000))
     narrowest_break_mm = float(settings.get("min_opening_width_mm", 300))
+    # **How far pieces of one wall may differ before the wall says so.**
+    # The reader already defines how close a measurement must sit to a
+    # nominal to count as that nominal; two pieces of one wall further
+    # apart than that are reporting different thicknesses, not one. Using
+    # the same figure keeps the reader from saying both "these are the
+    # same wall" and "these are different thicknesses" at once.
+    disagreement_mm = float(settings.get("nominal_thickness_tolerance_mm", 12))
 
     # **A centreline is not a drawn face, and it cannot be held to a drawn
     # face's tolerance.** ``collinear_tolerance_points`` is 0.6 pt because a
@@ -338,30 +345,60 @@ def _rejoin_across_openings(spans: list, mm_per_point: float, config: dict) -> l
             if gap_mm <= widest_opening_mm:
                 run.append(span)
                 continue
-            walls.append(_one_wall(run, mm_per_point, narrowest_break_mm))
+            walls.append(_one_wall(run, mm_per_point, narrowest_break_mm, disagreement_mm))
             run = [span]
-        walls.append(_one_wall(run, mm_per_point, narrowest_break_mm))
+        walls.append(_one_wall(run, mm_per_point, narrowest_break_mm, disagreement_mm))
     return walls
 
 
-def _one_wall(run: list, mm_per_point: float, narrowest_break_mm: float) -> dict:
-    """One canonical wall from the collinear pieces that make it up."""
+def _one_wall(run: list, mm_per_point: float, narrowest_break_mm: float,
+              disagreement_mm: float = 0.0) -> dict:
+    """One canonical wall from the collinear pieces that make it up.
+
+    **A measurement and a stand-in for one are not two samples of the same
+    quantity.** A face-derived thickness is the distance between the wall's own
+    two drawn faces, which is what a wall's thickness is. A band-derived one is
+    measured across a closed ink band, which carries the plotted stroke and
+    whatever the closing welded to the wall, and is known to read wide. Averaging
+    them is the one combination guaranteed to be wrong for both: an exact 230.011
+    averaged with a band's 287.867 reported 258.9, a figure neither method
+    produced and no wall was ever built at.
+
+    So the pieces measured from the faces decide the thickness where there are
+    any, and the band pieces decide it only where there are none. Within the
+    class that decides, pieces are weighted by their length, because a longer
+    piece shares more of its run with the paired faces behind it and is the
+    better-evidenced measurement.
+    """
     axis = run[0]["runs_along"]
     start = min(piece["start_pt"] for piece in run)
     end = max(piece["end_pt"] for piece in run)
     position = sum(piece["position_pt"] for piece in run) / len(run)
-    thickness_mm = sum(piece["thickness_mm"] for piece in run) / len(run)
+    faced = [p for p in run if p.get("thickness_from") == "faces"]
+    deciding = faced or run
+    weight = sum(max(p.get("length_mm") or 0.0, 1.0) for p in deciding)
+    thickness_mm = sum(
+        p["thickness_mm"] * max(p.get("length_mm") or 0.0, 1.0) for p in deciding
+    ) / (weight or 1.0)
+    # **A wall whose pieces disagree says so rather than hiding it in a mean.**
+    spread_mm = (max(p["thickness_mm"] for p in deciding)
+                 - min(p["thickness_mm"] for p in deciding)) if deciding else 0.0
+    pieces_disagree = bool(disagreement_mm) and spread_mm > disagreement_mm
     # **How the reported thickness was arrived at**, recorded rather than
     # acted on. One piece reports the source it was measured by; several
     # pieces are averaged above, and an average of a face measurement and a
     # band measurement is neither - so it says so.
-    sources = {piece.get("thickness_from", "band") for piece in run}
-    if len(run) > 1 and len(sources) > 1:
+    sources = {piece.get("thickness_from", "band") for piece in deciding}
+    if len(deciding) > 1 and len(sources) > 1:
         provenance = "averaged_mixed"
-    elif len(run) > 1:
+    elif len(deciding) > 1:
         provenance = "averaged_" + next(iter(sources))
     else:
         provenance = next(iter(sources))
+    if faced and len(faced) < len(run):
+        # The band pieces were set aside rather than averaged in; the record
+        # says so, because "faces" alone would not.
+        provenance = provenance + "_band_pieces_ignored"
     half = (thickness_mm / mm_per_point) / 2.0
 
     gaps = []
@@ -398,6 +435,25 @@ def _one_wall(run: list, mm_per_point: float, narrowest_break_mm: float) -> dict
         "review_status": "needs_review",
         "merged_from": len(run),
         "thickness_provenance": provenance,
+        "thickness_pieces_used": len(deciding),
+        "thickness_piece_spread_mm": round(spread_mm, 1),
+        "thickness_pieces_disagree": pieces_disagree,
+        # **A band reading is a stand-in for a measurement, not one.** Where a
+        # wall's own two drawn faces could be paired, the thickness is the
+        # distance between them. Where they could not - a sheet stored as a
+        # picture has no vector faces to pair - the closed ink band stands in,
+        # and it is measured outer edge to outer edge, so it carries the plotted
+        # stroke on both sides and reads wide. That is stated on the record
+        # rather than left for a reader to discover.
+        "thickness_is_a_stand_in": not faced,
+        "thickness_note": (
+            ""
+            if faced else
+            "Measured across the inked band rather than between the wall's two drawn "
+            "faces, because this sheet carries no paired faces here. A band is measured "
+            "outer edge to outer edge, so it includes the plotted stroke on both sides "
+            "and reads wider than the wall is."
+        ),
         "meets_another_wall": True,
         "linked_opening_marks": [],
         "gaps_pt": gaps,
@@ -1291,6 +1347,11 @@ def _fill_in_thickness_context(walls: list, config: dict) -> None:
         # A thickness the office actually builds is stronger evidence than a
         # gap that merely falls in range, and a long wall stronger than a stub.
         confidence = 0.8 if wall["matches_nominal_thickness"] else 0.55
+        # A wall whose own pieces measured different thicknesses is a weaker
+        # reading than one whose pieces agreed, and it carries that rather than
+        # having it averaged away.
+        if wall.get("thickness_pieces_disagree"):
+            confidence -= 0.15
         if wall["length_mm"] >= 2000:
             confidence = min(confidence + 0.1, 0.95)
         wall["confidence"] = round(min(confidence, wall["confidence"] + 0.1), 3)

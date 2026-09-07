@@ -588,9 +588,10 @@ def check_provenance(page: dict) -> dict:
     for wall in walls:
         key = wall.get("thickness_provenance") or "unrecorded"
         counts[key] = counts.get(key, 0) + 1
-    exact = counts.get("faces", 0)
+    exact = sum(v for k, v in counts.items() if k.startswith("faces"))
     averaged = sum(v for k, v in counts.items() if k.startswith("averaged"))
     mixed = counts.get("averaged_mixed", 0)
+    stand_in = sum(1 for w in walls if w.get("thickness_is_a_stand_in"))
     fields = {
         "counts": counts,
         "face_derived": exact,
@@ -598,6 +599,8 @@ def check_provenance(page: dict) -> dict:
         "averaged": averaged,
         "averaged_across_different_sources": mixed,
         "walls": len(walls),
+        "measured_across_the_band_as_a_stand_in": stand_in,
+        "band_readings_are_known_to_read_wide": bool(stand_in),
     }
     if mixed:
         return _result(
@@ -606,12 +609,12 @@ def check_provenance(page: dict) -> dict:
             "measurement, which is neither of them.",
             **fields,
         )
-    return _result(
-        PASS,
-        f"{exact} wall(s) measured from their own drawn faces, {counts.get('band', 0)} from the band, "
-        f"{averaged} averaged across pieces.",
-        **fields,
-    )
+    detail = (f"{exact} wall(s) measured between their own drawn faces, "
+              f"{stand_in} from the inked band as a stand-in, {averaged} combined across pieces.")
+    if stand_in:
+        detail += (" A band is measured outer edge to outer edge, so it carries the plotted "
+                   "stroke on both sides and reads wider than the wall is.")
+    return _result(PASS, detail, **fields)
 
 
 # --- 7. what this kind of sheet can and cannot give --------------------------

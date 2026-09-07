@@ -50,6 +50,88 @@ rewiring only, and no detection logic was changed.
 
 ---
 
+## Phase 5 — the three thickness P0s are fixed; what remains
+
+Measured on the plan drawn to purpose — a 12 m x 8 m building in 230 mm
+external wall with two 90 mm partitions, read back and compared with what was
+drawn. It is the only ground truth in this project.
+
+| | before | after |
+|---|---|---|
+| walls within the 12 mm tolerance, vector | **0 of 6** | **5 of 6** |
+| mean absolute error, vector | 38.4 mm | **7.6 mm** |
+| worst error, vector | 49.4 mm | 45.5 mm |
+| walls within tolerance, raster | 0 of 6 | 0 of 6 |
+
+The four external walls now read **230.0 mm (+0.0)** and the vertical partition
+**90.0 mm (-0.0)**. `averaged_mixed` no longer occurs on any of the three plan
+sets.
+
+**What was fixed, and where each fault actually was.**
+
+*The boundary rejection was in two places, not one.* `wall.twin_min_mm` rejected
+a real 90 mm pair measuring 89.9583 by 42 micrometres, and so did
+`wall.min_thickness_mm` on the reportable range - fixing only the first made the
+partition disappear entirely rather than measure correctly, because the true
+89.96 was then refused by the second. Both bounds now carry a tolerance derived
+from the drawing's coordinate precision through the sheet's own scale
+(`wall.coordinate_precision_pt`, 0.71 mm at 1:100).
+
+*The axis-less runs were bent runs, not single-piece runs.* The Phase 2 note
+attributed them to `_merge_collinear_runs` returning `pieces[0]` unchanged. That
+is not the cause: a single-piece run keeps the axis it was given at the
+straight/bent split. The runs with no axis are the ones that **turn a corner** -
+a skeleton traced round an external corner spreads in both x and y, fails the
+axis-aligned test and is returned as "bent". Measured, that was 25%, 28% and 33%
+of all runs on the three plan sets. They are now asked about the faces one
+straight stretch at a time.
+
+*The mean is gone.* Face-derived pieces decide a wall's thickness where there
+are any, weighted by length; band pieces decide it only where there are none,
+and are recorded as set aside rather than averaged in. A wall whose pieces
+differ by more than the nominal tolerance carries reduced confidence and
+`thickness_pieces_disagree`.
+
+### P1 — the band's stroke inflation is real, correctable in principle, and left
+
+The band is measured outer edge to outer edge and never subtracts the plotted
+stroke. Measured on the drawn-to-purpose plan at 300 DPI, where the two faces of
+a 230 mm wall are drawn 6.520 pt apart with a 0.7 pt stroke:
+
+| | |
+|---|---|
+| outer edge to outer edge | 32 px = **270.9 mm** (+40.9) |
+| the two rasterised strokes | **7 px** and **5 px** — for the same 0.7 pt stroke |
+| subtracting one mean stroke | 220.1 mm (**-9.9 mm**, inside tolerance) |
+
+So the correction would work. It is left for the raster work for three reasons,
+each of which is a fact rather than a preference:
+
+* it needs the stroke width **measured off the rendered image** for each wall,
+  which is raster measurement rather than face-pair measurement;
+* the rasterised stroke is **asymmetric** - 7 px against 5 px for one stroke -
+  so the correction carries about a pixel of noise, which is 8.5 mm of building
+  at 300 DPI, and landing inside a 12 mm tolerance on that basis is not robust;
+* it is only ever needed where the faces are unavailable, and the face path now
+  reaches most walls on a vector sheet, so what remains is concentrated on
+  sheets stored as pictures - which is where the raster work lives.
+
+Until then a band reading is labelled: every such wall carries
+`thickness_is_a_stand_in` and a sentence saying the band is measured outer edge
+to outer edge and reads wider than the wall is, and the per-sheet provenance
+check repeats it.
+
+### P2 — the raster path has no face measurement at all
+
+On the drawn-to-purpose plan published as a picture, all six walls still read
+from the band and none lands within tolerance. That is not a regression and not
+a fault in this phase's work: a sheet stored as a picture carries no vector
+faces to pair, so there is nothing for the face path to consult. It is the same
+finding as the stroke inflation above seen from the other side, and the same
+raster work would address both.
+
+---
+
 ## Phase 4 — scale calibration: what was found outside its own scope
 
 Recorded here rather than fixed, because the scale phase was scoped to
@@ -128,7 +210,7 @@ Yet **0 of 6 walls land within the 12 mm tolerance**, on a vector page and on a
 rasterised copy alike (face path mean 38.4 mm, band path 46.7 mm). Three
 separate faults stand between the measurement and the wall.
 
-### P0 — the twin floor rejects an exact 90 mm pair by 42 micrometres
+### P0 (FIXED in Phase 5) — the twin floor rejects an exact 90 mm pair by 42 micrometres
 
 `wall.twin_min_mm` is `90.0` and the measured pair is `89.9583 mm`, so
 `twin_min <= pair["thickness_mm"]` fails and **both 90 mm partitions fall back
@@ -136,7 +218,7 @@ to the band's 135.5 mm**. A floor written as the exact nominal cannot admit a
 measurement *of* that nominal: a real measurement scatters either side of the
 value, and half of that scatter is below it.
 
-### P0 — a single-piece run carries no axis, so it can never consult the faces
+### P0 (FIXED in Phase 5, and the cause was different) — a run with no axis can never consult the faces
 
 `_merge_collinear_runs` returns `pieces[0]` unchanged where a run has one piece
 (`wallgeometry.py:885`), and a gathered piece carries only `points`,
@@ -146,7 +228,7 @@ value, and half of that scatter is below it.
 synthetic plan reach the matcher with no axis** and silently take the band's
 figure. The matcher fired 4 times, not 7, and matched 2.
 
-### P0 — the correct measurement is averaged away after being made
+### P0 (FIXED in Phase 5) — the correct measurement is averaged away after being made
 
 `cvwalls.py:351` — `thickness_mm = sum(piece["thickness_mm"] for piece in run) / len(run)`
 — takes an unweighted mean over the pieces rejoined into one wall.

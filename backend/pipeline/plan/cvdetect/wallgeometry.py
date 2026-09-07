@@ -709,10 +709,19 @@ def _walls_from_band(
         # closing had joined together.
         elif setting(settings, "wall.require_paired_faces", True) and face_pairs:
             continue
+        # **The same tolerance, for the same reason, on the reportable range.**
+        # This gate asks whether a *measured* thickness is one an office builds,
+        # so its bounds are nominals bounding a measurement and a real 90 mm
+        # wall measuring 89.96 must pass. The tolerance is applied here and
+        # deliberately nowhere else: the other readings of min_thickness_mm size
+        # a kernel, a band threshold and a snap radius, none of which compares a
+        # nominal against a measurement, and widening those would change how the
+        # band is built rather than what is admitted from it.
+        reportable_slack = _nominal_slack_mm(scale, settings)
         if not (
-            number(settings, "wall.min_thickness_mm", 70.0)
+            number(settings, "wall.min_thickness_mm", 70.0) - reportable_slack
             <= thickness_mm
-            <= number(settings, "wall.max_thickness_mm", 320.0)
+            <= number(settings, "wall.max_thickness_mm", 320.0) + reportable_slack
         ):
             continue
 
@@ -735,6 +744,36 @@ def _walls_from_band(
     return walls, count - 1
 
 
+def _nominal_slack_mm(scale, settings: dict) -> float:
+    """How far a measurement may sit outside a bound written as a nominal.
+
+    **A bound written as a nominal thickness bounds a measurement of it.** A
+    real 90 mm wall measures 89.96 off a drawing, and a floor written as exactly
+    90.0 rejects it by 42 micrometres - which is how every genuine 90 mm wall
+    came to be reported at the band's 135 mm instead.
+
+    The size of the allowance is the drawing's own coordinate precision, carried
+    through the sheet's measured scale and doubled because a wall has two faces.
+    It is stated in points of paper because that is what the precision is a
+    property of; in millimetres it would mean something different on every
+    sheet, and would be five times looser at 1:200 than at 1:100 while looking
+    like one number.
+
+    **Deliberately small.** An allowance of a few millimetres would open a
+    window below the thinnest wall an office builds, and a lining, a hatch
+    boundary and the two sides of one plotted stroke all live there - measured,
+    a 12 mm allowance cost one floor plan five walls and three of its
+    face-derived measurements. This is a rounding allowance, not a widening of
+    what counts as a wall.
+
+    Breaks on a PDF that stores coordinates more coarsely than
+    ``wall.coordinate_precision_pt``; the symptom is real walls at a nominal
+    thickness being refused again.
+    """
+    precision_pt = number(settings, "wall.coordinate_precision_pt", 0.0)
+    return 2.0 * precision_pt * scale.mm_per_point
+
+
 def _thickness_from_the_faces(run: dict, face_pairs, scale, settings: dict):
     """The thickness of the paired faces this run lies along, where there is one.
 
@@ -743,7 +782,9 @@ def _thickness_from_the_faces(run: dict, face_pairs, scale, settings: dict):
     overlap. Returns None where no pair covers this run, so the band's own
     measurement stands.
     """
-    if not face_pairs or "axis" not in run:
+    # A run with no axis is a wall traced round a corner, not a run that cannot
+    # be measured - it is handled below, one straight stretch at a time.
+    if not face_pairs:
         return None
     if not setting(settings, "wall.thickness_from_the_faces", True):
         return None
@@ -755,25 +796,125 @@ def _thickness_from_the_faces(run: dict, face_pairs, scale, settings: dict):
     # closer than 90 mm is a lining, a hatch boundary or the other side of one
     # plotted stroke, and one further than 300 mm is a different wall with a
     # room between them.
-    twin_min = number(settings, "wall.twin_min_mm", 90.0)
-    twin_max = number(settings, "wall.twin_max_mm", 300.0)
+    # **A bound written as a nominal is a bound on a measurement of it.** The
+    # thinnest wall an office builds is 90 mm; a real 90 mm wall measures 89.96
+    # off the drawing, and a floor written as exactly 90.0 rejects it by 42
+    # micrometres - which is why every genuine 90 mm wall fell back to the
+    # band's 135 mm. The band is therefore applied with the same tolerance the
+    # reader uses to decide a measurement *is* a nominal thickness, so it can
+    # never say both "this measures a 90 mm wall" and "this is too thin to be
+    # a wall" about the same pair.
+    slack = _nominal_slack_mm(scale, settings)
+    twin_min = number(settings, "wall.twin_min_mm", 90.0) - slack
+    twin_max = number(settings, "wall.twin_max_mm", 300.0) + slack
+    if run.get("axis"):
+        return _face_pair_for_stretch(
+            run["axis"], run["position"], run["start"], run["end"],
+            face_pairs, scale, lateral, twin_min, twin_max,
+        )
+    # **A wall traced round a corner has no single axis, but every part of it
+    # has one.** The skeleton of an external wall that turns a corner comes back
+    # as one polyline, and it was returned from the straight/bent split without
+    # an axis at all - so the first line of this function refused it and it took
+    # the band's figure. Measured, that is a quarter to a third of every run on
+    # the three plan sets in use. The faces bounding a wall are axis-aligned, so
+    # the run is asked about them one straight stretch at a time, and the answer
+    # from the stretch that shares most of its length with a pair is the wall's.
+    # It relies on a wall being drawn as straight runs meeting at corners, which
+    # is what a plan draws; a genuinely curved wall has no axis-aligned stretch,
+    # matches nothing, and keeps the band's figure exactly as before.
+    return _face_pair_for_bent_run(run, face_pairs, scale, lateral, twin_min, twin_max)
+
+
+def _straight_stretches(points, lateral):
+    """The axis-aligned stretches a traced polyline is made of.
+
+    A skeleton arrives as a dense trail of points a pixel apart, so a single
+    step has no direction worth reading - the direction only appears once
+    several steps have accumulated. Points are therefore grown into a stretch
+    while the run keeps to one axis, and a stretch is emitted where it turns.
+    A stretch shorter than the lateral tolerance is the skeleton wandering
+    inside the band it was traced from, not a change of direction.
+    """
+    stretches = []
+    if points is None or len(points) < 2:
+        return stretches
+
+    def emit(chunk):
+        if len(chunk) < 2:
+            return
+        xs = [float(p[0]) for p in chunk]
+        ys = [float(p[1]) for p in chunk]
+        spread_x, spread_y = max(xs) - min(xs), max(ys) - min(ys)
+        if spread_y <= lateral and spread_x > max(spread_y, lateral):
+            stretches.append(("h", sum(ys) / len(ys), min(xs), max(xs)))
+        elif spread_x <= lateral and spread_y > max(spread_x, lateral):
+            stretches.append(("v", sum(xs) / len(xs), min(ys), max(ys)))
+
+    chunk = [points[0]]
+    axis = None
+    for point in points[1:]:
+        candidate = chunk + [point]
+        xs = [float(p[0]) for p in candidate]
+        ys = [float(p[1]) for p in candidate]
+        spread_x, spread_y = max(xs) - min(xs), max(ys) - min(ys)
+        if spread_y <= lateral and spread_x >= spread_y:
+            here = "h"
+        elif spread_x <= lateral and spread_y >= spread_x:
+            here = "v"
+        else:
+            here = None
+        if here is None:
+            emit(chunk)
+            chunk, axis = [chunk[-1], point], None
+            continue
+        if axis is not None and here != axis:
+            emit(chunk)
+            chunk, axis = [chunk[-1], point], here
+            continue
+        chunk, axis = candidate, here
+    emit(chunk)
+    return stretches
+
+
+def _face_pair_for_bent_run(run, face_pairs, scale, lateral, twin_min, twin_max):
+    """The faces bounding a run that turns, asked one straight stretch at a time."""
+    best_overlap, best_value = None, None
+    for axis, position, start, end in _straight_stretches(run.get("points"), lateral):
+        found = _face_pair_for_stretch(
+            axis, position, start, end, face_pairs, scale, lateral,
+            twin_min, twin_max, want_overlap=True,
+        )
+        if found is None:
+            continue
+        overlap, value = found
+        if best_overlap is None or overlap > best_overlap:
+            best_overlap, best_value = overlap, value
+    return best_value
+
+
+def _face_pair_for_stretch(axis, position, start, end, face_pairs, scale,
+                           lateral, twin_min, twin_max, want_overlap=False):
+    """The paired faces this one straight stretch lies along, where there is one."""
     best, nearest = None, None
     for pair in face_pairs:
-        if pair["axis"] != run["axis"]:
+        if pair["axis"] != axis:
             continue
         if not (twin_min <= pair["thickness_mm"] <= twin_max):
             continue
-        # The pair is in points; the run is in pixels of the rendered page.
-        position = scale.px_from_pt(pair["position"] - _origin_along(scale, run["axis"]))
-        if abs(position - run["position"]) > lateral:
+        # The pair is in points; the stretch is in pixels of the rendered page.
+        pair_position = scale.px_from_pt(pair["position"] - _origin_along(scale, axis))
+        if abs(pair_position - position) > lateral:
             continue
-        start = scale.px_from_pt(pair["start"] - _origin_across(scale, run["axis"]))
-        end = scale.px_from_pt(pair["end"] - _origin_across(scale, run["axis"]))
-        overlap = min(end, run["end"]) - max(start, run["start"])
+        pair_start = scale.px_from_pt(pair["start"] - _origin_across(scale, axis))
+        pair_end = scale.px_from_pt(pair["end"] - _origin_across(scale, axis))
+        overlap = min(pair_end, end) - max(pair_start, start)
         if overlap <= 0:
             continue
         if best is None or overlap > best:
             best, nearest = overlap, pair["thickness_mm"]
+    if want_overlap:
+        return None if nearest is None else (best, nearest)
     return nearest
 
 
