@@ -118,22 +118,19 @@ def test_every_drawn_wall_is_found(tmp_path, config):
         document.close()
 
 
-def test_the_thickness_read_from_a_picture_is_pinned_to_what_it_measures(tmp_path, config):
-    """**P0, pinned rather than hidden** - see docs/known_issues.md.
+def test_the_thickness_read_from_a_picture_is_within_the_nominal_tolerance(tmp_path, config):
+    """**The strict test again**, as the pinned version said it would become.
 
-    The face-pairing reader measured this drawn-to-purpose plan to 0.6 mm mean
-    and 1.0 mm worst. The computer-vision reader, which now measures every
-    sheet, is out by a **mean of 43.9 mm and a worst of 53.9 mm** against a
-    12 mm nominal tolerance: the 230 mm external walls read 270.9 mm (18% over)
-    and the 90 mm partitions read 143.9 and 135.5 mm (**60% over**). A 271 mm
-    reading is then matched to the nearest thickness the office builds and
-    reported as a 270 mm wall, which is not what was drawn.
+    This plan was drawn to known dimensions for exactly this purpose, and for
+    two releases the reader was out by a mean of 43.9 mm and a worst of 53.9 mm
+    on it: the 230 mm external walls read 270.9 and the 90 mm partitions 143.9
+    and 135.5. The cause was that a band is measured outer edge to outer edge
+    and the plotted stroke was never taken off it.
 
-    Thickness feeds the 3D model, the wall-length variance metric, opening
-    depth and the take-off, so this is wrong geometry presented as confirmed.
-    The assertion pins the error this reader actually makes: the coverage is
-    not dropped, further drift fails, and a fix will fail it too - at which
-    point this becomes the strict test again.
+    The stroke is now measured off the rendered image and subtracted, and every
+    wall on this plan reads within the nominal tolerance. The assertion is the
+    ordinary one again: nothing may be out by more than an office's own
+    tolerance on a plan whose dimensions are known.
     """
     document, page = _as_a_picture(tmp_path)
     try:
@@ -144,14 +141,9 @@ def test_the_thickness_read_from_a_picture_is_pinned_to_what_it_measures(tmp_pat
             assert found is not None
             worst = max(worst, found[1])
         tolerance = float(config["walls"].get("nominal_thickness_tolerance_mm", 12))
-        assert worst > tolerance, (
-            "this reader used to be out by more than the nominal tolerance on this "
-            "plan; if it is now within it, the regression is fixed and this test "
-            "should become the strict one again"
-        )
-        assert worst <= 55.0, (
-            f"thickness error grew to {worst:.1f} mm, worse than the 54 mm this "
-            "reader was measured at"
+        assert worst <= tolerance, (
+            f"the worst thickness error on a plan drawn to known dimensions is "
+            f"{worst:.1f} mm, outside the {tolerance:.0f} mm tolerance an office builds to"
         )
     finally:
         document.close()

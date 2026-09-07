@@ -670,7 +670,7 @@ def _walls_from_band(
                     }
                 )
 
-    for run in _merge_collinear_runs(gathered, distance, scale, settings):
+    for run in _merge_collinear_runs(gathered, distance, scale, settings, ink=ink):
         points = run["points"]
         simplified = cv2.approxPolyDP(
             points.reshape(-1, 1, 2).astype(np.int32), simplify_px, False
@@ -679,9 +679,10 @@ def _walls_from_band(
             continue
 
         thickness_mm = run.get("thickness_mm")
+        uncertainty_mm = run.get("thickness_uncertainty_mm") or 0.0
         if thickness_mm is None:
-            thickness_mm = scale.mm_from_px(
-                _thickness_along(distance, points, (0, 0)) * 2.0
+            thickness_mm, uncertainty_mm, _stroke = _band_thickness_mm(
+                distance, ink, points, run.get("axis") or "h", scale, settings
             )
         # **A wall's thickness is the distance between its two drawn faces.**
         # The band is only a stand-in for that, and on a sheet read as a
@@ -928,7 +929,7 @@ def _origin_across(scale, axis: str) -> float:
     return scale.origin[0] if axis == "h" else scale.origin[1]
 
 
-def _merge_collinear_runs(gathered: list, distance, scale, settings: dict) -> list:
+def _merge_collinear_runs(gathered: list, distance, scale, settings: dict, ink=None) -> list:
     """Pieces of one wall, traced separately, put back into one run.
 
     **A wall is one thing; a picture traces it as several.** On a sheet whose
@@ -975,9 +976,12 @@ def _merge_collinear_runs(gathered: list, distance, scale, settings: dict) -> li
         else:
             bent.append(run)
             continue
-        run["thickness_mm"] = scale.mm_from_px(
-            _thickness_along(distance, points, (0, 0)) * 2.0
+        thickness_mm, uncertainty_mm, stroke_px = _band_thickness_mm(
+            distance, ink, points, run["axis"], scale, settings
         )
+        run["thickness_mm"] = thickness_mm
+        run["thickness_uncertainty_mm"] = uncertainty_mm
+        run["stroke_px"] = stroke_px
         straight.append(run)
 
     merged = []
@@ -1158,6 +1162,127 @@ def _line_kernel(angle_degrees: float, length: int):
         if 0 <= x < length and 0 <= y < length:
             kernel[y, x] = 1
     return kernel
+
+
+def _band_thickness_mm(distance, ink, points, axis, scale, settings):
+    """The wall's thickness from its band, with the plotted stroke taken off.
+
+    **A band is measured outer edge to outer edge.** The distance transform runs
+    on the closed ink, so twice its value spans from the far side of one drawn
+    face to the far side of the other - which is the wall's thickness plus one
+    whole stroke, because each face contributes half a stroke at each end. A
+    stroke is symmetric about the line it draws, so subtracting one mean stroke
+    puts the measurement back between the two lines. That is geometry, not a
+    correction factor: it holds for any stroke width, any resolution and any
+    scale.
+
+    Returns ``(thickness_mm, uncertainty_mm, stroke_px)``; the stroke is None
+    where the wall's two faces could not be found as separate ink runs, and the
+    band's own figure then stands unchanged.
+    """
+    band_px = _thickness_along(distance, points, (0, 0)) * 2.0
+    if not setting(settings, "wall.subtract_stroke_from_band", True):
+        return scale.mm_from_px(band_px), 0.0, None
+    measured = _stroke_px_across(ink, points, axis, band_px)
+    if measured is None:
+        return scale.mm_from_px(band_px), 0.0, None
+    stroke_px, uncertainty_px, _samples = measured
+    # A stroke wider than the band is not a stroke: the faces have been welded
+    # into one run and there is nothing to subtract.
+    if stroke_px >= band_px:
+        return scale.mm_from_px(band_px), 0.0, None
+    return (scale.mm_from_px(band_px - stroke_px),
+            scale.mm_from_px(uncertainty_px), stroke_px)
+
+
+def _ink_runs_across(ink, x, y, axis, reach_px):
+    """The unbroken ink runs on a line cut across a wall, nearest first.
+
+    ``axis`` is the wall's own direction, so the cut is taken across it.
+    Returns a list of ``(first_row, last_row)`` in the cut's own coordinates,
+    with the cut's origin at ``centre - reach_px``.
+    """
+    height, width = ink.shape[:2]
+    reach = int(max(2, round(reach_px)))
+    runs, start = [], None
+    for step in range(-reach, reach + 1):
+        px = int(round(x)) if axis == "h" else int(round(x)) + step
+        py = int(round(y)) + step if axis == "h" else int(round(y))
+        on = 0 <= py < height and 0 <= px < width and ink[py, px] > 0
+        if on and start is None:
+            start = step
+        elif not on and start is not None:
+            runs.append((start, step - 1))
+            start = None
+    if start is not None:
+        runs.append((start, reach))
+    return runs
+
+
+def _stroke_px_across(ink, points, axis, band_px, samples: int = 9):
+    """How wide the plotted stroke rasterises, measured off the image itself.
+
+    **Why it has to be measured and not assumed.** A stroke's width in points is
+    stated in the PDF, but what reaches the pixels is not that width: rendering
+    resolves the line onto a grid, anti-aliases its edges over the neighbouring
+    pixels, and the binariser then keeps whatever passes its threshold. Measured
+    on a plan drawn to purpose, one 0.7 pt line came back seven pixels wide on
+    one face of a wall and five on the other - the same line, in the same image,
+    a two-pixel disagreement about its own width. Nothing but the image knows
+    what the image did.
+
+    **The asymmetry is carried, not hidden.** The two faces of one wall are one
+    stroke each, so their widths should agree; where they do not, the difference
+    is the rasteriser's uncertainty about the edge and is returned as such.
+
+    Returns ``(mean_stroke_px, uncertainty_px, samples_used)``, or ``None``
+    where no cut across the wall found two ink runs - a wall drawn solid, or one
+    whose faces the closing has welded together, has no two strokes to measure.
+
+    Relies on a wall being drawn as two strokes with paper between them. A
+    blacked-in or hatched wall is one run and returns None, which leaves the
+    band's own figure standing.
+    """
+    if ink is None or len(points) < 2:
+        return None
+    reach = max(4.0, band_px)
+    widths, count = [], 0
+    step = max(1, len(points) // max(1, samples))
+    for index in range(0, len(points), step):
+        x, y = points[index]
+        runs = _ink_runs_across(ink, x, y, axis, reach)
+        if len(runs) < 2:
+            continue
+        first, last = runs[0], runs[-1]
+        widths.append((first[1] - first[0] + 1, last[1] - last[0] + 1))
+        count += 1
+        if count >= samples:
+            break
+    if not widths:
+        return None
+    # **The narrower of a wall's two runs is the better estimate of its stroke.**
+    # Anti-aliasing spreads a plotted line symmetrically about the line it
+    # draws, so it widens both runs alike. Anything else that touches a run only
+    # ever *adds* ink - a fitting drawn against the wall, a hatch meeting it, a
+    # neighbouring line the closing welded on - and none of it can make a run
+    # narrower than the stroke that drew it. So where a wall's two runs
+    # disagree, the wider one is contaminated and the narrower one is the
+    # stroke. Measured on a plan drawn to purpose, one wall's runs came back 5
+    # and 11 pixels: the mean of 8 subtracted a stroke that was never there and
+    # took the wall below the thinnest thickness an office builds, so it was
+    # dropped altogether.
+    #
+    # Breaks where a drafter plots the two faces of one wall with different
+    # pens, which is not how a wall is drawn, or where one face is so faint that
+    # binarisation loses part of it - which makes the narrower run too narrow
+    # and under-subtracts, leaving the wall reading wide rather than vanishing.
+    narrower = [min(a, b) for a, b in widths]
+    spreads = [abs(a - b) for a, b in widths]
+    stroke = sum(narrower) / len(narrower)
+    # What the two runs could not agree about, carried as a plus-or-minus rather
+    # than averaged away.
+    uncertainty = (sum(spreads) / len(spreads)) / 2.0
+    return stroke, uncertainty, len(widths)
 
 
 def _thickness_along(distance, points, offset) -> float:

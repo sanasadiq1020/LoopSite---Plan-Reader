@@ -50,6 +50,105 @@ rewiring only, and no detection logic was changed.
 
 ---
 
+## Phase 6 — the band's stroke is subtracted; the raster path measures for the first time
+
+Measured on the plan drawn to purpose, published as a picture — the only ground
+truth in this project:
+
+| | before | after |
+|---|---|---|
+| **within the 12 mm tolerance, rasterised** | **0 of 6** | **6 of 6** |
+| mean absolute error, rasterised | 42.4 mm | **2.0 mm** |
+| worst error, rasterised | 45.5 mm | **3.1 mm** |
+| within tolerance, vector | 5 of 6 | **6 of 6** |
+| mean absolute error, vector | 7.6 mm | **0.5 mm** |
+
+`test_the_thickness_read_from_a_picture_is_pinned_to_what_it_measures` has
+become `..._is_within_the_nominal_tolerance` — the strict test again, exactly as
+the pinned version said it would when the defect was fixed.
+
+**The rule, and what it rests on.** A band is measured outer edge to outer edge,
+so twice the distance transform spans from the far side of one drawn face to the
+far side of the other — the wall's thickness plus one whole stroke, because each
+face contributes half a stroke at each end. A stroke is symmetric about the line
+it draws, so subtracting one puts the measurement back between the lines. That
+is geometry: it holds at any stroke width, resolution or scale.
+
+**The stroke is measured off the image, never assumed.** What reaches the pixels
+is not the width the PDF states: rendering resolves the line onto a grid,
+anti-aliases its edges, and the binariser keeps whatever passes its threshold.
+Measured here, one 0.7 pt line came back **7 px wide on one face of a wall and 5
+px on the other**.
+
+**The asymmetry is resolved by taking the narrower run, not the mean.**
+Anti-aliasing widens both runs alike, but anything else that touches a run only
+ever *adds* ink — a fitting drawn against the wall, a hatch meeting it, a
+neighbour the closing welded on — and none of it can make a run narrower than
+the stroke that drew it. So the wider run is contaminated and the narrower one
+is the stroke. Using the mean instead was measured and rejected: one wall's runs
+came back 5 px and 11 px, the mean of 8 subtracted a stroke that was never
+there, and the wall fell below the thinnest thickness an office builds and was
+dropped altogether. The difference between the two runs is carried as the
+measurement's uncertainty rather than averaged away.
+
+**What would break it.** A drafter plotting the two faces of one wall with
+different pens, which is not how a wall is drawn; and a face so faint that
+binarisation loses part of it, which makes the narrower run too narrow and
+under-subtracts — leaving the wall reading wide rather than vanishing.
+
+### P1 — the correction is right on ground truth and mixed on the plan sets
+
+Stopped here rather than continuing, because the effect across the three plan
+sets is genuinely mixed and the method for this phase says to stop and say so.
+
+| | walls | closure | envelope |
+|---|---|---|---|
+| sample P04 | 37 → 36 | 43.2% → **47.2%** | x −26% → **−9%**, y +18% → **−2%** |
+| sample P01 | 40 → 34 | 65.0% → 61.8% | x +15% → **−4%**, y +12% → +24% |
+| Derbyshire A02 | 53 → 48 | 83.0% → 81.2% | y −13% → −17% |
+| **Derbyshire A05** | 26 → 25 | **96.2% → 72.0%** | unchanged (19721 → 19692 traced) |
+| unseen P02 | 7 → **13** | 0% → 0% | see below |
+
+**A05 is a real regression** and is not explained away: one wall fewer, and
+seven walls fell off the closed circuit while the envelope barely moved. A
+thinner corrected thickness changes which candidates pass the buildable range,
+and on that sheet it cost circuit membership.
+
+**unseen P02's envelope is not measurable in either direction.** The only figure
+that sheet prints is a **single 820 mm door leaf width**, so the check is
+comparing a whole traced building against a door. Before: 4.98 m × 5.57 m.
+After: 28.57 m × 14.86 m. The second is a plausible house and the first is not,
+but the check cannot say so — this is the Phase 4 finding about that sheet,
+unchanged.
+
+**Run time**: 24.9 → 28.0 s, 53.2 → 58.6 s, 35.2 → 36.9 s. The cost is the
+profile cut taken across each wall at up to nine points along it.
+
+### Not attempted, and why
+
+Adaptive render resolution and a sub-pixel face-equivalent on raster were the
+next two changes of this phase and were **not made**, because the method says to
+stop when one plan set improves and another worsens. Both were measured first
+and the numbers are worth keeping:
+
+* **A sub-pixel face-equivalent works, and works well.** Taking the
+  intensity-weighted centroid of each of a wall's two ink runs from the
+  *greyscale* render, rather than the binarised mask, recovers the face
+  separation on the drawn-to-purpose plan to a **worst error of 0.84 mm across
+  all six walls** — against 3.13 mm for the binarised outer-minus-stroke used
+  above, and 40.9 mm for the uncorrected band. It is the raster equivalent of
+  the vector path's face pairing and would supersede the stroke subtraction
+  where the profile can be read.
+* **Resolution is quantised before any error occurs.** At 300 DPI and 1:100 a
+  pixel is 8.47 mm, so a 12 mm tolerance is 1.4 px and a 90 mm wall is 10.6 px;
+  at 1:200 a pixel is 16.9 mm. Rendering the same sheet at 600 DPI did **not**
+  improve the centroid measurement here (0.50 mm against 0.30 mm at 300),
+  because the fixture's drawing is itself an embedded image with a resolution of
+  its own — enlarging it adds no information, which is the same finding Section
+  4D records for the render resolution.
+
+---
+
 ## Phase 5 — the three thickness P0s are fixed; what remains
 
 Measured on the plan drawn to purpose — a 12 m x 8 m building in 230 mm
@@ -92,7 +191,7 @@ and are recorded as set aside rather than averaged in. A wall whose pieces
 differ by more than the nominal tolerance carries reduced confidence and
 `thickness_pieces_disagree`.
 
-### P1 — the band's stroke inflation is real, correctable in principle, and left
+### P1 (FIXED in Phase 6) — the band's stroke inflation is real, correctable in principle, and left
 
 The band is measured outer edge to outer edge and never subtracts the plotted
 stroke. Measured on the drawn-to-purpose plan at 300 DPI, where the two faces of
@@ -121,7 +220,7 @@ Until then a band reading is labelled: every such wall carries
 to outer edge and reads wider than the wall is, and the per-sheet provenance
 check repeats it.
 
-### P2 — the raster path has no face measurement at all
+### P2 (PARTLY ADDRESSED in Phase 6) — the raster path has no face measurement at all
 
 On the drawn-to-purpose plan published as a picture, all six walls still read
 from the band and none lands within tolerance. That is not a regression and not
