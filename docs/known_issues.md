@@ -88,18 +88,70 @@ rather than a new one, but it is named here rather than buried.
 
 ---
 
-## P1 — external walls form too few junctions, so closure stays low
+## P1 (PARTLY FIXED) — external walls formed too few junctions
 
-Measured while diagnosing the P0 above: traced centrelines stop **0.2 m to
-4.4 m short of the wall they should meet**, against a junction tolerance of
-353 mm at 1:100. On one sheet a wall's two ends sat 356 mm and 364 mm from their
-neighbours — two junctions missed by 3 mm and 11 mm.
+**A correction to what this file previously said.** It recorded that traced
+centrelines stop "0.2 m to 4.4 m short of the wall they should meet" and that a
+wall's two ends sat 356 mm and 364 mm from their neighbours — "two junctions
+missed by 3 mm and 11 mm", implying a junction-test bug. **That measurement was
+wrong.** It took the distance from a wall end to the nearest *bounding box* on
+the sheet, which counts two parallel walls a room apart as a missed junction. It
+was also read from `plan_reading.json`, which deliberately does not carry
+per-wall junction points — they are in `wall_graph.json` — so every end looked
+free.
 
-This is why closure sits at 57.7% and 37.5% even with the envelope restored: the
-walls are there, the graph that would close them is not. Widening the tolerance
-is not the answer — it must stay well under the thinnest wall the office builds
-— so what is missing is wall the tracing never found. It belongs with the
-tracing, not with the rules that judge it.
+Measured properly, against pairs that could legitimately meet:
+
+* **75% of wall ends were already joined** (265 of 354).
+* **Not one** free end was inside tolerance on both axes, so there was no
+  junction-test bug to find.
+* Of the 89 free ends, only 8 were inside the ray's reach, and only 5 open
+  corners existed across all three plan sets.
+
+**What was actually wrong** was that nothing carried an end more than a short
+way. 35 of 69 free ends pointing along their own line at a wall had that wall
+*drawn in the gap*, 14 with unbroken ink over 1.8 to 14.8 m. Fixed by
+`junctions.extend_along_the_ink`: an end is carried on for as long as the sheet
+draws both of the wall's faces the whole way to a wall on its own line. Walls on
+a closed circuit went 15/26 → 17/28, 12/32 → 24/35, 38/48 → 41/55, 0/8 → 7/9,
+25/26 → 26/26 and 17/29 → 26/40.
+
+**What remains**, and it is the honest half: 20 free ends have nothing on their
+own line to meet, and 32 stop more than 3 m short with the drawing showing
+nothing in between. Those are wall the tracing never found, and no rule that
+respects the drawing can close them.
+
+---
+
+## P2 — closure is a ratio, and keeping more walls can lower it
+
+On one sheet the ink-carried extension took walls on a closed circuit from
+**38 to 41** while the closure figure fell from **79.2% to 74.5%**, because
+seven more candidates were kept at the same time. The reading got better and the
+headline number got worse.
+
+The metric is not wrong — the share of kept walls that enclose something is
+worth knowing — but it cannot be read on its own, and this project has already
+been misled twice by a single number moving the wrong way (wall length rising
+while the reading got worse; a sheet scoring best on wall length having found no
+wall at all). `self_check.json` carries `on_a_closed_loop` and `walls` beside the
+percentage; anything quoting closure should quote the raw pair with it.
+
+---
+
+## P1 — one sheet's traced building is 13% wider than the figure it prints
+
+`new_sample_plan.pdf` A06, an electrical plan: x envelope +10.5% before the
+ink-carried extension and **+13.2%** after, against a 10% tolerance. Its longest
+wall is traced at 24.14 m where the sheet's largest dimension-string total is
+21,495 mm.
+
+Not established either way, and stated as such. The printed figure is a
+`dimension_string_total` rather than an overall the drafter marked as one, so it
+may not span the whole building; and the traced run may genuinely be carrying on
+past the building along a setout line. Settling it needs the sheet read against
+a figure that certainly measures the whole building, which that sheet may not
+print. The y envelope on the same sheet is −5.4% and passes.
 
 ---
 
