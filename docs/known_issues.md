@@ -50,6 +50,61 @@ rewiring only, and no detection logic was changed.
 
 ---
 
+## P0 (FIXED) — a scale status the response schema had never heard of emptied the whole plan
+
+**The worst class of failure this product can produce, and it shipped.** The
+interface showed "The results for this plan could not be loaded"; every tab read
+zero — rooms, dimensions, walls, doors and windows, schedules, legends — and
+opening a sheet said "Nothing was read from this sheet". The sheet register
+rendered perfectly, which is what made it look like a reading problem rather
+than a transport one.
+
+Nothing was wrong with the reading. `GET /{run_id}/reading` returned **HTTP
+500**: `pages.0.scale_calibration.result — Input should be 'confirmed',
+'contradicted', 'inconclusive' or 'not_checked' [input_value='printed_only']`,
+repeated for five of the six sheets.
+
+**The cause.** Phase 4A added the `printed_only` scale status to the reader and
+to the browser's TypeScript, and not to `app/schemas.py`, which declares that
+field as a closed set. Pydantic does not degrade a field it cannot validate — it
+**rejects the entire response**. One unlisted string emptied a whole plan.
+
+Each side was individually correct, which is why nothing caught it: the
+TypeScript compiled, the tests passed, and the pipeline wrote the right answer
+to disk. The commit that introduced it verified the frontend build and never
+exercised the endpoint — the same mistake Section 4AK records as *a check that
+passes because the machine lacks something proves nothing*.
+
+**A second, quieter half.** The models declare no `extra` policy, so Pydantic's
+default silently **drops** any field the schema does not name. Every field added
+in Phases 4A to 7 was being stripped from the response and never reached the
+interface: eight on the scale record and ten on the wall record, including all
+of the thickness provenance and uncertainty. The app looked fine; the
+information simply was not there.
+
+**Fixed**: the `result` literal now lists every value the reader can produce,
+and the new fields are declared on both models and rendered in the walls table.
+
+**Guarded**, in `backend/tests/test_response_contract.py`, and the guard is
+proved to fail — removing `printed_only` from the schema again fails it with
+"the reader can report ['printed_only'] and the response schema does not list
+it, so any plan with such a sheet would fail validation and reach the browser as
+an empty reading":
+
+* `scale.RESULTS` is now the reader's own list of what it can emit, and a test
+  asserts the schema lists every one of them, so the two cannot drift.
+* Two tests assert that the scale record and the wall record carry no field the
+  response would silently drop, with the deliberately internal wall fields named
+  in `WALL_FIELDS_KEPT_OUT_OF_THE_RESPONSE` — so withholding a field is a
+  decision rather than an accident.
+
+**P2 left open**: eleven pre-existing wall fields are still not in the response
+(`gaps_pt`, `junction_count`, `merged_from`, `source_sheet`, `stroke_pt` and
+others). They predate this work and are named in that list rather than added,
+because whether the interface wants them is a separate question.
+
+---
+
 ## Phase 7 — the raster path measures between face centres, sub-pixel
 
 The vector reader measures a wall between the centres of its two drawn face

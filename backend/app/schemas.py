@@ -298,7 +298,33 @@ class ScaleCalibration(BaseModel):
     strings_used: int = 0
     strings_agreeing: int = 0
     usable_for_measurement: bool = False
-    result: Literal["confirmed", "contradicted", "inconclusive", "not_checked"] = "not_checked"
+    # **"confirmed" means two independent sources agree** - the ratio the title
+    # block claims and the ratio the sheet's own dimension strings measure.
+    # "printed_only" means the sheet states a scale and nothing on the sheet
+    # checked it, so every length from it is unverified; "unknown" means it
+    # states none at all. Every value the reader can produce has to be here: a
+    # value missing from this list does not degrade the field, it fails
+    # validation for the whole response and the interface shows an empty plan.
+    result: Literal[
+        "confirmed",
+        "contradicted",
+        "inconclusive",
+        "printed_only",
+        "not_checked",
+        "unknown",
+    ] = "not_checked"
+    # Where the number came from and whether anything checked it. Carried so a
+    # measured scale and a claimed one can never look alike on screen.
+    source: Optional[str] = None
+    verified: bool = False
+    unverified_reason: Optional[str] = None
+    strings_from: Optional[str] = None
+    strings_refused_printed_on_the_plan: int = 0
+    # A printed ratio may name the sheet size it holds at; where the page is a
+    # different size the ratio is corrected by the ISO long-edge ratio.
+    sheet_size_named: Optional[str] = None
+    sheet_size_actual: Optional[str] = None
+    sheet_size_correction: float = 1.0
     note: Optional[str] = None
 
 
@@ -337,6 +363,26 @@ class WallCandidate(BaseModel):
     runs_along: Literal["x", "y"]
     length_mm: float
     thickness_mm: float
+    # **How the thickness was arrived at, and how sure it is.** The ways of
+    # measuring one are not equally good and must never look alike on screen:
+    # "faces" is the distance between the wall's two drawn face lines, which is
+    # what a wall's thickness is; "page_faces" is the same quantity recovered
+    # from the centres of its two runs of ink on the rendered page; the band
+    # readings are stand-ins measured across inked width, and a raw band carries
+    # the plotted stroke and reads wide. A value combined across pieces says so.
+    thickness_provenance: Optional[str] = None
+    # How far the cuts taken along this wall disagreed about its thickness.
+    thickness_uncertainty_mm: float = 0.0
+    thickness_is_a_stand_in: bool = False
+    thickness_note: str = ""
+    thickness_pieces_used: int = 0
+    thickness_piece_spread_mm: float = 0.0
+    thickness_pieces_disagree: bool = False
+    # Every length here is only as good as the scale it was measured with, so
+    # the wall carries that standing rather than leaving it to be looked up.
+    scale_verified: bool = False
+    scale_source: Optional[str] = None
+    length_is_unverified: bool = False
     nominal_thickness_mm: Optional[float] = None
     thickness_difference_mm: Optional[float] = None
     matches_nominal_thickness: bool = False

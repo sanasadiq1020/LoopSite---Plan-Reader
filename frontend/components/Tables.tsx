@@ -614,6 +614,30 @@ export type WallRow = WallCandidate & {
   sheetLabel: string;
 };
 
+/** What each way of arriving at a thickness means, in a reader's words. A
+ *  provenance this list has not met falls back to whether the record says it is
+ *  a stand-in, so a new one is never shown as a raw field value. */
+const THICKNESS_MEASURED_BY: Record<string, string> = {
+  faces: "Measured between the wall's two drawn faces",
+  averaged_faces: "Measured between the drawn faces, averaged along the wall",
+  faces_band_pieces_ignored: "Measured between the drawn faces; band readings set aside",
+  averaged_faces_band_pieces_ignored:
+    "Measured between the drawn faces, averaged; band readings set aside",
+  page_faces: "Measured between the two lines of ink on the page",
+  averaged_page_faces: "Measured between the lines of ink on the page, averaged along the wall",
+  page_faces_band_pieces_ignored:
+    "Measured between the lines of ink on the page; band readings set aside",
+  averaged_page_faces_band_pieces_ignored:
+    "Measured between the lines of ink on the page, averaged; band readings set aside",
+  band_less_stroke: "Measured across the inked band, less the plotted line",
+  averaged_band_less_stroke: "Measured across the inked band less the line, averaged",
+  band_less_stroke_band_pieces_ignored:
+    "Measured across the inked band less the line; raw band readings set aside",
+  band: "Measured across the inked band — reads wide",
+  averaged_band: "Measured across the inked band, averaged — reads wide",
+  averaged_mixed: "Combined from readings taken different ways",
+};
+
 export function WallsTable({ walls, showSheet }: { walls: WallRow[]; showSheet?: boolean }) {
   const columns: Column<WallRow>[] = [
     ...(showSheet ? [sheetColumn<WallRow>()] : []),
@@ -669,6 +693,11 @@ export function WallsTable({ walls, showSheet }: { walls: WallRow[]; showSheet?:
       render: (row) => (
         <span className="tabular-nums">
           {formatMm(row.thickness_mm)}
+          {row.thickness_uncertainty_mm > 0 && (
+            <span className="ml-1 text-[11px] text-slate-500">
+              &plusmn;{row.thickness_uncertainty_mm.toFixed(1)}
+            </span>
+          )}
           {row.nominal_thickness_mm != null && (
             <span
               className={`ml-1.5 text-[11px] ${
@@ -678,6 +707,27 @@ export function WallsTable({ walls, showSheet }: { walls: WallRow[]; showSheet?:
               {row.matches_nominal_thickness
                 ? `(a ${row.nominal_thickness_mm} mm wall)`
                 : "(not a thickness normally built)"}
+            </span>
+          )}
+          {/* **A measurement and a stand-in for one must not look alike.** A
+              thickness taken between a wall's two drawn faces is the wall; one
+              taken across an inked band carries the plotted stroke and reads
+              wide, and the reader has to be able to tell which they are looking
+              at without opening a file. */}
+          {row.thickness_provenance && (
+            <span
+              className="mt-0.5 block text-[11px] text-slate-500"
+              title={row.thickness_note || undefined}
+            >
+              {THICKNESS_MEASURED_BY[row.thickness_provenance] ??
+                (row.thickness_is_a_stand_in
+                  ? "Measured across the inked band — reads wide"
+                  : "Measured from the drawing")}
+              {row.thickness_pieces_disagree && (
+                <span className="ml-1 text-amber-700">
+                  &middot; its pieces disagreed
+                </span>
+              )}
             </span>
           )}
         </span>

@@ -69,6 +69,21 @@ SOURCE_UNKNOWN = "unknown"
 # calibrating is that a claim and a measurement are different things.
 RESULT_PRINTED_ONLY = "printed_only"
 
+# **Every outcome this module can report, in one place.** The API's response
+# schema declares these as a closed set, and a value missing from that set does
+# not degrade the field - it fails validation for the whole reading and the
+# interface shows an empty plan with no clue why. That happened once, with
+# "printed_only". ``test_response_contract`` compares this tuple against the
+# schema so the two cannot drift apart again.
+RESULTS = (
+    "confirmed",
+    "contradicted",
+    "inconclusive",
+    RESULT_PRINTED_ONLY,
+    "not_checked",
+    "unknown",
+)
+
 
 def _sheet_size_correction(scale_value, page_size_pt):
     """How far out a printed ratio is because the sheet was plotted to another size.

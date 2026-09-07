@@ -341,6 +341,25 @@ export interface WallCandidate {
   runs_along: "x" | "y";
   length_mm: number;
   thickness_mm: number;
+  /** **How the thickness was arrived at.** The ways of measuring one are not
+   *  equally good and must never look alike on screen: "faces" is the distance
+   *  between the wall's two drawn face lines, which is what a wall's thickness
+   *  is; "page_faces" is that same quantity recovered from the centres of its
+   *  two runs of ink on the rendered page; a band reading is a stand-in
+   *  measured across inked width, and a raw band carries the plotted stroke and
+   *  reads wide. A value combined across pieces says so. */
+  thickness_provenance: string | null;
+  /** How far the cuts taken along this wall disagreed about its thickness. */
+  thickness_uncertainty_mm: number;
+  thickness_is_a_stand_in: boolean;
+  thickness_note: string;
+  thickness_pieces_used: number;
+  thickness_piece_spread_mm: number;
+  thickness_pieces_disagree: boolean;
+  /** Every length is only as good as the scale it was measured with. */
+  scale_verified: boolean;
+  scale_source: string | null;
+  length_is_unverified: boolean;
   nominal_thickness_mm: number | null;
   thickness_difference_mm: number | null;
   matches_nominal_thickness: boolean;
